@@ -6,3 +6,4 @@ edition = "2018"
 license = "MIT"
 
 [dependencies]
+logos = "0.12.0"
