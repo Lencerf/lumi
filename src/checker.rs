@@ -1,10 +1,22 @@
+use rust_decimal::prelude::Zero;
 use std::collections::HashMap;
 
 use crate::{
-    parse::{AccountInfoDraft, LedgerDraft, PostingDraft},
-    Account, AccountInfo, Amount, BalanceSheet, Date, Error, ErrorLevel, ErrorType, Ledger,
-    Transaction,
+    options::*,
+    parse::{AccountInfoDraft, CostBasis, LedgerDraft, PostingDraft, TxnDraft},
+    utils::parse_decimal,
+    Account, AccountInfo, Amount, BalanceSheet, Date, Decimal, Error, ErrorLevel, ErrorType,
+    Ledger, Posting, Price, Source, Transaction, TxnFlag, UnitCost,
 };
+
+impl UnitCost {
+    fn matches(&self, unit_cost_amount: &Option<Amount>, date: &Option<Date>) -> bool {
+        unit_cost_amount
+            .as_ref()
+            .map_or(true, |amount| amount.eq(&self.amount))
+            && date.map_or(true, |date| date == self.date)
+    }
+}
 
 macro_rules! filter_note_doc {
     ($items:ident, $open_date:ident, $valid_close:ident, $errors:ident) => {
@@ -144,19 +156,626 @@ fn check_posting(
     }
 }
 
+fn is_opening_new(
+    p_number: Decimal,
+    running_balance: Option<&HashMap<Option<UnitCost>, Decimal>>,
+) -> bool {
+    if let Some(running_balance) = running_balance {
+        for (cost, number) in running_balance {
+            if cost.is_none() {
+                continue;
+            }
+            if (number.is_sign_negative() && p_number.is_sign_positive())
+                || (number.is_sign_positive() && p_number.is_sign_negative())
+            {
+                return false;
+            } else {
+                return true;
+            }
+        }
+    }
+    true
+}
+
+enum PostResult {
+    Success(Posting),
+    Expanded(Vec<Posting>),
+    NeedInfer(PostingDraft),
+    Fail,
+    None,
+}
+
+fn close_position(
+    posting: PostingDraft,
+    running_balance: Option<&HashMap<Option<UnitCost>, Decimal>>,
+    pending_change: &mut HashMap<Option<UnitCost>, Decimal>,
+    per_currency_change: &mut HashMap<String, Decimal>,
+    errors: &mut Vec<Error>,
+) -> PostResult {
+    let cost_literal = posting.cost.as_ref().unwrap();
+    let p_amount = posting.amount.as_ref().unwrap();
+    match (&cost_literal.basis, &cost_literal.date) {
+        (None, None) => {
+            if let Some(holding_balance) = running_balance {
+                let total_holding: Decimal = holding_balance
+                    .iter()
+                    .map(|(cost, number)| {
+                        if cost.is_some() {
+                            *number
+                        } else {
+                            Decimal::zero()
+                        }
+                    })
+                    .sum();
+                if (total_holding + p_amount.number).is_zero() {
+                    let PostingDraft {
+                        account,
+                        amount: _,
+                        cost: _,
+                        price: _,
+                        meta,
+                        src,
+                    } = posting;
+                    let mut expanded_postings = Vec::new();
+                    for (unit_cost, holding_number) in holding_balance {
+                        if let Some(unit_cost) = unit_cost {
+                            *per_currency_change
+                                .entry(unit_cost.amount.currency.to_string())
+                                .or_default() -= unit_cost.amount.number * holding_number;
+                            *pending_change.entry(Some(unit_cost.clone())).or_default() -=
+                                holding_number;
+                            let expanded_posting = Posting {
+                                account: account.clone(),
+                                amount: Amount {
+                                    number: -holding_number,
+                                    currency: p_amount.currency.clone(),
+                                },
+                                cost: Some(unit_cost.clone()),
+                                price: None,
+                                meta: meta.clone(),
+                                src: src.clone(),
+                            };
+                            expanded_postings.push(expanded_posting);
+                        }
+                    }
+                    PostResult::Expanded(expanded_postings)
+                } else {
+                    let error = Error {
+                        r#type: ErrorType::NoMatch,
+                        level: ErrorLevel::Error,
+                        msg: format!("Account only has {} {}.", total_holding, p_amount.currency),
+                        src: posting.src.clone(),
+                    };
+                    errors.push(error);
+                    PostResult::Fail
+                }
+            } else {
+                if !p_amount.number.is_zero() {
+                    let error = Error {
+                        r#type: ErrorType::NoMatch,
+                        level: ErrorLevel::Error,
+                        msg: format!("Account has no {}.", p_amount.currency),
+                        src: posting.src.clone(),
+                    };
+                    errors.push(error);
+                    PostResult::Fail
+                } else {
+                    PostResult::None
+                }
+            }
+        }
+        (Some(basis), Some(date)) => {
+            let unit_cost_amount = basis.to_unit_cost(p_amount.number);
+            let unit_cost_number = unit_cost_amount.number;
+            let unit_cost = Some(UnitCost {
+                amount: unit_cost_amount,
+                date: *date,
+            });
+            let holding_number = running_balance
+                .and_then(|m| m.get(&unit_cost))
+                .copied()
+                .unwrap_or_default();
+            if holding_number.abs() < p_amount.number.abs() {
+                let error = Error {
+                    r#type: ErrorType::NoMatch,
+                    level: ErrorLevel::Error,
+                    msg: format!(
+                        "Account only has {} {} {}.",
+                        holding_number,
+                        p_amount.currency,
+                        &unit_cost.unwrap()
+                    ),
+                    src: posting.src.clone(),
+                };
+                errors.push(error);
+                PostResult::Fail
+            } else {
+                *per_currency_change
+                    .entry(basis.currency().to_string())
+                    .or_default() += unit_cost_number * p_amount.number;
+                *pending_change.entry(unit_cost.clone()).or_default() += p_amount.number;
+                let PostingDraft {
+                    account,
+                    amount: _,
+                    cost: _,
+                    price,
+                    meta,
+                    src,
+                } = posting;
+                let valid_posting = Posting {
+                    account,
+                    amount: p_amount.clone(),
+                    cost: unit_cost,
+                    price,
+                    meta,
+                    src,
+                };
+                PostResult::Success(valid_posting)
+            }
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            let unit_cost_amount = cost_literal
+                .basis
+                .as_ref()
+                .map(|basis| basis.to_unit_cost(p_amount.number));
+            let candidates = running_balance.map_or(Vec::new(), |m| {
+                m.iter()
+                    .filter(|(maybe_unit_cost, _)| {
+                        maybe_unit_cost.as_ref().map_or(false, |unit_cost| {
+                            unit_cost.matches(&unit_cost_amount, &cost_literal.date)
+                        })
+                    })
+                    .collect()
+            });
+            match candidates.len() {
+                0 => {
+                    let error = Error {
+                        r#type: ErrorType::NoMatch,
+                        level: ErrorLevel::Error,
+                        msg: format!("Account has no positions with cost {}.", &cost_literal),
+                        src: posting.src.clone(),
+                    };
+                    errors.push(error);
+                    PostResult::Fail
+                }
+                1 => {
+                    let (unit_cost, holding_number) = candidates[0];
+                    let unit_cost = unit_cost.as_ref().unwrap();
+                    if p_amount.number.abs() > holding_number.abs() {
+                        let error = Error {
+                            r#type: ErrorType::NoMatch,
+                            level: ErrorLevel::Error,
+                            msg: format!(
+                                "Account only has {} {} {}.",
+                                holding_number, p_amount.currency, unit_cost
+                            ),
+                            src: posting.src.clone(),
+                        };
+                        errors.push(error);
+                        PostResult::Fail
+                    } else {
+                        *per_currency_change
+                            .entry(unit_cost.amount.currency.to_string())
+                            .or_default() += unit_cost.amount.number * p_amount.number;
+                        *pending_change.entry(Some(unit_cost.clone())).or_default() +=
+                            p_amount.number;
+                        let PostingDraft {
+                            account,
+                            amount: _,
+                            cost: _,
+                            price,
+                            meta,
+                            src,
+                        } = posting;
+                        let valid_posting = Posting {
+                            account,
+                            amount: p_amount.clone(),
+                            cost: Some(unit_cost.clone()),
+                            price,
+                            meta,
+                            src,
+                        };
+                        PostResult::Success(valid_posting)
+                    }
+                }
+                _ => {
+                    let error = Error {
+                        r#type: ErrorType::NoMatch,
+                        level: ErrorLevel::Error,
+                        msg: format!(
+                            "Account has multiple positions with cost {}.",
+                            &cost_literal
+                        ),
+                        src: posting.src.clone(),
+                    };
+                    errors.push(error);
+                    PostResult::Fail
+                }
+            }
+        }
+    }
+}
+
+fn open_new_position(
+    posting: PostingDraft,
+    txn_date: Date,
+    pending_change: &mut HashMap<Option<UnitCost>, Decimal>,
+    per_currency_change: &mut HashMap<String, Decimal>,
+) -> PostResult {
+    let cost_literal = posting.cost.as_ref().unwrap();
+    if let Some(cost_basis) = &cost_literal.basis {
+        let p_amount = posting.amount.as_ref().unwrap();
+        let unit_cost = match cost_basis {
+            CostBasis::Total(total_amount) => {
+                *per_currency_change
+                    .entry(total_amount.currency.to_string())
+                    .or_default() += total_amount.number;
+                let unit_cost = UnitCost {
+                    amount: total_amount / p_amount.number,
+                    date: cost_literal.date.unwrap_or(txn_date),
+                };
+                *pending_change.entry(Some(unit_cost.clone())).or_default() += p_amount.number;
+                unit_cost
+            }
+            CostBasis::Unit(unit_amount) => {
+                *per_currency_change
+                    .entry(unit_amount.currency.to_string())
+                    .or_default() += unit_amount.number * p_amount.number;
+                let unit_cost = UnitCost {
+                    amount: unit_amount.clone(),
+                    date: cost_literal.date.unwrap_or(txn_date),
+                };
+                *pending_change.entry(Some(unit_cost.clone())).or_default() += p_amount.number;
+                unit_cost
+            }
+        };
+        let PostingDraft {
+            account,
+            amount,
+            cost: _,
+            price,
+            meta,
+            src,
+        } = posting;
+        let valid_posting = Posting {
+            account,
+            amount: amount.unwrap(),
+            cost: Some(unit_cost),
+            price,
+            meta,
+            src,
+        };
+        PostResult::Success(valid_posting)
+    } else {
+        PostResult::NeedInfer(posting)
+    }
+}
+
+fn posting_flow(
+    posting: PostingDraft,
+    txn_date: Date,
+    running_balance: &BalanceSheet,
+    balance_change: &mut BalanceSheet,
+    per_currency_change: &mut HashMap<String, Decimal>,
+    errors: &mut Vec<Error>,
+) -> PostResult {
+    if posting.amount.is_none() {
+        return PostResult::NeedInfer(posting);
+    }
+    let p_amount = posting.amount.as_ref().unwrap();
+    let running_balance = running_balance
+        .get(&posting.account)
+        .and_then(|m| m.get(&p_amount.currency));
+    let pending_change = balance_change
+        .entry(posting.account.clone())
+        .or_insert(HashMap::new())
+        .entry(p_amount.currency.clone())
+        .or_insert(HashMap::new());
+    if let Some(_) = &posting.cost {
+        if is_opening_new(p_amount.number, running_balance) {
+            open_new_position(posting, txn_date, pending_change, per_currency_change)
+        } else {
+            close_position(
+                posting,
+                running_balance,
+                pending_change,
+                per_currency_change,
+                errors,
+            )
+        }
+    } else {
+        let (number, currency) = match &posting.price {
+            None => (p_amount.number, &p_amount.currency),
+            Some(Price::Total(total_amount)) => {
+                if p_amount.number.is_sign_negative() {
+                    (-total_amount.number, &total_amount.currency)
+                } else {
+                    (total_amount.number, &total_amount.currency)
+                }
+            }
+            Some(Price::Unit(unit_price)) => {
+                (p_amount.number * unit_price.number, &unit_price.currency)
+            }
+        };
+        *per_currency_change.entry(currency.to_string()).or_default() += number;
+        *pending_change.entry(None).or_default() += p_amount.number;
+        let PostingDraft {
+            account,
+            amount,
+            cost: _,
+            price,
+            meta,
+            src,
+        } = posting;
+        let valid_posting = Posting {
+            account,
+            amount: amount.unwrap(),
+            cost: None,
+            price,
+            meta,
+            src,
+        };
+        PostResult::Success(valid_posting)
+    }
+}
+
+fn complete_posting(
+    incomplete: Option<PostingDraft>,
+    not_balanced: Vec<(String, Decimal)>,
+    txn_date: Date,
+    txn_src: &Source,
+    valid_postings: &mut Vec<Posting>,
+    balance_change: &mut BalanceSheet,
+) -> Result<(), Error> {
+    let not_balanced_list = not_balanced
+        .iter()
+        .map(|(currency, number)| format!("{} {}", number, currency))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if let Some(PostingDraft {
+        account,
+        amount,
+        cost,
+        price,
+        meta,
+        src,
+    }) = incomplete
+    {
+        let pending_change = balance_change.entry(account.clone()).or_default();
+        match (amount, cost) {
+            (None, _) => {
+                for (currency, number) in not_balanced {
+                    let valid_posting = Posting {
+                        account: account.clone(),
+                        amount: Amount {
+                            number: -number,
+                            currency: currency.clone(),
+                        },
+                        cost: None,
+                        price: None,
+                        meta: meta.clone(),
+                        src: src.clone(),
+                    };
+                    *pending_change
+                        .entry(currency)
+                        .or_default()
+                        .entry(None)
+                        .or_default() -= number;
+                    valid_postings.push(valid_posting);
+                }
+                Ok(())
+            }
+            (Some(amount), Some(cost_literal)) => {
+                if not_balanced.len() == 1 {
+                    let (currency, number) = &not_balanced[0];
+                    let cost_date = cost_literal.date.unwrap_or(txn_date);
+                    let unit_cost = UnitCost {
+                        amount: Amount {
+                            number: -number / amount.number,
+                            currency: currency.to_string(),
+                        },
+                        date: cost_date,
+                    };
+                    *pending_change
+                        .entry(amount.currency.clone())
+                        .or_default()
+                        .entry(Some(unit_cost.clone()))
+                        .or_default() += amount.number;
+                    let valid_posting = Posting {
+                        account,
+                        amount,
+                        cost: Some(unit_cost),
+                        price,
+                        meta,
+                        src,
+                    };
+                    valid_postings.push(valid_posting);
+                    Ok(())
+                } else {
+                    let error = Error {
+                        msg: format!(
+                            "Cannot calculate the cost from multiple unbalanced currencies: {}",
+                            not_balanced_list
+                        ),
+                        src,
+                        r#type: ErrorType::Incomplete,
+                        level: ErrorLevel::Error,
+                    };
+                    Err(error)
+                }
+            }
+            _ => unreachable!(),
+        }
+    } else {
+        if not_balanced.len() > 0 {
+            let error = Error {
+                msg: format!("Transaction not balanced: {}", not_balanced_list),
+                r#type: ErrorType::NotBalanced,
+                level: ErrorLevel::Error,
+                src: txn_src.clone(),
+            };
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn check_complete_txn(
+    txn: TxnDraft,
+    running_balance: &BalanceSheet,
+    errors: &mut Vec<Error>,
+    tolerances: &HashMap<&str, Decimal>,
+) -> Option<(Vec<Transaction>, BalanceSheet)> {
+    let mut balance_change = BalanceSheet::new();
+    let mut per_currency_change = HashMap::new();
+    let TxnDraft {
+        date,
+        flag,
+        payee,
+        narration,
+        links,
+        tags,
+        meta,
+        postings,
+        src,
+    } = txn;
+
+    let mut incomplete: Option<PostingDraft> = None;
+    let mut valid_postings = Vec::new();
+    for posting in postings {
+        match posting_flow(
+            posting,
+            date,
+            running_balance,
+            &mut balance_change,
+            &mut per_currency_change,
+            errors,
+        ) {
+            PostResult::Fail => return None,
+            PostResult::Expanded(valid_posting_vec) => valid_postings.extend(valid_posting_vec),
+            PostResult::None => {}
+            PostResult::Success(valid_posting) => valid_postings.push(valid_posting),
+            PostResult::NeedInfer(posting) => {
+                if incomplete.is_some() {
+                    let error = Error {
+                        msg: "Cannot infer the amounts for two posts".to_string(),
+                        src: posting.src.clone(),
+                        r#type: ErrorType::Incomplete,
+                        level: ErrorLevel::Error,
+                    };
+                    errors.push(error);
+                    return None;
+                } else {
+                    incomplete = Some(posting)
+                }
+            }
+        }
+    }
+    let not_balanced = per_currency_change
+        .into_iter()
+        .filter(|(currency, number)| !equal_within(*number, Decimal::zero(), currency, tolerances))
+        .collect::<Vec<_>>();
+    match complete_posting(
+        incomplete,
+        not_balanced,
+        date,
+        &src,
+        &mut valid_postings,
+        &mut balance_change,
+    ) {
+        Ok(()) => {}
+        Err(e) => {
+            errors.push(e);
+            return None;
+        }
+    }
+    let valid_txn = Transaction {
+        date,
+        flag,
+        payee,
+        narration,
+        links,
+        tags,
+        meta,
+        postings: valid_postings,
+        src,
+    };
+    Some((vec![valid_txn], balance_change))
+}
+
+fn merge_balance(running_balance: &mut BalanceSheet, changes: BalanceSheet) {
+    for (account, account_change) in changes {
+        let account_bal = running_balance.entry(account).or_default();
+        for (currency, currency_change) in account_change {
+            let currency_bal = account_bal.entry(currency).or_default();
+            for (cost, cost_change) in currency_change {
+                *currency_bal.entry(cost).or_default() += cost_change;
+            }
+        }
+    }
+}
+
+const TOLERANCE_KEY_DEFAULT: &str = ";";
+
+fn extract_tolerance<'c>(
+    commodities: &'c HashMap<String, (HashMap<String, (String, Source)>, Source)>,
+    options: &HashMap<String, (String, Source)>,
+    errors: &mut Vec<Error>,
+) -> HashMap<&'c str, Decimal> {
+    let mut tolerances = HashMap::new();
+    for (currency, (meta, _)) in commodities.iter() {
+        if let Some((num_str, src)) = meta.get("tolerance") {
+            if let Some(num) = parse_decimal(num_str, src, errors) {
+                tolerances.insert(currency.as_str(), num.abs());
+            }
+        }
+    }
+    if let Some((num_str, src)) = options.get(OPTION_DEFAULT_TOLERANCE) {
+        if let Some(num) = parse_decimal(num_str, src, errors) {
+            tolerances.insert(TOLERANCE_KEY_DEFAULT, num.abs());
+        }
+    } else {
+        let default_tolerance = Decimal::new(6, 3);
+        tolerances.insert(TOLERANCE_KEY_DEFAULT, default_tolerance);
+    }
+    tolerances
+}
+
+fn equal_within(
+    lhs: Decimal,
+    rhs: Decimal,
+    currency: &str,
+    tolerances: &HashMap<&str, Decimal>,
+) -> bool {
+    if lhs == rhs {
+        true
+    } else {
+        let tolerance = tolerances
+            .get(currency)
+            .unwrap_or(tolerances.get(TOLERANCE_KEY_DEFAULT).unwrap());
+        if (lhs - rhs).abs() < *tolerance {
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl LedgerDraft {
     pub fn to_ledger(self, errors: &mut Vec<Error>) -> Ledger {
         let LedgerDraft {
             accounts,
             commodities,
-            txns,
+            mut txns,
             options,
             events,
         } = self;
         let valid_accounts = check_accounts(accounts, errors);
-
-        let valid_txns: Vec<Transaction> = Vec::new();
-        let running_balance = BalanceSheet::new();
+        let tolerances = extract_tolerance(&commodities, &options, errors);
+        let mut valid_txns: Vec<Transaction> = Vec::new();
+        let mut running_balance = BalanceSheet::new();
+        txns.sort_by_key(|t| (t.date, t.flag));
         for txn in txns {
             let mut valid = true;
             for posting in txn.postings.iter() {
@@ -174,7 +793,18 @@ impl LedgerDraft {
                 continue;
             }
 
-            // TODO: check if the transaction is balanced.
+            match txn.flag {
+                TxnFlag::Balance => unimplemented!(),
+                TxnFlag::Pending | TxnFlag::Posted => {
+                    if let Some((valid_txn_vec, changes)) =
+                        check_complete_txn(txn, &running_balance, errors, &tolerances)
+                    {
+                        valid_txns.extend(valid_txn_vec);
+                        merge_balance(&mut running_balance, changes);
+                    }
+                }
+                TxnFlag::Pad => unimplemented!(),
+            }
         }
         let ledger = Ledger {
             accounts: valid_accounts,
