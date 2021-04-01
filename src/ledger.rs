@@ -1,3 +1,4 @@
+use crate::parse::Parser;
 pub use chrono::NaiveDate as Date;
 pub use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
@@ -263,6 +264,12 @@ pub struct Ledger {
 impl Ledger {
     pub fn balance_sheet(&self) -> &BalanceSheet {
         &self.balance_sheet
+    }
+
+    pub fn from_file(path: &str) -> (Self, Vec<Error>) {
+        let (draft, mut errors) = Parser::parse(path);
+        let ledger = draft.to_ledger(&mut errors);
+        (ledger, errors)
     }
 }
 
