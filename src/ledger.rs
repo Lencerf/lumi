@@ -39,6 +39,12 @@ pub struct Source {
     pub end: Location,
 }
 
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}:{}", self.file, self.start.line, self.start.col)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorType {
     Io,
