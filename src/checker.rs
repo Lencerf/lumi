@@ -969,7 +969,16 @@ impl LedgerDraft {
         let mut running_balance = BalanceSheet::new();
         let mut pad_from: HashMap<Account, PadFromInfo> = HashMap::new();
         let mut pad_to: HashMap<Account, HashSet<Account>> = HashMap::new();
-        txns.sort_by_key(|t| (t.date, t.flag));
+        let option_balance_at_day_end: bool = options
+            .get(OPTION_BALANCE_AT_DAY_END)
+            .map(|v| &v.0)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(false);
+        if option_balance_at_day_end {
+            txns.sort_by_key(|t| (t.date, t.flag));
+        } else {
+            txns.sort_by_key(|t| (t.date, (t.flag as u8 + 1) % 4));
+        }
         for txn in txns {
             let mut valid = true;
             for posting in txn.postings.iter() {
