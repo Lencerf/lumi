@@ -7,11 +7,9 @@ use crate::{
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    sync::{Arc, Condvar, Mutex},
-};
-use std::{
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +47,25 @@ impl CostLiteral {
         UnitCost {
             amount: amount,
             date,
+        }
+    }
+}
+
+impl fmt::Display for CostLiteral {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut date_str = self.date.map_or("".to_string(), |date| date.to_string());
+        if let Some(cost_basis) = &self.basis {
+            if self.date.is_some() {
+                date_str = format!(", {}", date_str);
+            }
+            match cost_basis {
+                CostBasis::Total(total_amount) => {
+                    write!(f, "{{{{ {}{} }}}}", total_amount, date_str)
+                }
+                CostBasis::Unit(unit_amount) => write!(f, "{{ {}{} }}", unit_amount, date_str),
+            }
+        } else {
+            write!(f, "{{ {} }}", date_str)
         }
     }
 }

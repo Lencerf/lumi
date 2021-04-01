@@ -90,6 +90,12 @@ pub struct Amount {
     pub currency: Currency,
 }
 
+impl fmt::Display for Amount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.number, self.currency)
+    }
+}
+
 impl<'a> Div<Decimal> for &'a Amount {
     type Output = Amount;
 
@@ -118,18 +124,42 @@ pub enum Price {
     Total(Amount),
 }
 
+impl fmt::Display for Price {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Price::Unit(amount) => write!(f, "@ {}", amount),
+            Price::Total(amount) => write!(f, "@@ {}", amount),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct UnitCost {
     pub amount: Amount,
     pub date: Date,
 }
 
+impl fmt::Display for UnitCost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{{ {}, {} }}", self.amount, self.date)
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TxnFlag {
     Pending,
     Posted,
     Pad,
     Balance,
+}
+
+impl fmt::Display for TxnFlag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TxnFlag::Pending => write!(f, "!"),
+            TxnFlag::Posted | TxnFlag::Pad => write!(f, "*"),
+            TxnFlag::Balance => write!(f, "balance"),
+        }
+    }
 }
 
 pub type Account = Arc<String>;
@@ -142,6 +172,29 @@ pub struct Posting {
     pub price: Option<Price>,
     pub meta: Meta,
     pub src: Source,
+}
+
+impl fmt::Display for Posting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let num_str = self.amount.to_string();
+        let index = num_str.find(|c| c == ' ' || c == '.').unwrap();
+        let width = f.width().unwrap_or(46) - 1;
+        let account_width = std::cmp::max(self.account.len() + 1, width - index);
+        write!(
+            f,
+            "{:width$}{}",
+            self.account,
+            num_str,
+            width = account_width
+        )?;
+        if let Some(cost) = &self.cost {
+            write!(f, " {}", cost)?;
+        }
+        if let Some(ref price) = self.price {
+            write!(f, " {}", price)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -210,5 +263,45 @@ pub struct Ledger {
 impl Ledger {
     pub fn balance_sheet(&self) -> &BalanceSheet {
         &self.balance_sheet
+    }
+}
+
+impl fmt::Display for Transaction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.flag {
+            TxnFlag::Balance => write!(f, "{} {}", self.date, self.flag)?,
+            _ => write!(
+                f,
+                "{} {} \"{}\" \"{}\"",
+                self.date, self.flag, self.payee, self.narration
+            )?,
+        };
+        for tag in &self.tags {
+            write!(f, " {}", tag)?;
+        }
+        for link in &self.links {
+            write!(f, " {}", link)?;
+        }
+        for (key, val) in self.meta.iter() {
+            write!(f, "\n  {}: {}", key, val.0)?;
+        }
+        let width = f.width().unwrap_or(50);
+        match self.flag {
+            TxnFlag::Balance => {
+                if self.postings.len() == 1 {
+                    write!(f, " {:width$}", self.postings[0], width = width - 19)?;
+                } else {
+                    for posting in self.postings.iter() {
+                        write!(f, "\n    {:width$}", posting, width = width - 4)?;
+                    }
+                }
+            }
+            _ => {
+                for posting in self.postings.iter() {
+                    write!(f, "\n    {:width$}", posting, width = width - 4)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
