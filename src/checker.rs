@@ -1,12 +1,12 @@
 use rust_decimal::prelude::Zero;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     options::*,
     parse::{AccountInfoDraft, CostBasis, LedgerDraft, PostingDraft, TxnDraft},
     utils::parse_decimal,
-    Account, AccountInfo, Amount, BalanceSheet, Date, Decimal, Error, ErrorLevel, ErrorType,
-    Ledger, Posting, Price, Source, Transaction, TxnFlag, UnitCost,
+    Account, AccountInfo, Amount, BalanceSheet, Currency, Date, Decimal, Error, ErrorLevel,
+    ErrorType, Ledger, Posting, Price, Source, Transaction, TxnFlag, UnitCost,
 };
 
 impl UnitCost {
@@ -762,6 +762,198 @@ fn equal_within(
     }
 }
 
+struct PadFromInfo {
+    from: Account,
+    currencies: HashSet<Currency>,
+    index: usize,
+}
+
+fn try_padding(
+    dest_account: &Account,
+    pad_number: Decimal,
+    currency: &String,
+    pad_from: &mut HashMap<Account, PadFromInfo>,
+    valid_txns: &mut Vec<Transaction>,
+    valid_accounts: &HashMap<Account, AccountInfo>,
+    balance_src: &Source,
+) -> Result<Account, Option<Error>> {
+    if let Some(info) = pad_from.get_mut(dest_account) {
+        let from_account_currency_set = &valid_accounts.get(&info.from).unwrap().currencies;
+        if from_account_currency_set.len() > 0 && !from_account_currency_set.contains(currency) {
+            let error = Error {
+                msg: format!("Account {} cannot hold {}.", &info.from, currency),
+                level: ErrorLevel::Error,
+                r#type: ErrorType::Account,
+                src: balance_src.clone(),
+            };
+            return Err(Some(error));
+        }
+        if info.currencies.insert(currency.clone()) {
+            let pad_place_holder = &mut valid_txns[info.index];
+            pad_place_holder.postings.push(Posting {
+                account: dest_account.clone(),
+                amount: Amount {
+                    number: pad_number,
+                    currency: currency.clone(),
+                },
+                cost: None,
+                price: None,
+                meta: HashMap::new(),
+                src: balance_src.clone(),
+            });
+            pad_place_holder.postings.push(Posting {
+                account: info.from.clone(),
+                amount: Amount {
+                    number: -pad_number,
+                    currency: currency.clone(),
+                },
+                cost: None,
+                price: None,
+                meta: HashMap::new(),
+                src: balance_src.clone(),
+            });
+            Ok(info.from.clone())
+        } else {
+            Err(None)
+        }
+    } else {
+        Err(None)
+    }
+}
+
+fn check_balance(
+    txn: TxnDraft,
+    running_balance: &mut BalanceSheet,
+    errors: &mut Vec<Error>,
+    tolerances: &HashMap<&str, Decimal>,
+    pad_from: &mut HashMap<Account, PadFromInfo>,
+    valid_txns: &mut Vec<Transaction>,
+    valid_accounts: &HashMap<Account, AccountInfo>,
+) -> Option<Transaction> {
+    let mut valid_postings: Vec<Posting> = Vec::new();
+    let TxnDraft {
+        date,
+        flag,
+        payee,
+        narration,
+        links,
+        tags,
+        meta,
+        postings,
+        src,
+    } = txn;
+    for posting in postings {
+        if posting.cost.is_some() || posting.price.is_some() {
+            errors.push(Error {
+                level: ErrorLevel::Error,
+                r#type: ErrorType::Syntax,
+                msg: "Balance directives only check aggregate amount.".to_string(),
+                src: posting.src.clone(),
+            });
+            continue;
+        }
+        if let Some(p_amount) = posting.amount.as_ref() {
+            let holding_total: Decimal = running_balance
+                .get(&posting.account)
+                .and_then(|currencies| currencies.get(&p_amount.currency))
+                .map(|position| position.values().sum())
+                .unwrap_or(Decimal::zero());
+
+            if equal_within(
+                holding_total,
+                p_amount.number,
+                &p_amount.currency,
+                tolerances,
+            ) || match try_padding(
+                &posting.account,
+                p_amount.number - holding_total,
+                &p_amount.currency,
+                pad_from,
+                valid_txns,
+                valid_accounts,
+                &posting.src,
+            ) {
+                Ok(account_from) => {
+                    let pad_amount = p_amount.number - holding_total;
+                    *running_balance
+                        .entry(posting.account.clone())
+                        .or_default()
+                        .entry(p_amount.currency.clone())
+                        .or_default()
+                        .entry(None)
+                        .or_default() += pad_amount;
+                    *running_balance
+                        .entry(account_from)
+                        .or_default()
+                        .entry(p_amount.currency.clone())
+                        .or_default()
+                        .entry(None)
+                        .or_default() -= pad_amount;
+                    true
+                }
+                Err(None) => {
+                    let assert_err = Error {
+                        level: ErrorLevel::Error,
+                        r#type: ErrorType::NotBalanced,
+                        msg: format!(
+                            "Failed assertion: {} != {} {}.",
+                            &p_amount, holding_total, &p_amount.currency
+                        ),
+                        src: posting.src.clone(),
+                    };
+                    errors.push(assert_err);
+                    false
+                }
+                Err(Some(error)) => {
+                    errors.push(error);
+                    false
+                }
+            } {
+                let PostingDraft {
+                    account,
+                    amount: _,
+                    cost: _,
+                    price: _,
+                    meta,
+                    src,
+                } = posting;
+                valid_postings.push(Posting {
+                    account,
+                    amount: p_amount.clone(),
+                    cost: None,
+                    price: None,
+                    meta,
+                    src,
+                });
+            }
+        } else {
+            let error = Error {
+                level: ErrorLevel::Error,
+                r#type: ErrorType::Incomplete,
+                msg: "Missing amount.".to_string(),
+                src: posting.src.clone(),
+            };
+            errors.push(error);
+        }
+    }
+    if valid_postings.len() > 0 {
+        let valid_txn = Transaction {
+            date,
+            flag,
+            payee,
+            narration,
+            links,
+            tags,
+            meta,
+            postings: valid_postings,
+            src,
+        };
+        Some(valid_txn)
+    } else {
+        None
+    }
+}
+
 impl LedgerDraft {
     pub fn to_ledger(self, errors: &mut Vec<Error>) -> Ledger {
         let LedgerDraft {
@@ -775,6 +967,8 @@ impl LedgerDraft {
         let tolerances = extract_tolerance(&commodities, &options, errors);
         let mut valid_txns: Vec<Transaction> = Vec::new();
         let mut running_balance = BalanceSheet::new();
+        let mut pad_from: HashMap<Account, PadFromInfo> = HashMap::new();
+        let mut pad_to: HashMap<Account, HashSet<Account>> = HashMap::new();
         txns.sort_by_key(|t| (t.date, t.flag));
         for txn in txns {
             let mut valid = true;
@@ -794,7 +988,26 @@ impl LedgerDraft {
             }
 
             match txn.flag {
-                TxnFlag::Balance => unimplemented!(),
+                TxnFlag::Balance => {
+                    for posting in txn.postings.iter() {
+                        if let Some(set) = pad_to.remove(&posting.account) {
+                            for dest_account in set {
+                                pad_from.remove(&dest_account);
+                            }
+                        }
+                    }
+                    if let Some(valid_txn) = check_balance(
+                        txn,
+                        &mut running_balance,
+                        errors,
+                        &tolerances,
+                        &mut pad_from,
+                        &mut valid_txns,
+                        &valid_accounts,
+                    ) {
+                        valid_txns.push(valid_txn);
+                    }
+                }
                 TxnFlag::Pending | TxnFlag::Posted => {
                     if let Some((valid_txn_vec, changes)) =
                         check_complete_txn(txn, &running_balance, errors, &tolerances)
@@ -803,7 +1016,56 @@ impl LedgerDraft {
                         merge_balance(&mut running_balance, changes);
                     }
                 }
-                TxnFlag::Pad => unimplemented!(),
+                TxnFlag::Pad => {
+                    let TxnDraft {
+                        date,
+                        flag,
+                        payee: _,
+                        narration: _,
+                        links,
+                        tags,
+                        meta,
+                        postings,
+                        src,
+                    } = txn;
+                    if postings.len() == 2 {
+                        let pad_placeholder = Transaction {
+                            date,
+                            flag,
+                            payee: String::new(),
+                            narration: format!(
+                                "Pad {} from {}",
+                                &postings[0].account, &postings[1].account
+                            ),
+                            links,
+                            tags,
+                            meta,
+                            postings: Vec::new(),
+                            src,
+                        };
+                        pad_from.insert(
+                            postings[0].account.clone(),
+                            PadFromInfo {
+                                from: postings[1].account.clone(),
+                                currencies: HashSet::new(),
+                                index: valid_txns.len(),
+                            },
+                        );
+                        pad_to
+                            .entry(postings[1].account.clone())
+                            .or_default()
+                            .insert(postings[0].account.clone());
+                        valid_txns.push(pad_placeholder);
+                    } else {
+                        let error = Error {
+                            msg: "Invalid syntax: Pad must contains two accounts.".to_string(),
+                            level: ErrorLevel::Error,
+                            r#type: ErrorType::Syntax,
+                            src,
+                        };
+                        errors.push(error);
+                    }
+                }
             }
         }
         let ledger = Ledger {
