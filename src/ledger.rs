@@ -1,12 +1,15 @@
 use crate::parse::Parser;
 pub use chrono::NaiveDate as Date;
 pub use rust_decimal::Decimal;
+#[cfg(feature = "serialize")]
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::fmt;
 use std::ops::{Div, Mul};
 use std::sync::Arc;
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Location {
     pub line: usize,
@@ -33,6 +36,7 @@ impl From<(usize, usize)> for Location {
 
 pub type SrcFile = Arc<String>;
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Source {
     pub file: SrcFile,
@@ -46,6 +50,7 @@ impl fmt::Display for Source {
     }
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorType {
     Io,
@@ -58,6 +63,7 @@ pub enum ErrorType {
     Duplicate,
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorLevel {
     Info,
@@ -65,6 +71,7 @@ pub enum ErrorLevel {
     Error,
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Error {
     pub msg: String,
@@ -85,6 +92,7 @@ impl fmt::Display for Error {
 
 pub type Currency = String;
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Amount {
     pub number: Decimal,
@@ -119,6 +127,7 @@ impl<'a> Mul<Decimal> for &'a Amount {
     }
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub enum Price {
     Unit(Amount),
@@ -134,6 +143,7 @@ impl fmt::Display for Price {
     }
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct UnitCost {
     pub amount: Amount,
@@ -145,6 +155,7 @@ impl fmt::Display for UnitCost {
         write!(f, "{{ {}, {} }}", self.amount, self.date)
     }
 }
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TxnFlag {
     Pending,
@@ -165,6 +176,7 @@ impl fmt::Display for TxnFlag {
 
 pub type Account = Arc<String>;
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Posting {
     pub account: Account,
@@ -198,6 +210,7 @@ impl fmt::Display for Posting {
     }
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Transaction {
     pub date: Date,
@@ -211,6 +224,7 @@ pub struct Transaction {
     pub src: Source,
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct AccountNote {
     pub date: Date,
@@ -222,6 +236,7 @@ pub type AccountDoc = AccountNote;
 
 pub type Meta = HashMap<String, (String, Source)>;
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct AccountInfo {
     pub open: (Date, Source),
@@ -232,6 +247,7 @@ pub struct AccountInfo {
     pub meta: Meta,
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct EventInfo {
     pub date: Date,
@@ -251,6 +267,7 @@ impl From<(Date, String, Source)> for EventInfo {
 
 pub type BalanceSheet = HashMap<Account, HashMap<Currency, HashMap<Option<UnitCost>, Decimal>>>;
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Ledger {
     pub accounts: HashMap<Account, AccountInfo>,

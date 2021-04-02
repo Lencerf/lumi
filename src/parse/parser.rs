@@ -5,6 +5,8 @@ use crate::{
     ErrorType, EventInfo, Location, Meta, Price, Source, SrcFile, TxnFlag, UnitCost,
 };
 
+#[cfg(feature = "serialize")]
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt, fs,
@@ -12,6 +14,7 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CostBasis {
     Total(Amount),
@@ -34,6 +37,7 @@ impl CostBasis {
     }
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct CostLiteral {
     pub date: Option<Date>,
@@ -70,6 +74,7 @@ impl fmt::Display for CostLiteral {
     }
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct PostingDraft {
     pub account: Account,
@@ -80,6 +85,7 @@ pub struct PostingDraft {
     pub src: Source,
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct TxnDraft {
     pub date: Date,
@@ -93,6 +99,7 @@ pub struct TxnDraft {
     pub src: Source,
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Default)]
 pub struct AccountInfoDraft {
     pub open: Option<(Date, Source)>,
@@ -150,6 +157,7 @@ impl AccountInfoDraft {
     }
 }
 
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Default)]
 pub struct LedgerDraft {
     pub accounts: HashMap<Account, AccountInfoDraft>,
@@ -769,7 +777,7 @@ impl<'source> Parser<'source> {
 
     pub fn parse(path: &str) -> (LedgerDraft, Vec<Error>) {
         let src = Source {
-            file: Arc::new(path.to_string()),
+            file: path.to_string().into(),
             start: Location { line: 1, col: 1 },
             end: Location { line: 1, col: 1 },
         };
