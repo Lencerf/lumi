@@ -15,3 +15,10 @@ serde = { version = "1.0", features = ["derive", "rc"], optional = true }
 
 [features]
 serialize = ["serde", "chrono/serde", "rust_decimal/serde"]
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "parse_bench"
+harness = false
