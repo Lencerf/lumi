@@ -14,6 +14,8 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
+/// Represents the cost basis written in the source file, which might be either
+/// unit cost or total cost.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CostBasis {
@@ -37,6 +39,7 @@ impl CostBasis {
     }
 }
 
+/// Represents the parsed cost basis information.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct CostLiteral {
@@ -74,6 +77,8 @@ impl fmt::Display for CostLiteral {
     }
 }
 
+/// Represents the result of a parsed posting, which might miss amounts or
+/// referred an invalid account.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct PostingDraft {
@@ -85,6 +90,8 @@ pub struct PostingDraft {
     pub src: Source,
 }
 
+/// Represents a transaction, or a `pad` directive, or a `balance` direction
+/// parsed from the source file, which needs further inspections.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct TxnDraft {
@@ -99,6 +106,8 @@ pub struct TxnDraft {
     pub src: Source,
 }
 
+/// Represents the information of an account collected by the parser from the
+/// source file, which needs further inspections.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Default)]
 pub struct AccountInfoDraft {
@@ -157,6 +166,8 @@ impl AccountInfoDraft {
     }
 }
 
+/// Contains the information collected by a parser from the source files,
+/// which might include unbalanced transactions or other errors.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Default)]
 pub struct LedgerDraft {
@@ -168,6 +179,8 @@ pub struct LedgerDraft {
 }
 
 impl LedgerDraft {
+    /// Adds the value of an option into a [`LedgerDraft`]. Returns `Err(Error)` if
+    /// the option `key` is already specified in `self`.
     pub fn add_option(&mut self, key: String, val: String, src: Source) -> Result<(), Error> {
         if let Some((_, existing_src)) = self.options.get(&key) {
             Err(Error {
@@ -185,6 +198,8 @@ impl LedgerDraft {
         }
     }
 
+    /// Adds a type of commodity into a [`LedgerDraft`]. Returns `Err(Error)` if
+    /// `commodity` is already in `self`.
     pub fn add_commodity(
         &mut self,
         commodity: String,
@@ -209,6 +224,8 @@ impl LedgerDraft {
 }
 
 impl LedgerDraft {
+    /// Merges two [`LedgerDraft`] into one and returns errors detected, e.g.,
+    /// duplicated defections of accounts.
     pub fn merge(&mut self, another: LedgerDraft) -> Vec<Error> {
         let mut errors = vec![];
         let LedgerDraft {
@@ -248,6 +265,7 @@ impl LedgerDraft {
     }
 }
 
+/// A parser that transforms input text file into [`LedgerDraft`].
 pub struct Parser<'source> {
     lexer: Lexer<'source, Token>,
     file: SrcFile,
@@ -775,6 +793,8 @@ impl<'source> Parser<'source> {
         })
     }
 
+    /// Parses the input text file at `path` and returns a [`LedgerDraft`] and
+    /// errors encountered.
     pub fn parse(path: &str) -> (LedgerDraft, Vec<Error>) {
         let src = Source {
             file: path.to_string().into(),

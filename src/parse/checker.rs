@@ -955,6 +955,13 @@ fn check_balance(
 }
 
 impl LedgerDraft {
+    /// Transforms a [`LedgerDraft`] into a valid [`Ledger`] by verifying accounts,
+    /// calculating missing amounts or omitted cost basis information, checking
+    /// `balance` assertions and completing `pad` directives. Any directive
+    /// causing an error with [`ErrorLevel::Error`] will be dropped and the error will be pushed to
+    /// `errors`. In this case, the returned [`Ledger`] is a valid ledger that
+    /// contains a subset of the information in `self`.
+
     pub fn to_ledger(self, errors: &mut Vec<Error>) -> Ledger {
         let LedgerDraft {
             accounts,

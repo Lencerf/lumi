@@ -9,6 +9,7 @@ use std::fmt;
 use std::ops::{Div, Mul};
 use std::sync::Arc;
 
+/// Representing a location, line number and column number, in a source file.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Location {
@@ -34,8 +35,12 @@ impl From<(usize, usize)> for Location {
     }
 }
 
+/// A string wrapped in [`Arc`](std::sync::Arc)
+/// representing the source file path.
 pub type SrcFile = Arc<String>;
 
+/// Represents a range in a source file. This struct is used to track the origins
+/// of any information in the generated [`Ledger`], as well as for locating errors.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Source {
@@ -50,19 +55,34 @@ impl fmt::Display for Source {
     }
 }
 
+/// Kinds of errors that `lumi` encountered during generating [`Ledger`] from
+/// files input text.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorType {
+    /// IO error, e.g., the context of an input file cannot be read.
     Io,
+    /// Syntax error in the source file.
     Syntax,
+    /// Indicates a transactions is not balanced.
     NotBalanced,
+    /// A transaction missing too much information such that `lumi` cannot infer
+    /// for the context.
     Incomplete,
+    /// An unopened or already closed account is referred.
     Account,
+    /// `lumi` cannot find a position in the running balance sheet that matching
+    /// the cost basis provided in the posting.
     NoMatch,
+    /// Multiple Positions are founded in the running balance sheet that matching
+    /// the cost basis provided in the posting.
     Ambiguous,
+    /// Duplicate information, such as two identical tags in a single transaction.
     Duplicate,
 }
 
+/// The level of an error. Any information in the source file resulting an
+/// [`ErrorLevel::Error`] are dropped.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorLevel {
@@ -70,7 +90,7 @@ pub enum ErrorLevel {
     Warning,
     Error,
 }
-
+/// Contains the full information of an error.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Error {
@@ -92,6 +112,7 @@ impl fmt::Display for Error {
 
 pub type Currency = String;
 
+/// A [`Decimal`] number plus the currency.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Amount {
@@ -127,6 +148,7 @@ impl<'a> Mul<Decimal> for &'a Amount {
     }
 }
 
+/// The unit price (`@`) or total price (`@@`) of the amount in a posting.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub enum Price {
@@ -143,10 +165,14 @@ impl fmt::Display for Price {
     }
 }
 
+/// The cost basis information (unit cost and transaction date) used to identify
+/// a position in the running balances.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct UnitCost {
+    /// The unit cost basis.
     pub amount: Amount,
+    /// The transaction date.
     pub date: Date,
 }
 
@@ -155,12 +181,18 @@ impl fmt::Display for UnitCost {
         write!(f, "{{ {}, {} }}", self.amount, self.date)
     }
 }
+
+/// The flag of a [`Transaction`].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TxnFlag {
+    /// transactions flagged by `?`.
     Pending,
+    /// transactions flagged by `txn` or `*`.
     Posted,
+    /// `pad` directives.
     Pad,
+    /// `balance` directives.
     Balance,
 }
 
@@ -174,8 +206,11 @@ impl fmt::Display for TxnFlag {
     }
 }
 
+/// A string wrapped in [`Arc`](std::sync::Arc)
+/// representing the account name.
 pub type Account = Arc<String>;
 
+/// A posting like `Assets::Bank -100 JPY` inside a [`Transaction`].
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Posting {
@@ -210,6 +245,8 @@ impl fmt::Display for Posting {
     }
 }
 
+/// Represents a transaction, or a `pad` directives, or a `balance` directive in
+/// the source file.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Transaction {
@@ -224,6 +261,7 @@ pub struct Transaction {
     pub src: Source,
 }
 
+/// Represents a `note` directive
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct AccountNote {
@@ -232,10 +270,13 @@ pub struct AccountNote {
     pub src: Source,
 }
 
+/// Represents a `document` directive
 pub type AccountDoc = AccountNote;
 
+/// Represents the meta data attached to a commodity, a transaction, or a posting.
 pub type Meta = HashMap<String, (String, Source)>;
 
+/// Contains the open/close date of an account, as well as the notes and documents.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct AccountInfo {
@@ -247,6 +288,7 @@ pub struct AccountInfo {
     pub meta: Meta,
 }
 
+/// Represents an `event` directive.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct EventInfo {
@@ -265,8 +307,11 @@ impl From<(Date, String, Source)> for EventInfo {
     }
 }
 
+/// Represents the final balances of all accounts.
 pub type BalanceSheet = HashMap<Account, HashMap<Currency, HashMap<Option<UnitCost>, Decimal>>>;
 
+/// Represents a valid ledger containing all valid accounts and balanced
+/// transactions.
 #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Ledger {

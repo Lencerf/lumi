@@ -1,5 +1,6 @@
 use logos::Logos;
 
+/// Tokens in lumi accounting language.
 #[derive(Debug, PartialEq, Logos, Clone, Copy)]
 pub enum Token {
     #[regex(r"[ \f\r\t\v]+")]

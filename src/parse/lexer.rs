@@ -2,6 +2,8 @@ use super::Token;
 use crate::{Error, ErrorLevel, ErrorType, Location, Source, SrcFile};
 use logos::{Lexer as LogosLexer, Logos};
 
+/// A lexer based on [`logos::Lexer`](https://docs.rs/logos/0.12.0/logos/struct.Lexer.html)
+/// that can peek tokens and track locations.
 pub struct Lexer<'source, Token: Logos<'source>> {
     llex: LogosLexer<'source, Token>,
     location: Location,
@@ -11,6 +13,8 @@ pub struct Lexer<'source, Token: Logos<'source>> {
 }
 
 impl<'source> Lexer<'source, Token> {
+    /// Creates a new [`Lexer`] from the contents (`src`) of the source and the
+    /// path (`file`) to the file .
     pub fn new(src: &'source str, file: SrcFile) -> Self {
         let mut lexer = Lexer {
             llex: Token::lexer(src),
@@ -23,10 +27,13 @@ impl<'source> Lexer<'source, Token> {
         lexer
     }
 
+    /// Returns the ending location of last token consumed.
     pub fn last_token_end(&self) -> Location {
         self.last_token_end
     }
 
+    /// Returns the current location of the lexer. Usually it is the starting
+    /// location of the next token.
     pub fn location(&self) -> Location {
         self.location
     }
@@ -48,6 +55,8 @@ impl<'source> Lexer<'source, Token> {
         }
     }
 
+    /// Returns the next token type and text without advancing the lexer. If it
+    /// is already at the end of the source, [`None`] is returned.
     pub fn peek(&mut self) -> Result<(Token, &'source str), Error> {
         let error = Error {
             msg: "Unexpected end of file.".to_string(),
@@ -62,6 +71,12 @@ impl<'source> Lexer<'source, Token> {
         self.peeked_token.ok_or(error)
     }
 
+    /// Consumes the peeked token and advances the lexer. Must be used after
+    /// calling [`peek`](Lexer::peek).
+
+    /// # Panics
+    ///
+    /// Panics if [`peek`](Lexer::peek) is not called before.
     #[inline]
     pub fn consume(&mut self) {
         let (_, text) = self.peeked_token.take().unwrap();
@@ -71,6 +86,9 @@ impl<'source> Lexer<'source, Token> {
         self.skip_comment_space();
     }
 
+    /// Returns the token type and text, and advances the lexer. Equivalent to
+    /// [`peek`](Lexer::peek) + [`consume`](Lexer::consume). Returns
+    /// [`None`] if the lexer is at the end of the source.
     pub fn take(&mut self, expected: Token) -> Result<&'source str, Error> {
         let (token, text) = self.peek()?;
         if token != expected {

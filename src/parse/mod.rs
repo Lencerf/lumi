@@ -1,7 +1,9 @@
+//! Parsing input text files and generating valid a [`Ledger`](crate::Ledger).
+
+mod checker;
 mod lexer;
 mod parser;
 mod token;
-mod checker;
 
 pub use lexer::Lexer;
 pub use parser::*;
