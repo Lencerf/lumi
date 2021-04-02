@@ -1,5 +1,5 @@
 use clap::{clap_app, ArgMatches};
-use lumi::ledger::Ledger;
+use lumi::Ledger;
 use rust_decimal::prelude::Zero;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
