@@ -1,14 +1,27 @@
 use super::Token;
 use crate::{Error, ErrorLevel, ErrorType, Location, Source, SrcFile};
+use getset::{CopyGetters, Getters};
 use logos::{Lexer as LogosLexer, Logos};
 
 /// A lexer based on [`logos::Lexer`](https://docs.rs/logos/0.12.0/logos/struct.Lexer.html)
 /// that can peek tokens and track locations.
+#[derive(Getters, CopyGetters)]
 pub struct Lexer<'source, Token: Logos<'source>> {
     llex: LogosLexer<'source, Token>,
+
+    /// Returns the current location of the lexer. Usually it is the starting
+    /// location of the next token.
+    #[getset(get_copy = "pub")]
     location: Location,
+
+    /// Returns the ending location of last token consumed.
+    #[getset(get_copy = "pub")]
     last_token_end: Location,
+
     peeked_token: Option<(Token, &'source str)>,
+
+    /// Returns the source file path.
+    #[getset(get = "pub")]
     file: SrcFile,
 }
 
@@ -25,17 +38,6 @@ impl<'source> Lexer<'source, Token> {
         };
         lexer.skip_comment_space();
         lexer
-    }
-
-    /// Returns the ending location of last token consumed.
-    pub fn last_token_end(&self) -> Location {
-        self.last_token_end
-    }
-
-    /// Returns the current location of the lexer. Usually it is the starting
-    /// location of the next token.
-    pub fn location(&self) -> Location {
-        self.location
     }
 
     fn skip_comment_space(&mut self) {

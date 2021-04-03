@@ -1,5 +1,6 @@
 use crate::parse::Parser;
 pub use chrono::NaiveDate as Date;
+use getset::{CopyGetters, Getters};
 pub use rust_decimal::Decimal;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -248,17 +249,43 @@ impl fmt::Display for Posting {
 /// Represents a transaction, or a `pad` directives, or a `balance` directive in
 /// the source file.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug)]
+#[derive(Debug, Getters, CopyGetters)]
 pub struct Transaction {
-    pub date: Date,
-    pub flag: TxnFlag,
-    pub payee: String,
-    pub narration: String,
-    pub links: Vec<String>,
-    pub tags: Vec<String>,
-    pub meta: Meta,
-    pub postings: Vec<Posting>,
-    pub src: Source,
+    /// Returns the transaction date.
+    #[getset(get_copy = "pub")]
+    pub(crate) date: Date,
+
+    /// Returns the transaction flag.
+    #[getset(get_copy = "pub")]
+    pub(crate) flag: TxnFlag,
+
+    /// Returns the payee.
+    #[getset(get = "pub")]
+    pub(crate) payee: String,
+
+    /// Returns the narration.
+    #[getset(get = "pub")]
+    pub(crate) narration: String,
+
+    /// Returns the links.
+    #[getset(get = "pub")]
+    pub(crate) links: Vec<String>,
+
+    /// Returns the tags.
+    #[getset(get = "pub")]
+    pub(crate) tags: Vec<String>,
+
+    /// Returns the meta data associated with this transaction.
+    #[getset(get = "pub")]
+    pub(crate) meta: Meta,
+
+    /// Returns the postings of this transaction.
+    #[getset(get = "pub")]
+    pub(crate) postings: Vec<Posting>,
+
+    /// Returns the source of this transaction.
+    #[getset(get = "pub")]
+    pub(crate) src: Source,
 }
 
 /// Represents a `note` directive
@@ -278,14 +305,32 @@ pub type Meta = HashMap<String, (String, Source)>;
 
 /// Contains the open/close date of an account, as well as the notes and documents.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug)]
+#[derive(Debug, Getters)]
 pub struct AccountInfo {
-    pub open: (Date, Source),
-    pub close: Option<(Date, Source)>,
-    pub currencies: HashSet<Currency>,
-    pub notes: Vec<AccountNote>,
-    pub docs: Vec<AccountDoc>,
-    pub meta: Meta,
+    /// Returns the account open date and the source of the `open` directive.
+    #[getset(get = "pub")]
+    pub(crate) open: (Date, Source),
+
+    /// Returns the account close date and the source of the `close` directive.
+    #[getset(get = "pub")]
+    pub(crate) close: Option<(Date, Source)>,
+
+    /// Returns the allowed currencies of this account. If there are no limitations,
+    /// an empty set is returned.
+    #[getset(get = "pub")]
+    pub(crate) currencies: HashSet<Currency>,
+
+    /// Returns the account notes in `note` directives.
+    #[getset(get = "pub")]
+    pub(crate) notes: Vec<AccountNote>,
+
+    /// Returns the account documents in `document` directives.
+    #[getset(get = "pub")]
+    pub(crate) docs: Vec<AccountDoc>,
+
+    /// Returns the account meta data associated with the `open` directive.
+    #[getset(get = "pub")]
+    pub(crate) meta: Meta,
 }
 
 /// Represents an `event` directive.
@@ -313,21 +358,30 @@ pub type BalanceSheet = HashMap<Account, HashMap<Currency, HashMap<Option<UnitCo
 /// Represents a valid ledger containing all valid accounts and balanced
 /// transactions.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug)]
+#[derive(Debug, Getters)]
 pub struct Ledger {
-    pub accounts: HashMap<Account, AccountInfo>,
-    pub commodities: HashMap<Currency, (Meta, Source)>,
-    pub txns: Vec<Transaction>,
-    pub options: HashMap<String, (String, Source)>,
-    pub events: HashMap<String, Vec<EventInfo>>,
+    /// Returns the information of accounts.
+    #[getset(get = "pub")]
+    pub(crate) accounts: HashMap<Account, AccountInfo>,
+    /// Returns all the currencies defined by `commodity` directives.
+    #[getset(get = "pub")]
+    pub(crate) commodities: HashMap<Currency, (Meta, Source)>,
+    /// Returns transactions, `pad` directives, and `balance` directives, sorted
+    /// by date.
+    #[getset(get = "pub")]
+    pub(crate) txns: Vec<Transaction>,
+    /// Returns the options as a hash map.
+    #[getset(get = "pub")]
+    pub(crate) options: HashMap<String, (String, Source)>,
+    /// Returns the events.
+    #[getset(get = "pub")]
+    pub(crate) events: HashMap<String, Vec<EventInfo>>,
+    /// Returns the final balances.
+    #[getset(get = "pub")]
     pub(crate) balance_sheet: BalanceSheet,
 }
 
 impl Ledger {
-    pub fn balance_sheet(&self) -> &BalanceSheet {
-        &self.balance_sheet
-    }
-
     pub fn from_file(path: &str) -> (Self, Vec<Error>) {
         let (draft, mut errors) = Parser::parse(path);
         let ledger = draft.into_ledger(&mut errors);

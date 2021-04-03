@@ -15,7 +15,7 @@ fn balances(matches: &ArgMatches) {
 
     let mut result = vec![];
     for (account, account_map) in ledger.balance_sheet() {
-        if ledger.accounts[account].close.is_some() {
+        if ledger.accounts()[account].close().is_some() {
             continue;
         }
         for (currency, currency_map) in account_map {
