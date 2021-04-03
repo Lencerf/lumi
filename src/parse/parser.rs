@@ -5,7 +5,7 @@ use crate::{
     ErrorType, EventInfo, Location, Meta, Price, Source, SrcFile, TxnFlag, UnitCost,
 };
 
-#[cfg(feature = "serialize")]
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -16,7 +16,7 @@ use std::{
 
 /// Represents the cost basis written in the source file, which might be either
 /// unit cost or total cost.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CostBasis {
     Total(Amount),
@@ -40,7 +40,7 @@ impl CostBasis {
 }
 
 /// Represents the parsed cost basis information.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct CostLiteral {
     pub date: Option<Date>,
@@ -79,7 +79,7 @@ impl fmt::Display for CostLiteral {
 
 /// Represents the result of a parsed posting, which might miss amounts or
 /// referred an invalid account.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct PostingDraft {
     pub account: Account,
@@ -92,7 +92,7 @@ pub struct PostingDraft {
 
 /// Represents a transaction, or a `pad` directive, or a `balance` direction
 /// parsed from the source file, which needs further inspections.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct TxnDraft {
     pub date: Date,
@@ -108,7 +108,7 @@ pub struct TxnDraft {
 
 /// Represents the information of an account collected by the parser from the
 /// source file, which needs further inspections.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Default)]
 pub struct AccountInfoDraft {
     pub open: Option<(Date, Source)>,
@@ -168,7 +168,7 @@ impl AccountInfoDraft {
 
 /// Contains the information collected by a parser from the source files,
 /// which might include unbalanced transactions or other errors.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Default)]
 pub struct LedgerDraft {
     pub accounts: HashMap<Account, AccountInfoDraft>,

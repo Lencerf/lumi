@@ -1,7 +1,7 @@
 use crate::parse::Parser;
 pub use chrono::NaiveDate as Date;
 pub use rust_decimal::Decimal;
-#[cfg(feature = "serialize")]
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
@@ -10,7 +10,7 @@ use std::ops::{Div, Mul};
 use std::sync::Arc;
 
 /// Representing a location, line number and column number, in a source file.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Location {
     pub line: usize,
@@ -41,7 +41,7 @@ pub type SrcFile = Arc<String>;
 
 /// Represents a range in a source file. This struct is used to track the origins
 /// of any information in the generated [`Ledger`], as well as for locating errors.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Source {
     pub file: SrcFile,
@@ -57,7 +57,7 @@ impl fmt::Display for Source {
 
 /// Kinds of errors that `lumi` encountered during generating [`Ledger`] from
 /// files input text.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorType {
     /// IO error, e.g., the context of an input file cannot be read.
@@ -83,7 +83,7 @@ pub enum ErrorType {
 
 /// The level of an error. Any information in the source file resulting an
 /// [`ErrorLevel::Error`] are dropped.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorLevel {
     Info,
@@ -91,7 +91,7 @@ pub enum ErrorLevel {
     Error,
 }
 /// Contains the full information of an error.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Error {
     pub msg: String,
@@ -113,7 +113,7 @@ impl fmt::Display for Error {
 pub type Currency = String;
 
 /// A [`Decimal`] number plus the currency.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Amount {
     pub number: Decimal,
@@ -149,7 +149,7 @@ impl<'a> Mul<Decimal> for &'a Amount {
 }
 
 /// The unit price (`@`) or total price (`@@`) of the amount in a posting.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub enum Price {
     Unit(Amount),
@@ -167,7 +167,7 @@ impl fmt::Display for Price {
 
 /// The cost basis information (unit cost and transaction date) used to identify
 /// a position in the running balances.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct UnitCost {
     /// The unit cost basis.
@@ -183,7 +183,7 @@ impl fmt::Display for UnitCost {
 }
 
 /// The flag of a [`Transaction`].
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TxnFlag {
     /// transactions flagged by `?`.
@@ -211,7 +211,7 @@ impl fmt::Display for TxnFlag {
 pub type Account = Arc<String>;
 
 /// A posting like `Assets::Bank -100 JPY` inside a [`Transaction`].
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Posting {
     pub account: Account,
@@ -247,7 +247,7 @@ impl fmt::Display for Posting {
 
 /// Represents a transaction, or a `pad` directives, or a `balance` directive in
 /// the source file.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Transaction {
     pub date: Date,
@@ -262,7 +262,7 @@ pub struct Transaction {
 }
 
 /// Represents a `note` directive
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct AccountNote {
     pub date: Date,
@@ -277,7 +277,7 @@ pub type AccountDoc = AccountNote;
 pub type Meta = HashMap<String, (String, Source)>;
 
 /// Contains the open/close date of an account, as well as the notes and documents.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct AccountInfo {
     pub open: (Date, Source),
@@ -289,7 +289,7 @@ pub struct AccountInfo {
 }
 
 /// Represents an `event` directive.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct EventInfo {
     pub date: Date,
@@ -312,7 +312,7 @@ pub type BalanceSheet = HashMap<Account, HashMap<Currency, HashMap<Option<UnitCo
 
 /// Represents a valid ledger containing all valid accounts and balanced
 /// transactions.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct Ledger {
     pub accounts: HashMap<Account, AccountInfo>,
