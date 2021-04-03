@@ -1,7 +1,7 @@
 use logos::Logos;
 
 /// Tokens in lumi accounting language.
-#[derive(Debug, PartialEq, Logos, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Logos)]
 pub enum Token {
     #[regex(r"[ \f\r\t\v]+")]
     WhiteSpace,

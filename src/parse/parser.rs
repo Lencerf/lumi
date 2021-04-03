@@ -17,7 +17,7 @@ use std::{
 /// Represents the cost basis written in the source file, which might be either
 /// unit cost or total cost.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CostBasis {
     Total(Amount),
     Unit(Amount),
@@ -41,7 +41,7 @@ impl CostBasis {
 
 /// Represents the parsed cost basis information.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct CostLiteral {
     pub date: Option<Date>,
     pub basis: Option<CostBasis>,
@@ -80,7 +80,7 @@ impl fmt::Display for CostLiteral {
 /// Represents the result of a parsed posting, which might miss amounts or
 /// referred an invalid account.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostingDraft {
     pub account: Account,
     pub amount: Option<Amount>,
@@ -93,7 +93,7 @@ pub struct PostingDraft {
 /// Represents a transaction, or a `pad` directive, or a `balance` direction
 /// parsed from the source file, which needs further inspections.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxnDraft {
     pub date: Date,
     pub flag: TxnFlag,
@@ -109,7 +109,7 @@ pub struct TxnDraft {
 /// Represents the information of an account collected by the parser from the
 /// source file, which needs further inspections.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AccountInfoDraft {
     pub open: Option<(Date, Source)>,
     pub close: Option<(Date, Source)>,
@@ -169,7 +169,7 @@ impl AccountInfoDraft {
 /// Contains the information collected by a parser from the source files,
 /// which might include unbalanced transactions or other errors.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LedgerDraft {
     pub accounts: HashMap<Account, AccountInfoDraft>,
     pub commodities: HashMap<String, (Meta, Source)>,
