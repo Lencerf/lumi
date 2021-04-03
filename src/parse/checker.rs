@@ -962,7 +962,7 @@ impl LedgerDraft {
     /// `errors`. In this case, the returned [`Ledger`] is a valid ledger that
     /// contains a subset of the information in `self`.
 
-    pub fn to_ledger(self, errors: &mut Vec<Error>) -> Ledger {
+    pub fn into_ledger(self, errors: &mut Vec<Error>) -> Ledger {
         let LedgerDraft {
             accounts,
             commodities,

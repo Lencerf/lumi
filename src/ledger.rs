@@ -330,7 +330,7 @@ impl Ledger {
 
     pub fn from_file(path: &str) -> (Self, Vec<Error>) {
         let (draft, mut errors) = Parser::parse(path);
-        let ledger = draft.to_ledger(&mut errors);
+        let ledger = draft.into_ledger(&mut errors);
         (ledger, errors)
     }
 }
