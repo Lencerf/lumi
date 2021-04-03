@@ -384,7 +384,8 @@ pub struct Ledger {
 impl Ledger {
     pub fn from_file(path: &str) -> (Self, Vec<Error>) {
         let (draft, mut errors) = Parser::parse(path);
-        let ledger = draft.into_ledger(&mut errors);
+        let (ledger, more_errors) = draft.into_ledger();
+        errors.extend(more_errors);
         (ledger, errors)
     }
 }

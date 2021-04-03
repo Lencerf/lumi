@@ -726,14 +726,20 @@ fn extract_tolerance<'c>(
     let mut tolerances = HashMap::new();
     for (currency, (meta, _)) in commodities.iter() {
         if let Some((num_str, src)) = meta.get("tolerance") {
-            if let Some(num) = parse_decimal(num_str, src, errors) {
-                tolerances.insert(currency.as_str(), num.abs());
-            }
+            match parse_decimal(num_str, src) {
+                Ok(num) => {
+                    tolerances.insert(currency.as_str(), num.abs());
+                }
+                Err(err) => errors.push(err),
+            };
         }
     }
     if let Some((num_str, src)) = options.get(OPTION_DEFAULT_TOLERANCE) {
-        if let Some(num) = parse_decimal(num_str, src, errors) {
-            tolerances.insert(TOLERANCE_KEY_DEFAULT, num.abs());
+        match parse_decimal(num_str, src) {
+            Ok(num) => {
+                tolerances.insert(TOLERANCE_KEY_DEFAULT, num.abs());
+            }
+            Err(err) => errors.push(err),
         }
     } else {
         let default_tolerance = Decimal::new(6, 3);
@@ -955,14 +961,15 @@ fn check_balance(
 }
 
 impl LedgerDraft {
-    /// Transforms a [`LedgerDraft`] into a valid [`Ledger`] by verifying accounts,
-    /// calculating missing amounts or omitted cost basis information, checking
-    /// `balance` assertions and completing `pad` directives. Any directive
-    /// causing an error with [`ErrorLevel::Error`] will be dropped and the error will be pushed to
-    /// `errors`. In this case, the returned [`Ledger`] is a valid ledger that
+    /// Consuming `self`, returns a [`Ledger`] and the errors encountered
+    /// during verifying accounts, calculating missing amounts or omitted cost
+    /// basis information, checking `balance` assertions, and completing `pad`
+    /// directives. If a directive causes an error with [`ErrorLevel::Error`],
+    /// it is dropped.
+    /// In this case, the returned [`Ledger`]
     /// contains a subset of the information in `self`.
 
-    pub fn into_ledger(self, errors: &mut Vec<Error>) -> Ledger {
+    pub fn into_ledger(self) -> (Ledger, Vec<Error>) {
         let LedgerDraft {
             accounts,
             commodities,
@@ -970,8 +977,9 @@ impl LedgerDraft {
             options,
             events,
         } = self;
-        let valid_accounts = check_accounts(accounts, errors);
-        let tolerances = extract_tolerance(&commodities, &options, errors);
+        let mut errors = Vec::new();
+        let valid_accounts = check_accounts(accounts, &mut errors);
+        let tolerances = extract_tolerance(&commodities, &options, &mut errors);
         let mut valid_txns: Vec<Transaction> = Vec::new();
         let mut running_balance = BalanceSheet::new();
         let mut pad_from: HashMap<Account, PadFromInfo> = HashMap::new();
@@ -1015,7 +1023,7 @@ impl LedgerDraft {
                     if let Some(valid_txn) = check_balance(
                         txn,
                         &mut running_balance,
-                        errors,
+                        &mut errors,
                         &tolerances,
                         &mut pad_from,
                         &mut valid_txns,
@@ -1026,7 +1034,7 @@ impl LedgerDraft {
                 }
                 TxnFlag::Pending | TxnFlag::Posted => {
                     if let Some((valid_txn_vec, changes)) =
-                        check_complete_txn(txn, &running_balance, errors, &tolerances)
+                        check_complete_txn(txn, &running_balance, &mut errors, &tolerances)
                     {
                         valid_txns.extend(valid_txn_vec);
                         merge_balance(&mut running_balance, changes);
@@ -1092,6 +1100,6 @@ impl LedgerDraft {
             events,
             balance_sheet: running_balance,
         };
-        ledger
+        (ledger, errors)
     }
 }

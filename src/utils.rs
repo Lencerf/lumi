@@ -2,19 +2,19 @@
 
 use crate::{Decimal, Error, ErrorLevel, ErrorType, Source};
 
-/// Parses a [`Decimal`](crate::Decimal) from a [`&str`] and pushes the error into
-/// `errors`.
-pub fn parse_decimal(num_str: &str, src: &Source, errors: &mut Vec<Error>) -> Option<Decimal> {
+/// Parses a [`Decimal`](crate::Decimal) from a [`&str`].
+#[inline]
+pub fn parse_decimal(num_str: &str, src: &Source) -> Result<Decimal, Error> {
     match num_str.parse::<Decimal>() {
-        Ok(num) => Some(num),
+        Ok(num) => Ok(num),
         Err(_) => {
-            errors.push(Error {
+            let error = Error {
                 msg: "Invalid number.".to_string(),
                 src: src.clone(),
                 r#type: ErrorType::Syntax,
                 level: ErrorLevel::Error,
-            });
-            None
+            };
+            Err(error)
         }
     }
 }
