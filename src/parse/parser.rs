@@ -1,10 +1,11 @@
 use super::lexer::Lexer;
 use super::token::Token;
 use crate::{
-    Account, AccountDoc, AccountNote, Amount, Currency, Date, Decimal, Error, ErrorLevel,
-    ErrorType, EventInfo, Link, Location, Meta, Narration, Payee, Price, Source, SrcFile, Tag,
-    TxnFlag, UnitCost,
+    Account, AccountDoc, AccountNote, Amount, Currency, Error, ErrorLevel, ErrorType, EventInfo,
+    Link, Location, Meta, NaiveDate, Narration, Payee, Price, Source, SrcFile, Tag, TxnFlag,
+    UnitCost,
 };
+use rust_decimal::Decimal;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -44,7 +45,7 @@ impl CostBasis {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct CostLiteral {
-    pub date: Option<Date>,
+    pub date: Option<NaiveDate>,
     pub basis: Option<CostBasis>,
 }
 
@@ -96,7 +97,7 @@ pub struct PostingDraft {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxnDraft {
-    pub date: Date,
+    pub date: NaiveDate,
     pub flag: TxnFlag,
     pub payee: Payee,
     pub narration: Narration,
@@ -112,8 +113,8 @@ pub struct TxnDraft {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AccountInfoDraft {
-    pub open: Option<(Date, Source)>,
-    pub close: Option<(Date, Source)>,
+    pub open: Option<(NaiveDate, Source)>,
+    pub close: Option<(NaiveDate, Source)>,
     pub currencies: HashSet<Currency>,
     pub notes: Vec<AccountNote>,
     pub docs: Vec<AccountDoc>,
@@ -468,7 +469,7 @@ impl<'source> Parser<'source> {
     fn parse_dated_entry(&mut self, draft: &mut LedgerDraft) -> Result<(), Error> {
         let start = self.lexer.location();
         let date_str = self.lexer.take(Token::Date)?;
-        let date = date_str.parse::<Date>().map_err(|_| Error {
+        let date = date_str.parse::<NaiveDate>().map_err(|_| Error {
             msg: format!("Invalid date: {}.", date_str),
             src: Source {
                 file: self.file.clone(),
@@ -493,7 +494,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn parse_event(&mut self, date: Date, draft: &mut LedgerDraft) -> Result<(), Error> {
+    fn parse_event(&mut self, date: NaiveDate, draft: &mut LedgerDraft) -> Result<(), Error> {
         let start = self.lexer.location();
         self.lexer.take(Token::Event)?;
         let key = self.parse_string()?;
@@ -507,7 +508,7 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn parse_note(&mut self, date: Date, draft: &mut LedgerDraft) -> Result<(), Error> {
+    fn parse_note(&mut self, date: NaiveDate, draft: &mut LedgerDraft) -> Result<(), Error> {
         let start = self.lexer.location();
         self.lexer.take(Token::Note)?;
         let account = self.parse_account()?;
@@ -526,7 +527,7 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn parse_document(&mut self, date: Date, draft: &mut LedgerDraft) -> Result<(), Error> {
+    fn parse_document(&mut self, date: NaiveDate, draft: &mut LedgerDraft) -> Result<(), Error> {
         let start = self.lexer.location();
         self.lexer.take(Token::Document)?;
         let account = self.parse_account()?;
@@ -555,7 +556,7 @@ impl<'source> Parser<'source> {
         Ok(account)
     }
 
-    fn parse_open(&mut self, date: Date, draft: &mut LedgerDraft) -> Result<(), Error> {
+    fn parse_open(&mut self, date: NaiveDate, draft: &mut LedgerDraft) -> Result<(), Error> {
         let start = self.lexer.location();
         self.lexer.take(Token::Open)?;
         let account = self.parse_account()?;
@@ -571,7 +572,7 @@ impl<'source> Parser<'source> {
         Ok(())
     }
 
-    fn parse_close(&mut self, date: Date, draft: &mut LedgerDraft) -> Result<(), Error> {
+    fn parse_close(&mut self, date: NaiveDate, draft: &mut LedgerDraft) -> Result<(), Error> {
         let start = self.lexer.location();
         self.lexer.take(Token::Close)?;
         let account = self.parse_account()?;
@@ -597,7 +598,7 @@ impl<'source> Parser<'source> {
         Ok(set)
     }
 
-    fn parse_txn(&mut self, date: Date, draft: &mut LedgerDraft) -> Result<(), Error> {
+    fn parse_txn(&mut self, date: NaiveDate, draft: &mut LedgerDraft) -> Result<(), Error> {
         let txn_start = self.lexer.location();
         let (token, text) = self.lexer.peek()?;
         let flag = match token {
@@ -734,10 +735,10 @@ impl<'source> Parser<'source> {
         Ok(Self::remove_quotes(quoted_str))
     }
 
-    fn parse_date(&mut self) -> Result<Date, Error> {
+    fn parse_date(&mut self) -> Result<NaiveDate, Error> {
         let start = self.lexer.location();
         let date_str = self.lexer.take(Token::Date)?;
-        let date = date_str.parse::<Date>().map_err(|_| {
+        let date = date_str.parse::<NaiveDate>().map_err(|_| {
             let src = self.src_from(start);
             Error {
                 msg: format!("Invalid date: {}.", date_str),
@@ -749,7 +750,7 @@ impl<'source> Parser<'source> {
         Ok(date)
     }
 
-    fn parse_cost_basis(&mut self) -> Result<(Option<Amount>, Option<Date>), Error> {
+    fn parse_cost_basis(&mut self) -> Result<(Option<Amount>, Option<NaiveDate>), Error> {
         let mut amount = None;
         let mut date = None;
         if let Ok((Token::Number, _)) = self.lexer.peek() {

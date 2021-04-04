@@ -1,16 +1,16 @@
-use rust_decimal::prelude::Zero;
+use rust_decimal::{prelude::Zero, Decimal};
 use std::collections::{HashMap, HashSet};
 
 use crate::{
     options::*,
     parse::{AccountInfoDraft, CostBasis, LedgerDraft, PostingDraft, TxnDraft},
     utils::parse_decimal,
-    Account, AccountInfo, Amount, BalanceSheet, Currency, Date, Decimal, Error, ErrorLevel,
-    ErrorType, Ledger, Meta, Posting, Price, Source, Transaction, TxnFlag, UnitCost,
+    Account, AccountInfo, Amount, BalanceSheet, Currency, Error, ErrorLevel, ErrorType, Ledger,
+    Meta, NaiveDate, Posting, Price, Source, Transaction, TxnFlag, UnitCost,
 };
 
 impl UnitCost {
-    fn matches(&self, unit_cost_amount: &Option<Amount>, date: &Option<Date>) -> bool {
+    fn matches(&self, unit_cost_amount: &Option<Amount>, date: &Option<NaiveDate>) -> bool {
         unit_cost_amount
             .as_ref()
             .map_or(true, |amount| amount.eq(&self.amount))
@@ -125,7 +125,7 @@ fn check_accounts(
 
 fn check_posting(
     posting: &PostingDraft,
-    txn_date: Date,
+    txn_date: NaiveDate,
     accounts: &HashMap<Account, AccountInfo>,
 ) -> Result<(), String> {
     let account = &posting.account;
@@ -391,7 +391,7 @@ fn close_position(
 
 fn open_new_position(
     posting: PostingDraft,
-    txn_date: Date,
+    txn_date: NaiveDate,
     pending_change: &mut HashMap<Option<UnitCost>, Decimal>,
     per_currency_change: &mut HashMap<Currency, Decimal>,
 ) -> PostResult {
@@ -446,7 +446,7 @@ fn open_new_position(
 
 fn posting_flow(
     posting: PostingDraft,
-    txn_date: Date,
+    txn_date: NaiveDate,
     running_balance: &BalanceSheet,
     balance_change: &mut BalanceSheet,
     per_currency_change: &mut HashMap<Currency, Decimal>,
@@ -513,7 +513,7 @@ fn posting_flow(
 fn complete_posting(
     incomplete: Option<PostingDraft>,
     not_balanced: Vec<(Currency, Decimal)>,
-    txn_date: Date,
+    txn_date: NaiveDate,
     txn_src: &Source,
     valid_postings: &mut Vec<Posting>,
     balance_change: &mut BalanceSheet,

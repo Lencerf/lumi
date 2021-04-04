@@ -1,6 +1,7 @@
 //! Useful functions for parsing and accounting.
 
-use crate::{Decimal, Error, ErrorLevel, ErrorType, Source};
+use crate::{Error, ErrorLevel, ErrorType, Source};
+use rust_decimal::Decimal;
 
 /// Parses a [`Decimal`](crate::Decimal) from a [`&str`].
 #[inline]

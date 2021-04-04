@@ -1,7 +1,7 @@
 use crate::parse::Parser;
-pub use chrono::NaiveDate as Date;
+pub(crate) use chrono::NaiveDate;
 use getset::{CopyGetters, Getters};
-pub use rust_decimal::Decimal;
+use rust_decimal::Decimal;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -174,7 +174,7 @@ pub struct UnitCost {
     /// The unit cost basis.
     pub amount: Amount,
     /// The transaction date.
-    pub date: Date,
+    pub date: NaiveDate,
 }
 
 impl fmt::Display for UnitCost {
@@ -258,7 +258,7 @@ pub type Tag = String;
 pub struct Transaction {
     /// Returns the transaction date.
     #[getset(get_copy = "pub")]
-    pub(crate) date: Date,
+    pub(crate) date: NaiveDate,
 
     /// Returns the transaction flag.
     #[getset(get_copy = "pub")]
@@ -297,7 +297,7 @@ pub struct Transaction {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AccountNote {
-    pub date: Date,
+    pub date: NaiveDate,
     pub val: String,
     pub src: Source,
 }
@@ -314,11 +314,11 @@ pub type Meta = HashMap<String, (String, Source)>;
 pub struct AccountInfo {
     /// Returns the account open date and the source of the `open` directive.
     #[getset(get = "pub")]
-    pub(crate) open: (Date, Source),
+    pub(crate) open: (NaiveDate, Source),
 
     /// Returns the account close date and the source of the `close` directive.
     #[getset(get = "pub")]
-    pub(crate) close: Option<(Date, Source)>,
+    pub(crate) close: Option<(NaiveDate, Source)>,
 
     /// Returns the allowed currencies of this account. If there are no limitations,
     /// an empty set is returned.
@@ -342,13 +342,13 @@ pub struct AccountInfo {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EventInfo {
-    pub date: Date,
+    pub date: NaiveDate,
     pub desc: String,
     pub src: Source,
 }
 
-impl From<(Date, String, Source)> for EventInfo {
-    fn from(tuple: (Date, String, Source)) -> Self {
+impl From<(NaiveDate, String, Source)> for EventInfo {
+    fn from(tuple: (NaiveDate, String, Source)) -> Self {
         EventInfo {
             date: tuple.0,
             desc: tuple.1,
