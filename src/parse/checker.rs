@@ -761,7 +761,7 @@ struct PadFromInfo {
     index: usize,
 }
 
-fn try_padding(
+fn find_pad_from(
     dest_account: &Account,
     pad_number: Decimal,
     currency: &String,
@@ -769,7 +769,7 @@ fn try_padding(
     valid_txns: &mut Vec<Transaction>,
     valid_accounts: &HashMap<Account, AccountInfo>,
     balance_src: &Source,
-) -> Result<Account, Option<Error>> {
+) -> Result<Option<Account>, Error> {
     if let Some(info) = pad_from.get_mut(dest_account) {
         let from_account_currency_set = &valid_accounts.get(&info.from).unwrap().currencies;
         if from_account_currency_set.len() > 0 && !from_account_currency_set.contains(currency) {
@@ -779,7 +779,7 @@ fn try_padding(
                 r#type: ErrorType::Account,
                 src: balance_src.clone(),
             };
-            return Err(Some(error));
+            return Err(error);
         }
         if info.currencies.insert(currency.clone()) {
             let pad_place_holder = &mut valid_txns[info.index];
@@ -805,146 +805,143 @@ fn try_padding(
                 meta: HashMap::new(),
                 src: balance_src.clone(),
             });
-            Ok(info.from.clone())
+            Ok(Some(info.from.clone()))
         } else {
-            Err(None)
+            Ok(None)
         }
     } else {
-        Err(None)
+        Ok(None)
+    }
+}
+
+fn check_balance_posting(
+    posting: &PostingDraft,
+    running_balance: &BalanceSheet,
+    tolerances: &HashMap<&str, Decimal>,
+) -> Result<(Amount, Decimal), Error> {
+    if posting.cost.is_some() || posting.price.is_some() {
+        let error = Error {
+            level: ErrorLevel::Error,
+            r#type: ErrorType::Syntax,
+            msg: "Balance directives only check aggregate amount.".to_string(),
+            src: posting.src.clone(),
+        };
+        return Err(error);
+    }
+    if let Some(p_amount) = posting.amount.as_ref() {
+        let holding_total: Decimal = running_balance
+            .get(&posting.account)
+            .and_then(|currencies| currencies.get(&p_amount.currency))
+            .map(|position| position.values().sum())
+            .unwrap_or(Decimal::zero());
+        if equal_within(
+            holding_total,
+            p_amount.number,
+            &p_amount.currency,
+            tolerances,
+        ) {
+            Ok((p_amount.clone(), Decimal::zero()))
+        } else {
+            Ok((p_amount.clone(), p_amount.number - holding_total))
+        }
+    } else {
+        let error = Error {
+            level: ErrorLevel::Error,
+            r#type: ErrorType::Incomplete,
+            msg: "Missing amount.".to_string(),
+            src: posting.src.clone(),
+        };
+        Err(error)
     }
 }
 
 fn check_balance(
     txn: TxnDraft,
     running_balance: &mut BalanceSheet,
-    errors: &mut Vec<Error>,
     tolerances: &HashMap<&str, Decimal>,
     pad_from: &mut HashMap<Account, PadFromInfo>,
     valid_txns: &mut Vec<Transaction>,
     valid_accounts: &HashMap<Account, AccountInfo>,
-) -> Option<Transaction> {
+) -> (Transaction, Vec<Error>) {
+    let mut errors = Vec::new();
     let mut valid_postings: Vec<Posting> = Vec::new();
-    let TxnDraft {
-        date,
-        flag,
-        payee,
-        narration,
-        links,
-        tags,
-        meta,
-        postings,
-        src,
-    } = txn;
-    for posting in postings {
-        if posting.cost.is_some() || posting.price.is_some() {
-            errors.push(Error {
-                level: ErrorLevel::Error,
-                r#type: ErrorType::Syntax,
-                msg: "Balance directives only check aggregate amount.".to_string(),
-                src: posting.src.clone(),
-            });
-            continue;
-        }
-        if let Some(p_amount) = posting.amount.as_ref() {
-            let holding_total: Decimal = running_balance
-                .get(&posting.account)
-                .and_then(|currencies| currencies.get(&p_amount.currency))
-                .map(|position| position.values().sum())
-                .unwrap_or(Decimal::zero());
-
-            if equal_within(
-                holding_total,
-                p_amount.number,
-                &p_amount.currency,
-                tolerances,
-            ) || match try_padding(
-                &posting.account,
-                p_amount.number - holding_total,
-                &p_amount.currency,
-                pad_from,
-                valid_txns,
-                valid_accounts,
-                &posting.src,
-            ) {
-                Ok(account_from) => {
-                    let pad_amount = p_amount.number - holding_total;
-                    *running_balance
-                        .entry(posting.account.clone())
-                        .or_default()
-                        .entry(p_amount.currency.clone())
-                        .or_default()
-                        .entry(None)
-                        .or_default() += pad_amount;
-                    *running_balance
-                        .entry(account_from)
-                        .or_default()
-                        .entry(p_amount.currency.clone())
-                        .or_default()
-                        .entry(None)
-                        .or_default() -= pad_amount;
-                    true
+    for posting in txn.postings {
+        match check_balance_posting(&posting, running_balance, tolerances) {
+            Ok((p_amount, pad_number)) => {
+                if !pad_number.is_zero() {
+                    match find_pad_from(
+                        &posting.account,
+                        pad_number,
+                        &p_amount.currency,
+                        pad_from,
+                        valid_txns,
+                        valid_accounts,
+                        &posting.src,
+                    ) {
+                        Ok(Some(account_from)) => {
+                            *running_balance
+                                .entry(posting.account.clone())
+                                .or_default()
+                                .entry(p_amount.currency.clone())
+                                .or_default()
+                                .entry(None)
+                                .or_default() += pad_number;
+                            *running_balance
+                                .entry(account_from)
+                                .or_default()
+                                .entry(p_amount.currency.clone())
+                                .or_default()
+                                .entry(None)
+                                .or_default() -= pad_number;
+                        }
+                        Err(error) => {
+                            errors.push(error);
+                            continue;
+                        }
+                        Ok(None) => {
+                            let assert_err = Error {
+                                level: ErrorLevel::Error,
+                                r#type: ErrorType::NotBalanced,
+                                msg: format!(
+                                    "Failed assertion: {} != {} {}.",
+                                    p_amount.number,
+                                    p_amount.number - pad_number,
+                                    p_amount.currency
+                                ),
+                                src: posting.src.clone(),
+                            };
+                            errors.push(assert_err);
+                            continue;
+                        }
+                    }
                 }
-                Err(None) => {
-                    let assert_err = Error {
-                        level: ErrorLevel::Error,
-                        r#type: ErrorType::NotBalanced,
-                        msg: format!(
-                            "Failed assertion: {} != {} {}.",
-                            &p_amount, holding_total, &p_amount.currency
-                        ),
-                        src: posting.src.clone(),
-                    };
-                    errors.push(assert_err);
-                    false
-                }
-                Err(Some(error)) => {
-                    errors.push(error);
-                    false
-                }
-            } {
-                let PostingDraft {
-                    account,
-                    amount: _,
-                    cost: _,
-                    price: _,
-                    meta,
-                    src,
-                } = posting;
                 valid_postings.push(Posting {
-                    account,
-                    amount: p_amount.clone(),
+                    account: posting.account,
+                    amount: p_amount,
                     cost: None,
                     price: None,
-                    meta,
-                    src,
+                    meta: posting.meta,
+                    src: posting.src,
                 });
             }
-        } else {
-            let error = Error {
-                level: ErrorLevel::Error,
-                r#type: ErrorType::Incomplete,
-                msg: "Missing amount.".to_string(),
-                src: posting.src.clone(),
-            };
-            errors.push(error);
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
         }
     }
-    if valid_postings.len() > 0 {
-        let valid_txn = Transaction {
-            date,
-            flag,
-            payee,
-            narration,
-            links,
-            tags,
-            meta,
-            postings: valid_postings,
-            src,
-        };
-        Some(valid_txn)
-    } else {
-        None
-    }
+    let valid_txn = Transaction {
+        date: txn.date,
+        flag: txn.flag,
+        payee: txn.payee,
+        narration: txn.narration,
+        links: txn.links,
+        tags: txn.tags,
+        meta: txn.meta,
+        postings: valid_postings,
+        src: txn.src,
+    };
+    (valid_txn, errors)
 }
 
 impl LedgerDraft {
@@ -1006,15 +1003,16 @@ impl LedgerDraft {
                             }
                         }
                     }
-                    if let Some(valid_txn) = check_balance(
+                    let (valid_txn, balance_errors) = check_balance(
                         txn,
                         &mut running_balance,
-                        &mut errors,
                         &tolerances,
                         &mut pad_from,
                         &mut valid_txns,
                         &valid_accounts,
-                    ) {
+                    );
+                    errors.extend(balance_errors);
+                    if valid_txn.postings.len() > 0 {
                         valid_txns.push(valid_txn);
                     }
                 }
