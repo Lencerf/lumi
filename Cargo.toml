@@ -4,6 +4,11 @@ version = "0.1.0"
 authors = ["Lencerf <changyuan.lv@gmail.com>"]
 edition = "2018"
 license = "MIT"
+description = "A double-entry accounting tool, and a library for parsing text-based ledger files."
+homepage = "https://github.com/Lencerf/lumi"
+repository = "https://github.com/Lencerf/lumi"
+readme = "README.md"
+documentation = "https://docs.rs/lumi"
 
 [dependencies]
 logos = "0.12.0"
