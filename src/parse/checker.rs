@@ -53,8 +53,8 @@ macro_rules! filter_note_doc {
 
 fn check_accounts(
     accounts: HashMap<Account, AccountInfoDraft>,
-    errors: &mut Vec<Error>,
-) -> HashMap<Account, AccountInfo> {
+) -> (HashMap<Account, AccountInfo>, Vec<Error>) {
+    let mut errors = Vec::new();
     let mut result = HashMap::new();
     for (account, info_draft) in accounts {
         let AccountInfoDraft {
@@ -120,7 +120,7 @@ fn check_accounts(
             }
         }
     }
-    result
+    (result, errors)
 }
 
 fn check_posting(
@@ -181,7 +181,7 @@ enum PostResult {
     Success(Posting),
     Expanded(Vec<Posting>),
     NeedInfer(PostingDraft),
-    Fail,
+    Fail(Error),
     None,
 }
 
@@ -190,7 +190,6 @@ fn close_position(
     running_balance: Option<&HashMap<Option<UnitCost>, Decimal>>,
     pending_change: &mut HashMap<Option<UnitCost>, Decimal>,
     per_currency_change: &mut HashMap<String, Decimal>,
-    errors: &mut Vec<Error>,
 ) -> PostResult {
     let cost_literal = posting.cost.as_ref().unwrap();
     let p_amount = posting.amount.as_ref().unwrap();
@@ -246,8 +245,7 @@ fn close_position(
                         msg: format!("Account only has {} {}.", total_holding, p_amount.currency),
                         src: posting.src.clone(),
                     };
-                    errors.push(error);
-                    PostResult::Fail
+                    PostResult::Fail(error)
                 }
             } else {
                 if !p_amount.number.is_zero() {
@@ -257,8 +255,7 @@ fn close_position(
                         msg: format!("Account has no {}.", p_amount.currency),
                         src: posting.src.clone(),
                     };
-                    errors.push(error);
-                    PostResult::Fail
+                    PostResult::Fail(error)
                 } else {
                     PostResult::None
                 }
@@ -287,8 +284,7 @@ fn close_position(
                     ),
                     src: posting.src.clone(),
                 };
-                errors.push(error);
-                PostResult::Fail
+                PostResult::Fail(error)
             } else {
                 *per_currency_change
                     .entry(basis.currency().to_string())
@@ -335,8 +331,7 @@ fn close_position(
                         msg: format!("Account has no positions with cost {}.", &cost_literal),
                         src: posting.src.clone(),
                     };
-                    errors.push(error);
-                    PostResult::Fail
+                    PostResult::Fail(error)
                 }
                 1 => {
                     let (unit_cost, holding_number) = candidates[0];
@@ -351,8 +346,7 @@ fn close_position(
                             ),
                             src: posting.src.clone(),
                         };
-                        errors.push(error);
-                        PostResult::Fail
+                        PostResult::Fail(error)
                     } else {
                         *per_currency_change
                             .entry(unit_cost.amount.currency.to_string())
@@ -388,8 +382,7 @@ fn close_position(
                         ),
                         src: posting.src.clone(),
                     };
-                    errors.push(error);
-                    PostResult::Fail
+                    PostResult::Fail(error)
                 }
             }
         }
@@ -457,7 +450,6 @@ fn posting_flow(
     running_balance: &BalanceSheet,
     balance_change: &mut BalanceSheet,
     per_currency_change: &mut HashMap<String, Decimal>,
-    errors: &mut Vec<Error>,
 ) -> PostResult {
     if posting.amount.is_none() {
         return PostResult::NeedInfer(posting);
@@ -480,7 +472,6 @@ fn posting_flow(
                 running_balance,
                 pending_change,
                 per_currency_change,
-                errors,
             )
         }
     } else {
@@ -624,9 +615,8 @@ fn complete_posting(
 fn check_complete_txn(
     txn: TxnDraft,
     running_balance: &BalanceSheet,
-    errors: &mut Vec<Error>,
     tolerances: &HashMap<&str, Decimal>,
-) -> Option<(Vec<Transaction>, BalanceSheet)> {
+) -> Result<(Vec<Transaction>, BalanceSheet), Error> {
     let mut balance_change = BalanceSheet::new();
     let mut per_currency_change = HashMap::new();
     let TxnDraft {
@@ -650,9 +640,8 @@ fn check_complete_txn(
             running_balance,
             &mut balance_change,
             &mut per_currency_change,
-            errors,
         ) {
-            PostResult::Fail => return None,
+            PostResult::Fail(err) => return Err(err),
             PostResult::Expanded(valid_posting_vec) => valid_postings.extend(valid_posting_vec),
             PostResult::None => {}
             PostResult::Success(valid_posting) => valid_postings.push(valid_posting),
@@ -664,8 +653,7 @@ fn check_complete_txn(
                         r#type: ErrorType::Incomplete,
                         level: ErrorLevel::Error,
                     };
-                    errors.push(error);
-                    return None;
+                    return Err(error);
                 } else {
                     incomplete = Some(posting)
                 }
@@ -686,8 +674,7 @@ fn check_complete_txn(
     ) {
         Ok(()) => {}
         Err(e) => {
-            errors.push(e);
-            return None;
+            return Err(e);
         }
     }
     let valid_txn = Transaction {
@@ -701,7 +688,7 @@ fn check_complete_txn(
         postings: valid_postings,
         src,
     };
-    Some((vec![valid_txn], balance_change))
+    Ok((vec![valid_txn], balance_change))
 }
 
 fn merge_balance(running_balance: &mut BalanceSheet, changes: BalanceSheet) {
@@ -977,8 +964,7 @@ impl LedgerDraft {
             options,
             events,
         } = self;
-        let mut errors = Vec::new();
-        let valid_accounts = check_accounts(accounts, &mut errors);
+        let (valid_accounts, mut errors) = check_accounts(accounts);
         let tolerances = extract_tolerance(&commodities, &options, &mut errors);
         let mut valid_txns: Vec<Transaction> = Vec::new();
         let mut running_balance = BalanceSheet::new();
@@ -1033,11 +1019,12 @@ impl LedgerDraft {
                     }
                 }
                 TxnFlag::Pending | TxnFlag::Posted => {
-                    if let Some((valid_txn_vec, changes)) =
-                        check_complete_txn(txn, &running_balance, &mut errors, &tolerances)
-                    {
-                        valid_txns.extend(valid_txn_vec);
-                        merge_balance(&mut running_balance, changes);
+                    match check_complete_txn(txn, &running_balance, &tolerances) {
+                        Err(err) => errors.push(err),
+                        Ok((valid_txn_vec, changes)) => {
+                            valid_txns.extend(valid_txn_vec);
+                            merge_balance(&mut running_balance, changes);
+                        }
                     }
                 }
                 TxnFlag::Pad => {
