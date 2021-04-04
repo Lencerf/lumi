@@ -2,7 +2,8 @@ use super::lexer::Lexer;
 use super::token::Token;
 use crate::{
     Account, AccountDoc, AccountNote, Amount, Currency, Date, Decimal, Error, ErrorLevel,
-    ErrorType, EventInfo, Location, Meta, Price, Source, SrcFile, TxnFlag, UnitCost,
+    ErrorType, EventInfo, Link, Location, Meta, Narration, Payee, Price, Source, SrcFile, Tag,
+    TxnFlag, UnitCost,
 };
 
 #[cfg(feature = "serde")]
@@ -31,7 +32,7 @@ impl CostBasis {
         }
     }
 
-    pub fn currency(&self) -> &str {
+    pub fn currency(&self) -> &Currency {
         match self {
             CostBasis::Total(amount) => &amount.currency,
             CostBasis::Unit(amount) => &amount.currency,
@@ -97,10 +98,10 @@ pub struct PostingDraft {
 pub struct TxnDraft {
     pub date: Date,
     pub flag: TxnFlag,
-    pub payee: String,
-    pub narration: String,
-    pub links: Vec<String>,
-    pub tags: Vec<String>,
+    pub payee: Payee,
+    pub narration: Narration,
+    pub links: Vec<Link>,
+    pub tags: Vec<Tag>,
     pub meta: Meta,
     pub postings: Vec<PostingDraft>,
     pub src: Source,
@@ -113,14 +114,14 @@ pub struct TxnDraft {
 pub struct AccountInfoDraft {
     pub open: Option<(Date, Source)>,
     pub close: Option<(Date, Source)>,
-    pub currencies: HashSet<String>,
+    pub currencies: HashSet<Currency>,
     pub notes: Vec<AccountNote>,
     pub docs: Vec<AccountDoc>,
     pub meta: Meta,
 }
 
 impl AccountInfoDraft {
-    pub fn merge(&mut self, another: AccountInfoDraft, name: &str) -> Vec<Error> {
+    pub fn merge(&mut self, another: AccountInfoDraft, name: &Account) -> Vec<Error> {
         let AccountInfoDraft {
             open,
             close,
@@ -172,7 +173,7 @@ impl AccountInfoDraft {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LedgerDraft {
     pub accounts: HashMap<Account, AccountInfoDraft>,
-    pub commodities: HashMap<String, (Meta, Source)>,
+    pub commodities: HashMap<Currency, (Meta, Source)>,
     pub txns: Vec<TxnDraft>,
     pub options: HashMap<String, (String, Source)>,
     pub events: HashMap<String, Vec<EventInfo>>,
@@ -202,7 +203,7 @@ impl LedgerDraft {
     /// `commodity` is already in `self`.
     pub fn add_commodity(
         &mut self,
-        commodity: String,
+        commodity: Currency,
         meta: Meta,
         src: Source,
     ) -> Result<(), Error> {
@@ -449,7 +450,7 @@ impl<'source> Parser<'source> {
         if let Some(date_str) = date {
             meta.insert("date".to_string(), (date_str.to_string(), src.clone()));
         }
-        draft.add_commodity(commodity.to_string(), meta, src)?;
+        draft.add_commodity(commodity.into(), meta, src)?;
         Ok(())
     }
 
@@ -585,12 +586,12 @@ impl<'source> Parser<'source> {
     fn parse_currency_set(&mut self) -> Result<HashSet<Currency>, Error> {
         let mut set = HashSet::new();
         if let Ok((Token::Currency, currency)) = self.lexer.peek() {
-            set.insert(currency.to_string());
+            set.insert(currency.into());
             self.lexer.consume();
             while let Ok((Token::Comma, _)) = self.lexer.peek() {
                 self.lexer.consume();
                 let currency = self.lexer.take(Token::Currency)?;
-                set.insert(currency.to_string());
+                set.insert(currency.into());
             }
         }
         Ok(set)
@@ -615,14 +616,14 @@ impl<'source> Parser<'source> {
                 if token2 == Token::String {
                     self.lexer.consume();
                     (
-                        Self::remove_quotes(text1).to_string(),
-                        Self::remove_quotes(text2).to_string(),
+                        Self::remove_quotes(text1).into(),
+                        Self::remove_quotes(text2).into(),
                     )
                 } else {
-                    (String::new(), Self::remove_quotes(text1).to_string())
+                    (Payee::new(), Self::remove_quotes(text1).into())
                 }
             } else {
-                (String::new(), String::new())
+                (Payee::new(), Narration::new())
             }
         };
 
@@ -630,15 +631,15 @@ impl<'source> Parser<'source> {
         let mut tags = Vec::new();
         while let Ok((token, text)) = self.lexer.peek() {
             match token {
-                Token::Link => links.push(text.to_string()),
-                Token::Tag => tags.push(text.to_string()),
+                Token::Link => links.push(text.into()),
+                Token::Tag => tags.push(text.into()),
                 _ => break,
             };
             self.lexer.consume();
         }
         if flag != TxnFlag::Balance {
-            for tag in self.tagset.iter() {
-                tags.push(tag.to_string());
+            for tag in &self.tagset {
+                tags.push(Tag::from(*tag));
             }
         }
 
@@ -789,7 +790,7 @@ impl<'source> Parser<'source> {
         let currency = self.lexer.take(Token::Currency)?;
         Ok(Amount {
             number: number,
-            currency: currency.to_string(),
+            currency: currency.into(),
         })
     }
 

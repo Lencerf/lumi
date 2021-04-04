@@ -246,6 +246,11 @@ impl fmt::Display for Posting {
     }
 }
 
+pub type Payee = String;
+pub type Narration = String;
+pub type Link = String;
+pub type Tag = String;
+
 /// Represents a transaction, or a `pad` directives, or a `balance` directive in
 /// the source file.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -261,19 +266,19 @@ pub struct Transaction {
 
     /// Returns the payee.
     #[getset(get = "pub")]
-    pub(crate) payee: String,
+    pub(crate) payee: Payee,
 
     /// Returns the narration.
     #[getset(get = "pub")]
-    pub(crate) narration: String,
+    pub(crate) narration: Narration,
 
     /// Returns the links.
     #[getset(get = "pub")]
-    pub(crate) links: Vec<String>,
+    pub(crate) links: Vec<Link>,
 
     /// Returns the tags.
     #[getset(get = "pub")]
-    pub(crate) tags: Vec<String>,
+    pub(crate) tags: Vec<Tag>,
 
     /// Returns the meta data associated with this transaction.
     #[getset(get = "pub")]

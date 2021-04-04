@@ -6,7 +6,7 @@ use crate::{
     parse::{AccountInfoDraft, CostBasis, LedgerDraft, PostingDraft, TxnDraft},
     utils::parse_decimal,
     Account, AccountInfo, Amount, BalanceSheet, Currency, Date, Decimal, Error, ErrorLevel,
-    ErrorType, Ledger, Posting, Price, Source, Transaction, TxnFlag, UnitCost,
+    ErrorType, Ledger, Meta, Posting, Price, Source, Transaction, TxnFlag, UnitCost,
 };
 
 impl UnitCost {
@@ -189,7 +189,7 @@ fn close_position(
     posting: PostingDraft,
     running_balance: Option<&HashMap<Option<UnitCost>, Decimal>>,
     pending_change: &mut HashMap<Option<UnitCost>, Decimal>,
-    per_currency_change: &mut HashMap<String, Decimal>,
+    per_currency_change: &mut HashMap<Currency, Decimal>,
 ) -> PostResult {
     let cost_literal = posting.cost.as_ref().unwrap();
     let p_amount = posting.amount.as_ref().unwrap();
@@ -219,7 +219,7 @@ fn close_position(
                     for (unit_cost, holding_number) in holding_balance {
                         if let Some(unit_cost) = unit_cost {
                             *per_currency_change
-                                .entry(unit_cost.amount.currency.to_string())
+                                .entry(unit_cost.amount.currency.to_owned())
                                 .or_default() -= unit_cost.amount.number * holding_number;
                             *pending_change.entry(Some(unit_cost.clone())).or_default() -=
                                 holding_number;
@@ -287,7 +287,7 @@ fn close_position(
                 PostResult::Fail(error)
             } else {
                 *per_currency_change
-                    .entry(basis.currency().to_string())
+                    .entry(basis.currency().to_owned())
                     .or_default() += unit_cost_number * p_amount.number;
                 *pending_change.entry(unit_cost.clone()).or_default() += p_amount.number;
                 let PostingDraft {
@@ -349,7 +349,7 @@ fn close_position(
                         PostResult::Fail(error)
                     } else {
                         *per_currency_change
-                            .entry(unit_cost.amount.currency.to_string())
+                            .entry(unit_cost.amount.currency.to_owned())
                             .or_default() += unit_cost.amount.number * p_amount.number;
                         *pending_change.entry(Some(unit_cost.clone())).or_default() +=
                             p_amount.number;
@@ -393,7 +393,7 @@ fn open_new_position(
     posting: PostingDraft,
     txn_date: Date,
     pending_change: &mut HashMap<Option<UnitCost>, Decimal>,
-    per_currency_change: &mut HashMap<String, Decimal>,
+    per_currency_change: &mut HashMap<Currency, Decimal>,
 ) -> PostResult {
     let cost_literal = posting.cost.as_ref().unwrap();
     if let Some(cost_basis) = &cost_literal.basis {
@@ -401,7 +401,7 @@ fn open_new_position(
         let unit_cost = match cost_basis {
             CostBasis::Total(total_amount) => {
                 *per_currency_change
-                    .entry(total_amount.currency.to_string())
+                    .entry(total_amount.currency.to_owned())
                     .or_default() += total_amount.number;
                 let unit_cost = UnitCost {
                     amount: total_amount / p_amount.number,
@@ -412,7 +412,7 @@ fn open_new_position(
             }
             CostBasis::Unit(unit_amount) => {
                 *per_currency_change
-                    .entry(unit_amount.currency.to_string())
+                    .entry(unit_amount.currency.to_owned())
                     .or_default() += unit_amount.number * p_amount.number;
                 let unit_cost = UnitCost {
                     amount: unit_amount.clone(),
@@ -449,7 +449,7 @@ fn posting_flow(
     txn_date: Date,
     running_balance: &BalanceSheet,
     balance_change: &mut BalanceSheet,
-    per_currency_change: &mut HashMap<String, Decimal>,
+    per_currency_change: &mut HashMap<Currency, Decimal>,
 ) -> PostResult {
     if posting.amount.is_none() {
         return PostResult::NeedInfer(posting);
@@ -488,7 +488,7 @@ fn posting_flow(
                 (p_amount.number * unit_price.number, &unit_price.currency)
             }
         };
-        *per_currency_change.entry(currency.to_string()).or_default() += number;
+        *per_currency_change.entry(currency.to_owned()).or_default() += number;
         *pending_change.entry(None).or_default() += p_amount.number;
         let PostingDraft {
             account,
@@ -512,7 +512,7 @@ fn posting_flow(
 
 fn complete_posting(
     incomplete: Option<PostingDraft>,
-    not_balanced: Vec<(String, Decimal)>,
+    not_balanced: Vec<(Currency, Decimal)>,
     txn_date: Date,
     txn_src: &Source,
     valid_postings: &mut Vec<Posting>,
@@ -563,7 +563,7 @@ fn complete_posting(
                     let unit_cost = UnitCost {
                         amount: Amount {
                             number: -number / amount.number,
-                            currency: currency.to_string(),
+                            currency: currency.to_owned(),
                         },
                         date: cost_date,
                     };
@@ -706,7 +706,7 @@ fn merge_balance(running_balance: &mut BalanceSheet, changes: BalanceSheet) {
 const TOLERANCE_KEY_DEFAULT: &str = ";";
 
 fn extract_tolerance<'c>(
-    commodities: &'c HashMap<String, (HashMap<String, (String, Source)>, Source)>,
+    commodities: &'c HashMap<Currency, (Meta, Source)>,
     options: &HashMap<String, (String, Source)>,
     errors: &mut Vec<Error>,
 ) -> HashMap<&'c str, Decimal> {
@@ -738,14 +738,14 @@ fn extract_tolerance<'c>(
 fn equal_within(
     lhs: Decimal,
     rhs: Decimal,
-    currency: &str,
+    currency: &Currency,
     tolerances: &HashMap<&str, Decimal>,
 ) -> bool {
     if lhs == rhs {
         true
     } else {
         let tolerance = tolerances
-            .get(currency)
+            .get(currency.as_str())
             .unwrap_or(tolerances.get(TOLERANCE_KEY_DEFAULT).unwrap());
         if (lhs - rhs).abs() < *tolerance {
             true
@@ -764,7 +764,7 @@ struct PadFromInfo {
 fn find_pad_from(
     dest_account: &Account,
     pad_number: Decimal,
-    currency: &String,
+    currency: &Currency,
     pad_from: &mut HashMap<Account, PadFromInfo>,
     valid_txns: &mut Vec<Transaction>,
     valid_accounts: &HashMap<Account, AccountInfo>,
