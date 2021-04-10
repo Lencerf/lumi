@@ -79,6 +79,33 @@ impl fmt::Display for CostLiteral {
     }
 }
 
+/// The unit price (`@`) or total price (`@@`) of the amount in a posting.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PriceLiteral {
+    Unit(Amount),
+    Total(Amount),
+}
+
+impl fmt::Display for PriceLiteral {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PriceLiteral::Unit(amount) => write!(f, "@ {}", amount),
+            PriceLiteral::Total(amount) => write!(f, "@@ {}", amount),
+        }
+    }
+}
+
+impl PriceLiteral {
+    /// Converts a [`PriceLiteral`] to a [`Price`](crate::Price).
+    pub fn into_unit_price(self, posting_number: Decimal) -> Price {
+        match self {
+            PriceLiteral::Total(amount) => amount / posting_number.abs(),
+            PriceLiteral::Unit(amount) => amount,
+        }
+    }
+}
+
 /// Represents the result of a parsed posting, which might miss amounts or
 /// referred an invalid account.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -87,7 +114,7 @@ pub struct PostingDraft {
     pub account: Account,
     pub amount: Option<Amount>,
     pub cost: Option<CostLiteral>,
-    pub price: Option<Price>,
+    pub price: Option<PriceLiteral>,
     pub meta: Meta,
     pub src: Source,
 }
@@ -765,15 +792,15 @@ impl<'source> Parser<'source> {
         Ok((amount, date))
     }
 
-    fn parse_price(&mut self) -> Result<Option<Price>, Error> {
+    fn parse_price(&mut self) -> Result<Option<PriceLiteral>, Error> {
         if let Ok((token, _)) = self.lexer.peek() {
             if token == Token::AtUnit || token == Token::AtTotal {
                 self.lexer.consume();
                 let amount = self.parse_amount()?;
                 return if token == Token::AtUnit {
-                    Ok(Some(Price::Unit(amount)))
+                    Ok(Some(PriceLiteral::Unit(amount)))
                 } else {
-                    Ok(Some(Price::Total(amount)))
+                    Ok(Some(PriceLiteral::Total(amount)))
                 };
             }
         }

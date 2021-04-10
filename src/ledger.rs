@@ -138,6 +138,17 @@ impl<'a> Div<Decimal> for &'a Amount {
     }
 }
 
+impl Div<Decimal> for Amount {
+    type Output = Amount;
+
+    fn div(self, rhs: Decimal) -> Self::Output {
+        Amount {
+            number: self.number / rhs,
+            currency: self.currency,
+        }
+    }
+}
+
 impl<'a> Mul<Decimal> for &'a Amount {
     type Output = Amount;
 
@@ -149,22 +160,8 @@ impl<'a> Mul<Decimal> for &'a Amount {
     }
 }
 
-/// The unit price (`@`) or total price (`@@`) of the amount in a posting.
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Price {
-    Unit(Amount),
-    Total(Amount),
-}
-
-impl fmt::Display for Price {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Price::Unit(amount) => write!(f, "@ {}", amount),
-            Price::Total(amount) => write!(f, "@@ {}", amount),
-        }
-    }
-}
+/// The unit price.
+pub type Price = Amount;
 
 /// The cost basis information (unit cost and transaction date) used to identify
 /// a position in the running balances.

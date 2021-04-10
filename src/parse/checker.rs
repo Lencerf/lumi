@@ -3,10 +3,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     options::*,
-    parse::{AccountInfoDraft, CostBasis, LedgerDraft, PostingDraft, TxnDraft},
+    parse::{AccountInfoDraft, CostBasis, LedgerDraft, PostingDraft, PriceLiteral, TxnDraft},
     utils::parse_decimal,
     Account, AccountInfo, Amount, BalanceSheet, Currency, Error, ErrorLevel, ErrorType, Ledger,
-    Meta, NaiveDate, Posting, Price, Source, Transaction, TxnFlag, UnitCost,
+    Meta, NaiveDate, Posting, Source, Transaction, TxnFlag, UnitCost,
 };
 
 impl UnitCost {
@@ -193,6 +193,7 @@ fn close_position(
 ) -> PostResult {
     let cost_literal = posting.cost.as_ref().unwrap();
     let p_amount = posting.amount.as_ref().unwrap();
+    let p_number = p_amount.number;
     match (&cost_literal.basis, &cost_literal.date) {
         (None, None) => {
             if let Some(holding_balance) = running_balance {
@@ -206,7 +207,7 @@ fn close_position(
                         }
                     })
                     .sum();
-                if (total_holding + p_amount.number).is_zero() {
+                if (total_holding + p_number).is_zero() {
                     let PostingDraft {
                         account,
                         amount: _,
@@ -248,7 +249,7 @@ fn close_position(
                     PostResult::Fail(error)
                 }
             } else {
-                if !p_amount.number.is_zero() {
+                if !p_number.is_zero() {
                     let error = Error {
                         r#type: ErrorType::NoMatch,
                         level: ErrorLevel::Error,
@@ -262,7 +263,7 @@ fn close_position(
             }
         }
         (Some(basis), Some(date)) => {
-            let unit_cost_amount = basis.to_unit_cost(p_amount.number);
+            let unit_cost_amount = basis.to_unit_cost(p_number);
             let unit_cost_number = unit_cost_amount.number;
             let unit_cost = Some(UnitCost {
                 amount: unit_cost_amount,
@@ -272,7 +273,7 @@ fn close_position(
                 .and_then(|m| m.get(&unit_cost))
                 .copied()
                 .unwrap_or_default();
-            if holding_number.abs() < p_amount.number.abs() {
+            if holding_number.abs() < p_number.abs() {
                 let error = Error {
                     r#type: ErrorType::NoMatch,
                     level: ErrorLevel::Error,
@@ -288,23 +289,15 @@ fn close_position(
             } else {
                 *per_currency_change
                     .entry(basis.currency().to_owned())
-                    .or_default() += unit_cost_number * p_amount.number;
-                *pending_change.entry(unit_cost.clone()).or_default() += p_amount.number;
-                let PostingDraft {
-                    account,
-                    amount: _,
-                    cost: _,
-                    price,
-                    meta,
-                    src,
-                } = posting;
+                    .or_default() += unit_cost_number * p_number;
+                *pending_change.entry(unit_cost.clone()).or_default() += p_number;
                 let valid_posting = Posting {
-                    account,
-                    amount: p_amount.clone(),
+                    account: posting.account,
+                    amount: posting.amount.unwrap(),
                     cost: unit_cost,
-                    price,
-                    meta,
-                    src,
+                    price: posting.price.map(|p| p.into_unit_price(p_number)),
+                    meta: posting.meta,
+                    src: posting.src,
                 };
                 PostResult::Success(valid_posting)
             }
@@ -313,7 +306,7 @@ fn close_position(
             let unit_cost_amount = cost_literal
                 .basis
                 .as_ref()
-                .map(|basis| basis.to_unit_cost(p_amount.number));
+                .map(|basis| basis.to_unit_cost(p_number));
             let candidates = running_balance.map_or(Vec::new(), |m| {
                 m.iter()
                     .filter(|(maybe_unit_cost, _)| {
@@ -336,7 +329,7 @@ fn close_position(
                 1 => {
                     let (unit_cost, holding_number) = candidates[0];
                     let unit_cost = unit_cost.as_ref().unwrap();
-                    if p_amount.number.abs() > holding_number.abs() {
+                    if p_number.abs() > holding_number.abs() {
                         let error = Error {
                             r#type: ErrorType::NoMatch,
                             level: ErrorLevel::Error,
@@ -350,24 +343,15 @@ fn close_position(
                     } else {
                         *per_currency_change
                             .entry(unit_cost.amount.currency.to_owned())
-                            .or_default() += unit_cost.amount.number * p_amount.number;
-                        *pending_change.entry(Some(unit_cost.clone())).or_default() +=
-                            p_amount.number;
-                        let PostingDraft {
-                            account,
-                            amount: _,
-                            cost: _,
-                            price,
-                            meta,
-                            src,
-                        } = posting;
+                            .or_default() += unit_cost.amount.number * p_number;
+                        *pending_change.entry(Some(unit_cost.clone())).or_default() += p_number;
                         let valid_posting = Posting {
-                            account,
-                            amount: p_amount.clone(),
-                            cost: Some(unit_cost.clone()),
-                            price,
-                            meta,
-                            src,
+                            account: posting.account,
+                            amount: posting.amount.unwrap(),
+                            cost: Some(unit_cost.to_owned()),
+                            price: posting.price.map(|p| p.into_unit_price(p_number)),
+                            meta: posting.meta,
+                            src: posting.src,
                         };
                         PostResult::Success(valid_posting)
                     }
@@ -422,21 +406,14 @@ fn open_new_position(
                 unit_cost
             }
         };
-        let PostingDraft {
-            account,
-            amount,
-            cost: _,
-            price,
-            meta,
-            src,
-        } = posting;
+        let p_number = p_amount.number;
         let valid_posting = Posting {
-            account,
-            amount: amount.unwrap(),
+            account: posting.account,
+            amount: posting.amount.unwrap(),
             cost: Some(unit_cost),
-            price,
-            meta,
-            src,
+            price: posting.price.map(|p| p.into_unit_price(p_number)),
+            meta: posting.meta,
+            src: posting.src,
         };
         PostResult::Success(valid_posting)
     } else {
@@ -477,34 +454,27 @@ fn posting_flow(
     } else {
         let (number, currency) = match &posting.price {
             None => (p_amount.number, &p_amount.currency),
-            Some(Price::Total(total_amount)) => {
+            Some(PriceLiteral::Total(total_amount)) => {
                 if p_amount.number.is_sign_negative() {
                     (-total_amount.number, &total_amount.currency)
                 } else {
                     (total_amount.number, &total_amount.currency)
                 }
             }
-            Some(Price::Unit(unit_price)) => {
+            Some(PriceLiteral::Unit(unit_price)) => {
                 (p_amount.number * unit_price.number, &unit_price.currency)
             }
         };
         *per_currency_change.entry(currency.to_owned()).or_default() += number;
         *pending_change.entry(None).or_default() += p_amount.number;
-        let PostingDraft {
-            account,
-            amount,
-            cost: _,
-            price,
-            meta,
-            src,
-        } = posting;
+        let p_number = p_amount.number;
         let valid_posting = Posting {
-            account,
-            amount: amount.unwrap(),
+            account: posting.account,
+            amount: posting.amount.unwrap(),
             cost: None,
-            price,
-            meta,
-            src,
+            price: posting.price.map(|p| p.into_unit_price(p_number)),
+            meta: posting.meta,
+            src: posting.src,
         };
         PostResult::Success(valid_posting)
     }
@@ -572,11 +542,12 @@ fn complete_posting(
                         .or_default()
                         .entry(Some(unit_cost.clone()))
                         .or_default() += amount.number;
+                    let p_number = amount.number;
                     let valid_posting = Posting {
                         account,
                         amount,
                         cost: Some(unit_cost),
-                        price,
+                        price: price.map(|p| p.into_unit_price(p_number)),
                         meta,
                         src,
                     };
