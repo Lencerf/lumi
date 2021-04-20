@@ -1,18 +1,11 @@
-use clap::{clap_app, ArgMatches};
+use clap::clap_app;
 use lumi::Ledger;
 use rust_decimal::prelude::Zero;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
 
-fn balances(matches: &ArgMatches) {
-    let path = matches.value_of("INPUT").unwrap();
-    let (ledger, errors) = Ledger::from_file(path);
-
-    for error in errors {
-        println!("{}\n", error);
-    }
-
+fn balances(ledger: Ledger) {
     let mut result = vec![];
     for (account, account_map) in ledger.balance_sheet() {
         if ledger.accounts()[account].close().is_some() {
@@ -40,12 +33,19 @@ fn main() {
     let matches = clap_app!(lumi =>
         (version: VERSION)
         (author: AUTHOR)
+        (@arg INPUT: +required "Input file")
         (@subcommand balances =>
-            (@arg INPUT: +required "Input file")
-        )
+            (about: "List the final balances of all accounts"))
+
     )
     .get_matches();
-    if let Some(matches) = matches.subcommand_matches("balances") {
-        balances(&matches);
+    let path = matches.value_of("INPUT").unwrap();
+    let (ledger, errors) = Ledger::from_file(path);
+    for error in errors {
+        println!("{}\n", error);
+    }
+    match matches.subcommand_name() {
+        Some("balances") => balances(ledger),
+        _ => {}
     }
 }
