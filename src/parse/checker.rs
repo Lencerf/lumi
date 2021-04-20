@@ -931,6 +931,7 @@ impl LedgerDraft {
             mut txns,
             options,
             events,
+            files,
         } = self;
         let (valid_accounts, mut errors) = check_accounts(accounts);
         let tolerances = extract_tolerance(&commodities, &options, &mut errors);
@@ -1055,6 +1056,7 @@ impl LedgerDraft {
             options,
             events,
             balance_sheet: running_balance,
+            files,
         };
         (ledger, errors)
     }

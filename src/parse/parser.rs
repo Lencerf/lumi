@@ -205,6 +205,7 @@ pub struct LedgerDraft {
     pub txns: Vec<TxnDraft>,
     pub options: HashMap<String, (String, Source)>,
     pub events: HashMap<String, Vec<EventInfo>>,
+    pub files: Vec<SrcFile>,
 }
 
 impl LedgerDraft {
@@ -263,8 +264,10 @@ impl LedgerDraft {
             txns,
             options,
             events,
+            files,
         } = another;
         self.txns.extend(txns);
+        self.files.extend(files);
         for (name, list) in events {
             if let Some(l) = self.events.get_mut(&name) {
                 l.extend(list);
@@ -844,13 +847,14 @@ impl<'source> Parser<'source> {
                 let file = Arc::new(path);
                 let mut parser = Parser {
                     lexer: Lexer::new(&data, file.clone()),
-                    file,
+                    file: file.clone(),
                     accounts: HashMap::new(),
                     sub_task_cond,
                     handlers: None,
                     tagset: HashSet::new(),
                 };
                 let mut errors = Vec::new();
+                draft.files.push(file);
                 parser.parse_directives(&mut draft, &mut errors);
                 if let Some(handlers) = parser.handlers.take() {
                     let own_results =

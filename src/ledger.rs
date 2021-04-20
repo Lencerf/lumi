@@ -378,6 +378,9 @@ pub struct Ledger {
     /// Returns the events.
     #[getset(get = "pub")]
     pub(crate) events: HashMap<String, Vec<EventInfo>>,
+    /// Returns a list of source files.
+    #[getset(get = "pub")]
+    pub(crate) files: Vec<SrcFile>,
     /// Returns the final balances.
     #[getset(get = "pub")]
     pub(crate) balance_sheet: BalanceSheet,
