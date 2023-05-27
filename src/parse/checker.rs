@@ -648,7 +648,7 @@ fn check_complete_txn(
             return Err(e);
         }
     }
-    valid_postings.sort_by(|p1, p2| {p1.account.cmp(&p2.account) });
+    valid_postings.sort_by(|p1, p2| p1.account.cmp(&p2.account));
     let valid_txn = Transaction {
         date,
         flag,
