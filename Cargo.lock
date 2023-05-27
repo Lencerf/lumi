@@ -509,13 +509,21 @@ name = "lumi"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "clap",
  "criterion",
  "getset",
  "logos",
  "num_cpus",
  "rust_decimal",
  "serde",
+]
+
+[[package]]
+name = "lumi-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "lumi",
+ "rust_decimal",
 ]
 
 [[package]]

@@ -1,6 +1,5 @@
 use clap::clap_app;
 use lumi::Ledger;
-use rust_decimal::prelude::Zero;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
