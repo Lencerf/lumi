@@ -1,0 +1,31 @@
+[package]
+name = "lumi"
+version = "0.1.0"
+authors = ["Lencerf <changyuan.lv@gmail.com>"]
+edition = "2018"
+license = "MIT"
+description = "A library for parsing text-based ledger files."
+homepage = "https://github.com/Lencerf/lumi"
+repository = "https://github.com/Lencerf/lumi"
+readme = "README.md"
+documentation = "https://docs.rs/lumi"
+
+[dependencies]
+logos = "0.12.1"
+rust_decimal = {version = "1.29.1"}
+chrono = {version = "0.4", features = ["serde"]}
+num_cpus = "1.15.0"
+serde = {version = "1.0", features = ["derive", "rc"], optional = true}
+getset = "0.1.2"
+
+[dev-dependencies]
+criterion = "0.3"
+
+[lib]
+name = "lumi"
+path = "src/lib.rs"
+
+
+[[bench]]
+name = "parse_bench"
+harness = false
