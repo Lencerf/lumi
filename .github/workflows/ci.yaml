@@ -16,6 +16,11 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    - name: Install toolchain
+      run: rustup target add wasm32-unknown-unknown
+    - uses: jetli/trunk-action@v0.4.0
+      with:
+        version: 'latest'
     - name: Build
       run: cargo build --all-features
       env:
