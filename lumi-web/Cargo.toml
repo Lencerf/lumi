@@ -1,0 +1,20 @@
+[package]
+name = "lumi-web"
+version = "0.1.0"
+authors = ["Lencerf <changyuan.lv@gmail.com>"]
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+yew = "0.19"
+yew-router = "0.16"
+reqwest = { version = "0.11", features = ["json"] }
+lumi = { path = "../../lumi", features = ["serde"]}
+anyhow = "1.0"
+serde = "1.0"
+lumi-server-defs = {path = "../lumi-server-defs"}
+serde_urlencoded = "0.7.0"
+chrono = "0.4"
+rust_decimal = "1.10.3"
+wasm-logger = "0.2"
+log = "0.4"
