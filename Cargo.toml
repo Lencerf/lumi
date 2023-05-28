@@ -3,6 +3,9 @@ members = [
     "lumi",
     "lumi-cli"
 ]
+exclude = [
+    "lumi-web"
+]
 
 [profile.release]
 lto = true
