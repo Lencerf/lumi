@@ -1,4 +1,4 @@
-use clap::clap_app;
+use clap::{Parser, Subcommand};
 use lumi::Ledger;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,28 +34,35 @@ fn balances(ledger: Ledger) {
         println!("{}", entry);
     }
 }
-fn main() {
-    let matches = clap_app!(lumi =>
-        (version: VERSION)
-        (author: AUTHOR)
-        (@arg INPUT: +required "Input file")
-        (@subcommand balances =>
-            (about: "List the final balances of all accounts")
-        )
-        (@subcommand files =>
-            (about: "List all source files")
-        )
 
-    )
-    .get_matches();
-    let path = matches.value_of("INPUT").unwrap();
-    let (ledger, errors) = Ledger::from_file(path);
+#[derive(Debug, Parser)]
+#[command(
+    name = "lumi",
+    about = "A double-entry accounting tool.", 
+    version = VERSION,
+    author = AUTHOR,
+)]
+struct Cli {
+    #[arg(short, required = true)]
+    input: String,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    Balances,
+    Files,
+}
+
+fn main() {
+    let args = Cli::parse();
+    let (ledger, errors) = Ledger::from_file(&args.input);
     for error in errors {
         println!("{}\n", error);
     }
-    match matches.subcommand_name() {
-        Some("balances") => balances(ledger),
-        Some("files") => files(ledger),
-        _ => {}
+    match args.command {
+        Commands::Balances => balances(ledger),
+        Commands::Files => files(ledger),
     }
 }
