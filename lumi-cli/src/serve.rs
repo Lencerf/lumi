@@ -1,4 +1,3 @@
-use clap::{clap_app, App};
 use headers::{ContentType, HeaderMapExt};
 use include_dir::{include_dir, Dir};
 use lumi::Ledger;
@@ -18,11 +17,12 @@ fn get_file(path: &str) -> Option<&'static [u8]> {
     WEB_DIR.get_file(path).map(|f| f.contents)
 }
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-const AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
-
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
+pub async fn serve(
+    addr: String,
+    path: &str,
+    ledger: Ledger,
+    errors: Vec<lumi::Error>,
+) -> std::io::Result<()> {
     pretty_env_logger::init();
     let root_index = warp::path::end().map(|| {
         let index = get_file("index.html").unwrap();
@@ -58,19 +58,9 @@ async fn main() -> std::io::Result<()> {
     });
     let get_file = warp::get().and(root_index.or(file));
 
-    let matches = clap_app!(@app(App::new("lumi-server"))
-        (version: VERSION)
-        (author: AUTHOR)
-        (@arg INPUT: +required "Input file")
-        (@arg ADDR: -a --("addr") +takes_value "Bind address" )
-    )
-    .get_matches();
-    let path = matches.value_of("INPUT").unwrap();
-    let addr: SocketAddr = matches
-        .value_of("ADDR")
-        .and_then(|addr| addr.parse().ok())
-        .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3000));
-    let (ledger, errors) = Ledger::from_file(path);
+    let addr: SocketAddr = addr
+        .parse()
+        .unwrap_or_else(|_| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8001));
     let api = filters::ledger_api(
         Arc::new(RwLock::new(ledger)),
         Arc::new(RwLock::new(errors)),

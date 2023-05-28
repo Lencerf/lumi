@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use lumi::Ledger;
 
+mod serve;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
 
@@ -53,16 +55,29 @@ struct Cli {
 enum Commands {
     Balances,
     Files,
+    Serve {
+        #[arg(short, long, default_value = "127.0.0.1:8001")]
+        addr: String,
+    },
 }
 
-fn main() {
+fn main() -> std::io::Result<()> {
     let args = Cli::parse();
     let (ledger, errors) = Ledger::from_file(&args.input);
-    for error in errors {
+    for error in &errors {
         println!("{}\n", error);
     }
     match args.command {
         Commands::Balances => balances(ledger),
         Commands::Files => files(ledger),
+        Commands::Serve { addr } => {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            return runtime.block_on(serve::serve(addr, &args.input, ledger, errors));
+        }
     }
+    Ok(())
 }
