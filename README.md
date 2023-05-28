@@ -6,7 +6,7 @@
 lumi is a collection of double-entry accounting tools:
 
 - [lumi](https://github.com/Lencerf/lumi/tree/main/lumi), a library for
-  processing ledger files, including a
+  processing text-based ledger files, including a
   [LL(1)](https://en.wikipedia.org/wiki/LL_parser) parser (compatible with
   [beancount](https://github.com/beancount/beancount) syntax) and a transaction
   checker.
