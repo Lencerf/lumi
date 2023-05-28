@@ -2,7 +2,7 @@
 name = "lumi"
 version = "0.1.0"
 authors = ["Lencerf <changyuan.lv@gmail.com>"]
-edition = "2018"
+edition = "2021"
 license = "MIT"
 description = "A library for parsing text-based ledger files."
 homepage = "https://github.com/Lencerf/lumi"
