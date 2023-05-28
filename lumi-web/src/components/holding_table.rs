@@ -2,7 +2,7 @@ use crate::api::{self, FetchState};
 use crate::components::AccountRef;
 use anyhow::Error;
 use chrono::MIN_DATE;
-use lumi_server_defs::Position;
+use lumi::web::Position;
 
 use std::collections::HashMap;
 

@@ -168,7 +168,7 @@ impl Component for TxnCell {
         }
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         self.show_postings = ctx.props().show_postings;
         true
     }

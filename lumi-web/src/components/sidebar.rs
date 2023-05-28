@@ -1,8 +1,8 @@
 use crate::components::sidebar_item::SidebarItem;
 use crate::route::Route;
-use yew::{function_component, html, use_state_eq, Callback};
-use yew_router::history::Location;
+use yew::{function_component, html, use_state_eq, Callback, Html};
 use yew_router::hooks::use_location;
+use yew_router::Routable;
 
 #[function_component(Sidebar)]
 pub fn sidebar() -> Html {
@@ -15,11 +15,11 @@ pub fn sidebar() -> Html {
         (Route::Errors, "Errors"),
     ];
     let location = use_location().unwrap();
-    let current = location.route::<Route>();
+    let current = Route::recognize(location.path());
     let items: Vec<_> = item_info
         .into_iter()
         .map(|(dest, title)| {
-            html! {<SidebarItem dest={dest} active={current==Some(dest.clone())} title={title}/>}
+            html! {<SidebarItem dest={dest.clone()} active={current==Some(dest.clone())} title={title}/>}
         })
         .collect();
     let ul = html! {

@@ -7,7 +7,7 @@ use yew_router::components::Link;
 use crate::api::{self, FetchState, Trie};
 use crate::route::Route;
 
-use lumi_server_defs::TrieOptions;
+use lumi::web::TrieOptions;
 use std::rc::Rc;
 
 #[derive(Properties, Clone, PartialEq, Eq)]
@@ -45,7 +45,7 @@ impl Component for TrieTable {
         }
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         self.fetch_state = FetchState::NotStarted;
         ctx.link().send_message(Msg::GetTrie);
         true

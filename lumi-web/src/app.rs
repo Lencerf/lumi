@@ -4,6 +4,7 @@ use crate::components::{
 use crate::route::Route;
 use std::rc::Rc;
 use yew::prelude::*;
+use yew_router::history::{BrowserHistory, History, Location};
 use yew_router::prelude::*;
 
 #[function_component(App)]
@@ -11,14 +12,14 @@ pub fn app() -> Html {
     html! {
         <BrowserRouter>
             <Sidebar />
-            <Switch<Route> render={Switch::render(switch)} />
+            <Switch<Route> render={switch} />
         </BrowserRouter>
     }
 }
 
-fn switch(routes: &Route) -> Html {
-    let qs = BrowserHistory::new().location().search();
-    let mut qs_chars = qs.chars();
+fn switch(routes: Route) -> Html {
+    let location = BrowserHistory::new().location();
+    let mut qs_chars = location.query_str().chars();
     qs_chars.next();
     let qs: Rc<String> = Rc::new(String::from(qs_chars.as_str()));
     html! { <MainContent route={routes.clone()} query={qs} /> }
