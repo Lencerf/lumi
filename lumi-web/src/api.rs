@@ -1,7 +1,6 @@
-use lumi_server_defs::{FilterOptions, JournalItem, Position, RefreshTime, TrieOptions, TrieTable};
+use lumi::web::{FilterOptions, JournalItem, Position, RefreshTime, TrieOptions, TrieTable, self};
 use std::{collections::HashMap, rc::Rc, string::ToString};
 use yew::{Component, Context};
-use yew_router::history::{BrowserHistory, History};
 
 pub enum FetchState<T> {
     NotStarted,
@@ -24,12 +23,12 @@ where
     M: Into<C::Message>,
     D: for<'de> serde::de::Deserialize<'de>,
 {
-    let location = BrowserHistory::new().location();
+    let location = gloo_utils::window().location();
     let link = ctx.link();
     let url = format!(
         "{}//{}/{}",
-        location.protocol(),
-        location.host(),
+        location.protocol().unwrap(),
+        location.host().unwrap(),
         rel_url.to_string()
     );
     link.send_future(async move {

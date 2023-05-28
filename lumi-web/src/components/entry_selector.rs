@@ -1,6 +1,7 @@
 use crate::route::Route;
-use lumi_server_defs::{FilterOptions, DEFAULT_ENTRIES_PER_PAGE};
+use lumi::web::{FilterOptions, DEFAULT_ENTRIES_PER_PAGE};
 use yew::prelude::*;
+use yew_router::hooks::use_location;
 use yew_router::prelude::*;
 
 #[derive(Properties, Clone, Debug, PartialEq)]
@@ -17,13 +18,13 @@ pub fn entry_selector(props: &Props) -> Html {
         Callback::from(move |_| show_menu.set(!*show_menu))
     };
     let location = use_location().unwrap();
-    let query = location.search();
+    let query = location.query_str();
     let mut chars = query.chars();
     chars.next();
     let query = chars.as_str();
     let current_option: FilterOptions = serde_urlencoded::from_str(query).unwrap_or_default();
-    let _current_path = location.pathname();
 
+    let location = use_location().unwrap();
     let menu_items: Vec<_> = [20, 50, 100]
         .iter()
         .map(|n| {
@@ -40,7 +41,7 @@ pub fn entry_selector(props: &Props) -> Html {
             } else {
                 "entry-number button"
             };
-            let route: Route = location.route().unwrap();
+            let route: Route = Route::recognize(location.path()).unwrap();
             html! {
                 <Anchor to={route} query={new_option} classes={item_class}>{n}</Anchor>
             }

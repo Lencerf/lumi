@@ -4,13 +4,14 @@ use crate::api::{self, FetchState, Journal};
 use crate::components::{EntrySelector, TxnCell};
 use crate::route::Route;
 use anyhow::Error;
-use lumi_server_defs::{FilterOptions, DEFAULT_ENTRIES_PER_PAGE};
+use lumi::web::{FilterOptions, DEFAULT_ENTRIES_PER_PAGE};
 use rust_decimal::Decimal;
 use yew::context::ContextHandle;
 
 use yew::prelude::*;
 use yew_router::components::Link;
 use yew_router::history::{BrowserHistory, History, Location};
+use yew_router::Routable;
 
 #[derive(Properties, Clone, PartialEq, Eq)]
 pub struct Props {
@@ -67,7 +68,7 @@ impl Component for JournalTable {
         }
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         self.state.options = serde_urlencoded::from_str(&ctx.props().options).unwrap_or_default();
         ctx.link().send_message(Msg::GetJournal);
         true
@@ -104,6 +105,7 @@ impl Component for JournalTable {
     }
 
     fn view(&self, ctx: &yew::Context<Self>) -> yew::Html {
+        let location = BrowserHistory::new().location();
         match self.fetch_state {
             FetchState::Failed(ref reason) => html! {<p>{format!("failed {}", reason)}</p>},
             FetchState::Fetching => html! {<p>{"loading"}</p>},
@@ -130,7 +132,8 @@ impl Component for JournalTable {
                 }
                 type Anchor = Link<Route, FilterOptions>;
                 let mut options_change_order = self.state.options.clone();
-                let current_route: Route = BrowserHistory::new().location().route().unwrap();
+
+                let current_route = Route::recognize(location.path()).unwrap();
                 let order_indicator = if options_change_order.old_first == Some(true) {
                     options_change_order.old_first = None;
                     html! {

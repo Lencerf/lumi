@@ -6,15 +6,15 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-yew = "0.19"
-yew-router = "0.16"
+yew = { version = "0.20", features = ["csr"] }
+yew-router = "0.17"
 reqwest = { version = "0.11", features = ["json"] }
-lumi = { path = "../../lumi", features = ["serde"]}
+lumi = { path = "../lumi", features = ["serde"]}
 anyhow = "1.0"
 serde = "1.0"
-lumi-server-defs = {path = "../lumi-server-defs"}
-serde_urlencoded = "0.7.0"
+serde_urlencoded = "0.7.1"
 chrono = "0.4"
-rust_decimal = "1.10.3"
+rust_decimal = "1.29.1"
 wasm-logger = "0.2"
 log = "0.4"
+gloo-utils = "0.1.6"
