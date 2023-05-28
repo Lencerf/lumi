@@ -12,9 +12,8 @@ documentation = "https://docs.rs/lumi"
 
 [dependencies]
 lumi ={ version = "*", path = "../lumi"}
-clap = {version = "2", features = ["wrap_help", "suggestions"]}
+clap = {version = "4", features = ["derive", "suggestions"]}
 rust_decimal = {version = "1.29.1"}
-
 
 [[bin]]
 name = "lumi"
