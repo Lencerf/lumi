@@ -1,0 +1,20 @@
+[package]
+name = "lumi-server"
+version = "0.1.0"
+authors = ["Lencerf <changyuan.lv@gmail.com>"]
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+lumi = { path = "../lumi", features = ["serde"]}
+chrono = {version = "0.4", features = ["serde"]}
+rust_decimal = {version = "1.29.1"}
+clap = {version = "2", features = ["wrap_help", "suggestions"]}
+tokio = { version = "1", features = ["full"] }
+warp = "0.3"
+serde_json = "1"
+mime_guess = "2"
+include_dir = "0.6"
+headers = "0.3.8"
+log = "0.4"
+pretty_env_logger = "0.3"
