@@ -11,10 +11,10 @@ use warp::Filter;
 mod filters;
 mod handlers;
 
-static WEB_DIR: Dir = include_dir!("../lumi-web/dist");
+static WEB_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../lumi-web/dist");
 
 fn get_file(path: &str) -> Option<&'static [u8]> {
-    WEB_DIR.get_file(path).map(|f| f.contents)
+    WEB_DIR.get_file(path).map(|f| f.contents())
 }
 
 pub async fn serve(

@@ -11,18 +11,18 @@ readme = "README.md"
 documentation = "https://docs.rs/lumi"
 
 [dependencies]
-lumi ={ version = "*", path = "../lumi", features = ["serde"]}
-clap = {version = "4", features = ["derive", "suggestions"]}
-rust_decimal = {version = "1.29.1"}
-chrono = {version = "0.4", features = ["serde"]}
+lumi = { version = "*", path = "../lumi", features = ["serde"] }
+clap = { version = "4", features = ["derive", "suggestions"] }
+rust_decimal = { version = "1.29.1" }
+chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 warp = "0.3"
 serde_json = "1"
 mime_guess = "2"
-include_dir = "0.6"
+include_dir = "0.7.3"
 headers = "0.3.8"
 log = "0.4"
-pretty_env_logger = "0.3"
+pretty_env_logger = "0.5"
 
 [[bin]]
 name = "lumi"
