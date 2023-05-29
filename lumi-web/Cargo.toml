@@ -9,7 +9,7 @@ license = "MIT"
 yew = { version = "0.20", features = ["csr"] }
 yew-router = "0.17"
 reqwest = { version = "0.11", features = ["json"] }
-lumi = { path = "../lumi", features = ["serde"]}
+lumi = { version = "*", path = "../lumi", features = ["serde"]}
 anyhow = "1.0"
 serde = "1.0"
 serde_urlencoded = "0.7.1"
