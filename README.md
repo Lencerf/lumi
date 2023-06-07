@@ -2,6 +2,7 @@
 
 [![GHA Build Status](https://github.com/Lencerf/lumi/workflows/CI/badge.svg)](https://github.com/Lencerf/lumi/actions?query=workflow%3ACI)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/lumi.svg)](https://crates.io/crates/lumi)
 
 lumi is a collection of double-entry accounting tools:
 
@@ -34,6 +35,13 @@ cargo build --bin lumi --release
 ```
 
 `lumi` binary is available at `target/release/lumi`.
+
+Or install it through `cargo`,
+
+```sh
+cargo install wasm-bindgen-cli
+cargo install --git https://github.com/Lencerf/lumi lumi-cli
+```
 
 ## Usage
 
