@@ -9,12 +9,10 @@ use rust_decimal::Decimal;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    fmt, fs,
-    path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex},
-};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
+use std::{fmt, fs};
 
 /// Represents the cost basis written in the source file, which might be either
 /// unit cost or total cost.
@@ -511,9 +509,12 @@ impl<'source> Parser<'source> {
         })?;
         let (token, text) = self.lexer.peek()?;
         match token {
-            Token::Asterisk | Token::QuestionMark | Token::Txn | Token::Balance | Token::Pad | Token::ExclamationMark => {
-                self.parse_txn(date, draft)
-            }
+            Token::Asterisk
+            | Token::QuestionMark
+            | Token::Txn
+            | Token::Balance
+            | Token::Pad
+            | Token::ExclamationMark => self.parse_txn(date, draft),
             Token::Open => self.parse_open(date, draft),
             Token::Close => self.parse_close(date, draft),
             Token::Document => self.parse_document(date, draft),

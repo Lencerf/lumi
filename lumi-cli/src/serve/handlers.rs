@@ -5,11 +5,9 @@ use lumi::web::{
 };
 use lumi::{BalanceSheet, Error, Ledger, Transaction, TxnFlag};
 use rust_decimal::Decimal;
+use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::sync::Arc;
-use std::{
-    collections::{HashMap, HashSet},
-    convert::Infallible,
-};
 use tokio::sync::RwLock;
 
 pub async fn refresh(
