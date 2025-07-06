@@ -51,6 +51,9 @@ pub enum Token {
     #[token("?")]
     QuestionMark,
 
+    #[token("!")]
+    ExclamationMark,
+
     #[token("@")]
     AtUnit,
 

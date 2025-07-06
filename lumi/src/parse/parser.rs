@@ -511,7 +511,7 @@ impl<'source> Parser<'source> {
         })?;
         let (token, text) = self.lexer.peek()?;
         match token {
-            Token::Asterisk | Token::QuestionMark | Token::Txn | Token::Balance | Token::Pad => {
+            Token::Asterisk | Token::QuestionMark | Token::Txn | Token::Balance | Token::Pad | Token::ExclamationMark => {
                 self.parse_txn(date, draft)
             }
             Token::Open => self.parse_open(date, draft),
@@ -633,7 +633,7 @@ impl<'source> Parser<'source> {
         let (token, text) = self.lexer.peek()?;
         let flag = match token {
             Token::Asterisk | Token::Txn => TxnFlag::Posted,
-            Token::QuestionMark => TxnFlag::Pending,
+            Token::QuestionMark | Token::ExclamationMark => TxnFlag::Pending,
             Token::Balance => TxnFlag::Balance,
             Token::Pad => TxnFlag::Pad,
             _ => return self.unexpected(token, text),
