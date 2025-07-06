@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: Install toolchain
       run: rustup target add wasm32-unknown-unknown
     - uses: jetli/trunk-action@v0.4.0
