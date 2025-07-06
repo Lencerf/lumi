@@ -4,7 +4,7 @@ use crate::components::{
 use crate::route::Route;
 use std::rc::Rc;
 use yew::prelude::*;
-use yew_router::history::{BrowserHistory, History, Location};
+use yew_router::history::{BrowserHistory, History};
 use yew_router::prelude::*;
 
 #[function_component(App)]

@@ -74,12 +74,14 @@ fn balance_view(props: &Props) -> Vec<Html> {
         } else {
             html! {<td colspan={"2"}></td>}
         };
+        let date = format!("{:?}", props.txn.date());
+        let amount = format!("{}", posting.amount);
         html! {
             <tr class={tr_class}>
-                <td class={"left mono date"}>{props.txn.date()}</td>
+                <td class={"left mono date"}>{date}</td>
                 <td class={"center mono flag"}>{"bal"}</td>
                 <td class={"left"} colspan={desc_span}><AccountRef account={posting.account.to_string()} /></td>
-                <td class={"right amount mono"}>{&posting.amount}</td>
+                <td class={"right amount mono"}>{amount}</td>
                 {extra_td}
             </tr>
         }
@@ -104,10 +106,11 @@ fn posting_view(ctx: &Context<TxnCell>, show_postings: bool) -> Vec<Html> {
     };
 
     let tr_class = format!("txn {}", even_odd(props.index));
+    let date = format!("{:?}", props.txn.date());
     if let Some((change, balance)) = &props.change_balance {
         result.push(html! {
             <tr class={tr_class}>
-                <td class={"left mono date"}>{props.txn.date()}</td>
+                <td class={"left mono date"}>{date}</td>
                 <td class={"center mono flag"}>{flag_str(props.txn.flag())}</td>
                 {desc}
                 <td colspan={"2"}></td>
@@ -118,7 +121,7 @@ fn posting_view(ctx: &Context<TxnCell>, show_postings: bool) -> Vec<Html> {
     } else {
         result.push(html! {
             <tr class={tr_class}>
-                <td class={"left mono date"}>{props.txn.date()}</td>
+                <td class={"left mono date"}>{date}</td>
                 <td class={"center mono flag"}>{flag_str(props.txn.flag())}</td>
                 {desc}
                 <td colspan={"2"}></td>
@@ -143,12 +146,13 @@ fn posting_view(ctx: &Context<TxnCell>, show_postings: bool) -> Vec<Html> {
         } else {
             html! {}
         };
+        let amount = format!("{}", posting.amount);
         result.push(html! {
             <tr class={&posting_class}>
                 <td></td>
                 <td></td>
                 <td class={"left"}><AccountRef account={posting.account.to_string()} /></td>
-                <td class={"right mono amount"}>{&posting.amount}</td>
+                <td class={"right mono amount"}>{amount}</td>
                 <td class={"right mono cost"}>{cost}</td>
                 <td class={"right mono amount"}>{price}</td>
                 {extra_td}

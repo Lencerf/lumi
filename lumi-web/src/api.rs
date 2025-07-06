@@ -1,4 +1,4 @@
-use lumi::web::{self, FilterOptions, JournalItem, Position, RefreshTime, TrieOptions, TrieTable};
+use lumi::web::{FilterOptions, JournalItem, Position, RefreshTime, TrieOptions, TrieTable};
 use std::{collections::HashMap, rc::Rc, string::ToString};
 use yew::{Component, Context};
 

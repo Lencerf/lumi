@@ -10,7 +10,7 @@ use yew::context::ContextHandle;
 
 use yew::prelude::*;
 use yew_router::components::Link;
-use yew_router::history::{BrowserHistory, History, Location};
+use yew_router::history::{BrowserHistory, History};
 use yew_router::Routable;
 
 #[derive(Properties, Clone, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 use crate::api::{self, FetchState};
 use crate::components::AccountRef;
 use anyhow::Error;
-use chrono::MIN_DATE;
+use chrono::NaiveDate;
 use lumi::web::Position;
 
 use std::collections::HashMap;
@@ -88,7 +88,7 @@ impl Component for HoldingTable {
                             &p.currency,
                             p.cost
                                 .as_ref()
-                                .map_or(MIN_DATE.naive_local(), |cost| cost.date),
+                                .map_or(NaiveDate::MIN, |cost| cost.date),
                         )
                     });
                     for position in account_entries {
@@ -96,12 +96,14 @@ impl Component for HoldingTable {
                             continue;
                         }
                         if let Some(cost) = &position.cost {
+                            let amount = format!("{}", cost.amount);
+                            let date = format!("{:?}", cost.date);
                             rows.push(html!{
                                 <tr>
                                     <td class={"left"}><AccountRef account={account.clone()}/></td>
                                     <td class={"mono right"}>{position.number}{" "}{&position.currency}</td>
-                                    <td class={"mono right"}>{&cost.amount}</td>
-                                    <td class={"mono right"}>{&cost.date}</td>
+                                    <td class={"mono right"}>{amount}</td>
+                                    <td class={"mono right"}>{date}</td>
                                     <td class={"mono right"}>{position.number*cost.amount.number}{" "}{&cost.amount.currency}</td>
                                 </tr>
                             })
