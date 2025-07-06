@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use lumi::Ledger;
 
 fn parse_text_ledger(path: &str) -> Ledger {

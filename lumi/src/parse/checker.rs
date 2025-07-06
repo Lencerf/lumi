@@ -1,5 +1,5 @@
-use rust_decimal::prelude::Zero;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::Zero;
 use std::collections::{HashMap, HashSet};
 
 use crate::options::*;

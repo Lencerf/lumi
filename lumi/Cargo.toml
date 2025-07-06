@@ -2,7 +2,7 @@
 name = "lumi"
 version = "0.2.0"
 authors = ["Lencerf <changyuan.lv@gmail.com>"]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 description = "A library for processing text-based ledger files."
 homepage = "https://github.com/Lencerf/lumi"
@@ -24,7 +24,6 @@ criterion = "0.5"
 [lib]
 name = "lumi"
 path = "src/lib.rs"
-
 
 [[bench]]
 name = "parse_bench"
