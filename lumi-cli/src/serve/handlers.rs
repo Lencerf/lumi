@@ -1,29 +1,33 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use chrono::Datelike;
 use lumi::web::{
     FilterOptions, JournalItem, Position, RefreshTime, TrieNode, TrieOptions, TrieTable,
     TrieTableRow,
 };
-use lumi::{BalanceSheet, Error, Ledger, Transaction, TxnFlag};
+use lumi::{BalanceSheet, Ledger, Transaction, TxnFlag};
 use rust_decimal::Decimal;
-use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
-pub async fn refresh(
-    ledger: Arc<RwLock<Ledger>>,
-    errors: Arc<RwLock<Vec<Error>>>,
-    path: String,
-) -> Result<impl warp::Reply, Infallible> {
+use crate::serve::LedgerData;
+
+pub async fn get_refresh(
+    State(path): State<Arc<str>>,
+    Extension(data): Extension<Arc<RwLock<LedgerData>>>,
+) -> Response {
     let (new_ledger, new_errors) = Ledger::from_file(&path);
-    let (mut ledger, mut errors) = (ledger.write().await, errors.write().await);
-    // (ledger, errors) = (new_ledger, new_errors);
-    *ledger = new_ledger;
-    *errors = new_errors;
+    let mut data = data.write().await;
+    data.ledger = new_ledger;
+    data.errors = new_errors;
     let timestamp = chrono::Utc::now().timestamp();
     let reply = RefreshTime { timestamp };
     log::info!("Ledger refreshed: {}", timestamp);
-    Ok(warp::reply::json(&reply))
+    Json(reply).into_response()
 }
 
 fn balance_sheet_to_list(sheet: &BalanceSheet) -> HashMap<String, Vec<Position>> {
@@ -135,27 +139,28 @@ pub fn build_trie<'s>(
     (root_node, currencies)
 }
 
-pub async fn trie(
-    root_account: String,
-    options: TrieOptions,
-    ledger: Arc<RwLock<Ledger>>,
-) -> Result<impl warp::Reply, Infallible> {
-    let ledger = ledger.read().await;
-    let trie_table = build_trie_table(&ledger, &root_account, options);
-    let result = trie_table.unwrap_or_default();
-    Ok(warp::reply::json(&result))
+pub async fn get_trie(
+    Path(account): Path<String>,
+    Query(options): Query<TrieOptions>,
+    Extension(data): Extension<Arc<RwLock<LedgerData>>>,
+) -> Response {
+    let ledger = &data.read().await.ledger;
+    let Some(trie_table) = build_trie_table(&ledger, &account, options) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    Json(&trie_table).into_response()
 }
 
-pub async fn errors(errors: Arc<RwLock<Vec<Error>>>) -> Result<impl warp::Reply, Infallible> {
-    let errors = errors.read().await;
-    Ok(warp::reply::json(&*errors))
+pub async fn get_errors(Extension(data): Extension<Arc<RwLock<LedgerData>>>) -> Response {
+    let errors = &data.read().await.errors;
+    Json(errors).into_response()
 }
 
-pub async fn balances(ledger: Arc<RwLock<Ledger>>) -> Result<impl warp::Reply, Infallible> {
-    let ledger = ledger.read().await;
-    Ok(warp::reply::json(&balance_sheet_to_list(
-        ledger.balance_sheet(),
-    )))
+pub async fn get_balances(
+    Extension(data): Extension<Arc<RwLock<LedgerData>>>,
+) -> impl IntoResponse {
+    let ledger = &data.read().await.ledger;
+    Json(balance_sheet_to_list(ledger.balance_sheet()))
 }
 
 fn filter_account(txn: &Transaction, account: &str) -> bool {
@@ -187,12 +192,27 @@ fn update_balance<'t>(
     changes
 }
 
-pub async fn account_journal(
+pub async fn get_journal(
+    Query(options): Query<FilterOptions>,
+    Extension(data): Extension<Arc<RwLock<LedgerData>>>,
+) -> Response {
+    account_journal(None, options, data).await
+}
+
+pub async fn get_account(
+    Path(account): Path<String>,
+    Query(options): Query<FilterOptions>,
+    Extension(data): Extension<Arc<RwLock<LedgerData>>>,
+) -> Response {
+    account_journal(Some(account), options, data).await
+}
+
+async fn account_journal(
     account: Option<String>,
     options: FilterOptions,
-    ledger: Arc<RwLock<Ledger>>,
-) -> Result<impl warp::Reply, Infallible> {
-    let ledger = ledger.read().await;
+    data: Arc<RwLock<LedgerData>>,
+) -> Response {
+    let ledger = &data.read().await.ledger;
     let mut filters: Vec<Box<dyn Fn(&Transaction) -> bool>> = Vec::new();
     if let Some(ref account) = account {
         filters.push(Box::new(move |txn: &Transaction| {
@@ -226,10 +246,8 @@ pub async fn account_journal(
     let entries = std::cmp::max(options.entries.unwrap_or(50), 1);
     let old_first = options.old_first.unwrap_or(false);
     if (page - 1) * entries >= txns.len() {
-        Ok(warp::reply::json(&(
-            Vec::<Transaction>::new(),
-            total_number,
-        )))
+        let empty: [u8; 0] = [];
+        Json((empty, total_number)).into_response()
     } else {
         let num_skip = if old_first {
             (page - 1) * entries
@@ -273,6 +291,6 @@ pub async fn account_journal(
         if !old_first {
             items.reverse();
         }
-        Ok(warp::reply::json(&(items, total_number)))
+        Json(&(items, total_number)).into_response()
     }
 }
