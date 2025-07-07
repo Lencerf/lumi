@@ -98,7 +98,7 @@ pub fn get_account_journal<C, F, M>(
     let rel_url = if !account.is_empty() {
         format!("api/account/{}?{}", account, query)
     } else {
-        format!("api/journal/?{}", query)
+        format!("api/journal?{}", query)
     };
     fetch(ctx, &rel_url, callback);
 }
