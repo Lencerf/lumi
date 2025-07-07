@@ -1,20 +1,73 @@
-use headers::{ContentType, HeaderMapExt};
-use include_dir::{include_dir, Dir};
-use lumi::Ledger;
-use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
-use tokio::signal;
-use tokio::sync::{oneshot, RwLock};
-use warp::Filter;
 
-mod filters;
+use axum::body::Bytes;
+use axum::extract::Path;
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Extension, Router};
+use include_dir::{Dir, include_dir};
+use lumi::{Error, Ledger};
+use tokio::net::TcpListener;
+use tokio::signal;
+use tokio::sync::{RwLock, oneshot};
+
 mod handlers;
 
 static WEB_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../lumi-web/dist");
 
-fn get_file(path: &str) -> Option<&'static [u8]> {
-    WEB_DIR.get_file(path).map(|f| f.contents())
+async fn file(path: Option<Path<String>>) -> Response {
+    let pages = [
+        "index.html",
+        "errors",
+        "holdings",
+        "account",
+        "journal",
+        "income",
+        "balance_sheet",
+    ];
+    let key = if let Some(Path(p)) = &path {
+        let page = if let Some((dir, _)) = p.split_once('/') {
+            dir
+        } else {
+            p.as_str()
+        };
+        if pages.contains(&page) {
+            "index.html"
+        } else {
+            p.as_str()
+        }
+    } else {
+        "index.html"
+    };
+
+    let Some(f) = WEB_DIR.get_file(key) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let contents = f.contents();
+
+    let Some((_, suffix)) = key.rsplit_once('.') else {
+        return Bytes::from(contents).into_response();
+    };
+    let mime = match suffix {
+        "html" => mime::TEXT_HTML_UTF_8.as_ref(),
+        "css" => mime::TEXT_CSS_UTF_8.as_ref(),
+        "js" => mime::APPLICATION_JAVASCRIPT_UTF_8.as_ref(),
+        "wasm" => "application/wasm",
+        _ => mime::OCTET_STREAM.as_str(),
+    };
+
+    (
+        [(header::CONTENT_TYPE, HeaderValue::from_static(mime))],
+        contents,
+    )
+        .into_response()
+}
+
+pub struct LedgerData {
+    ledger: Ledger,
+    errors: Vec<Error>,
 }
 
 pub async fn serve(
@@ -24,59 +77,43 @@ pub async fn serve(
     errors: Vec<lumi::Error>,
 ) -> std::io::Result<()> {
     pretty_env_logger::init();
-    let root_index = warp::path::end().map(|| {
-        let index = get_file("index.html").unwrap();
-        warp::reply::html(index)
-    });
 
-    let pages: HashSet<&str> = [
-        "errors",
-        "holdings",
-        "account",
-        "journal",
-        "income",
-        "balance_sheet",
-    ]
-    .into_iter()
-    .collect();
-    let file = warp::path::param().map(move |path: String| {
-        if let Some(contents) = get_file(&path) {
-            let mime = mime_guess::from_path(&path).first_or_octet_stream();
-            let mut resp = warp::reply::Response::new(contents.into());
-            resp.headers_mut().typed_insert(ContentType::from(mime));
-            resp
-        } else if pages.contains(path.as_str()) {
-            let index = get_file("index.html").unwrap();
-            let mut resp = warp::reply::Response::new(index.into());
-            resp.headers_mut().typed_insert(ContentType::html());
-            resp
-        } else {
-            let mut resp = warp::reply::Response::default();
-            *resp.status_mut() = warp::http::StatusCode::NOT_FOUND;
-            resp
-        }
-    });
-    let get_file = warp::get().and(root_index.or(file));
+    let state = Arc::new(RwLock::new(LedgerData { ledger, errors }));
+    let src_path = Arc::<str>::from(path);
 
-    let addr: SocketAddr = addr
-        .parse()
-        .unwrap_or_else(|_| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8001));
-    let api = filters::ledger_api(
-        Arc::new(RwLock::new(ledger)),
-        Arc::new(RwLock::new(errors)),
-        path,
-    );
+    let api_routes = Router::new()
+        .without_v07_checks()
+        .route("/balances", get(handlers::get_balances))
+        .route("/errors", get(handlers::get_errors))
+        .route("/trie/{account}", get(handlers::get_trie))
+        .route("/journal", get(handlers::get_journal))
+        .route("/account/{account}", get(handlers::get_account))
+        .route("/refresh", get(handlers::get_refresh))
+        .with_state(src_path)
+        .layer(Extension(state));
 
-    let routes = api.or(get_file).with(warp::log("lumi-server"));
+    let app = Router::new()
+        .nest("/api", api_routes)
+        .route("/", get(file))
+        .route("/{*file}", get(file));
+
+    let addr = if addr.is_empty() {
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8001))
+    } else {
+        addr.parse().map_err(|_| std::io::ErrorKind::InvalidInput)?
+    };
+
     let (tx, rx) = oneshot::channel();
-    let (_addr, server) = warp::serve(routes).bind_with_graceful_shutdown(addr, async {
+
+    let listener = TcpListener::bind(addr).await?;
+    let server = axum::serve(listener, app).with_graceful_shutdown(async {
         rx.await.ok();
     });
-    let handle = tokio::task::spawn(server);
+
+    let handle = tokio::task::spawn(async { server.await });
 
     signal::ctrl_c().await?;
     tx.send(()).ok();
 
-    handle.await?;
-    Ok(())
+    handle.await?
 }
