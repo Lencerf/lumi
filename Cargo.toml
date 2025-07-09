@@ -1,5 +1,5 @@
 [workspace]
-members = ["lumi", "lumi-cli", "lumi-web"]
+members = ["lumi", "lumi-cli", "lumi-web", "lumi-ui"]
 # Use resolver v1 for now
 # https://github.com/rust-lang/cargo/pull/15788
 resolver = "1"
