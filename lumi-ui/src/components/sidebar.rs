@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_router::components::A;
 
 #[component]
 pub fn Sidebar() -> impl IntoView {
@@ -12,9 +13,9 @@ pub fn Sidebar() -> impl IntoView {
     .map(|(dst, text)| {
         view! {
             <li>
-                <a href=dst>
+                <A href=dst>
                     <span>{text}</span>
-                </a>
+                </A>
             </li>
         }
     });
