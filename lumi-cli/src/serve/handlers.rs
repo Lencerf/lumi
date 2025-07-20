@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::Datelike;
@@ -153,7 +153,21 @@ pub async fn get_trie(
 
 pub async fn get_errors(Extension(data): Extension<Arc<RwLock<LedgerData>>>) -> Response {
     let errors = &data.read().await.errors;
-    Json(errors).into_response()
+    (
+        [
+            (
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                header::HeaderValue::from_static("*"),
+            ),
+            (
+                header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                header::HeaderValue::from_static("true"),
+            )
+        ]
+        ,
+        Json(errors)
+    ).into_response()
+    // Json(errors).into_response()
 }
 
 pub async fn get_balances(

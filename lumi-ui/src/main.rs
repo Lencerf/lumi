@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use leptos_meta::*;
 use leptos_router::{components::*, path};
 
+mod api;
 #[path = "components/components.rs"]
 mod components;
 mod pages;
