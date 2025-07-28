@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, oneshot};
 
 mod handlers;
 
-static WEB_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../lumi-web/dist");
+static WEB_DIR: Dir = include_dir!("$OUT_DIR/site");
 
 async fn file(path: Option<Path<String>>) -> Response {
     let pages = [
@@ -111,6 +111,7 @@ pub async fn serve(
     });
 
     let handle = tokio::task::spawn(async { server.await });
+    println!("listening on http://{}", &addr);
 
     signal::ctrl_c().await?;
     tx.send(()).ok();

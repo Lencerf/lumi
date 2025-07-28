@@ -1,5 +1,7 @@
 use lumi::web::{FilterOptions, JournalItem, Position, RefreshTime, TrieOptions, TrieTable};
-use std::{collections::HashMap, rc::Rc, string::ToString};
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::string::ToString;
 use yew::{Component, Context};
 
 pub enum FetchState<T> {

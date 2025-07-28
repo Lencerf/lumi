@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width">
+        <title>Lumi</title>
+        <link rel="stylesheet" href="/style.css"/>
+        <script type="module">
+            import init, * as bindings from '/lumi-web.js';
+            const wasm = await init({ module_or_path: '/lumi-web_bg.wasm' });
+            window.wasmBindings = bindings;
+            dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+        </script>
+        <link rel="preconnect" href="https://fonts.gstatic.com">
+        <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+        <link rel="modulepreload" href="/lumi-web.js" crossorigin="anonymous">
+        <link rel="preload" href="/lumi-web_bg.wasm" crossorigin="anonymous" as="fetch" type="application/wasm">
+    </head>
+</html>

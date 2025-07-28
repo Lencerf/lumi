@@ -1,6 +1,6 @@
 [workspace]
-members = ["lumi", "lumi-cli"]
-exclude = ["lumi-web"]
+members = ["lumi", "lumi-cli", "lumi-web"]
+resolver = "1"
 
 [profile.release]
 lto = true
