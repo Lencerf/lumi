@@ -22,6 +22,12 @@ log = "0.4"
 pretty_env_logger = "0.5"
 mime = "0.3.17"
 
+[build-dependencies]
+lumi-web = { path = "../lumi-web", artifact = [
+    "bin",
+], target = "wasm32-unknown-unknown" }
+wasm-bindgen-cli-support = "0.2"
+
 [[bin]]
 name = "lumi"
 path = "src/lumi.rs"
