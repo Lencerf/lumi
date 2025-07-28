@@ -1,7 +1,8 @@
 use crate::api::{self, FetchState, LumiErrors};
 use anyhow::Error;
 use lumi::ErrorLevel;
-use yew::{context::ContextHandle, prelude::*};
+use yew::context::ContextHandle;
+use yew::prelude::*;
 
 pub enum Msg {
     GetErrors,

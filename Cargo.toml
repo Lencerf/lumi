@@ -1,6 +1,8 @@
 [workspace]
-members = ["lumi", "lumi-cli"]
-exclude = ["lumi-web"]
+members = ["lumi", "lumi-cli", "lumi-web"]
+# Use resolver v1 for now
+# https://github.com/rust-lang/cargo/pull/15788
+resolver = "1"
 
 [profile.release]
 lto = true
