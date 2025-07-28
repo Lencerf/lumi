@@ -3,6 +3,7 @@ use crate::components::AccountRef;
 use anyhow::Error;
 use chrono::NaiveDate;
 use lumi::web::Position;
+use rust_decimal::Decimal;
 
 use std::collections::HashMap;
 
@@ -86,9 +87,10 @@ impl Component for HoldingTable {
                     account_entries.sort_by_key(|p| {
                         (
                             &p.currency,
+                            p.cost.as_ref().map_or(NaiveDate::MIN, |cost| cost.date),
                             p.cost
                                 .as_ref()
-                                .map_or(NaiveDate::MIN, |cost| cost.date),
+                                .map_or(Decimal::ZERO, |cost| cost.amount.number),
                         )
                     });
                     for position in account_entries {
