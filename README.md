@@ -27,9 +27,6 @@ The source code of lumi can be obtained from
 lumi from source,
 
 ```sh
-# Install dependencies
-cargo install trunk
-
 # build
 git clone https://github.com/Lencerf/lumi && cd lumi
 cargo build --bin lumi --release
@@ -40,8 +37,7 @@ cargo build --bin lumi --release
 Or install it through `cargo`,
 
 ```sh
-cargo install trunk
-cargo install --git https://github.com/Lencerf/lumi lumi-cli
+cargo +nightly -Z bindeps install --git https://github.com/Lencerf/lumi lumi-cli
 ```
 
 ## Usage
