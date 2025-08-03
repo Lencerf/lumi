@@ -4,14 +4,14 @@ use crate::api::{self, FetchState, Journal};
 use crate::components::{EntrySelector, TxnCell};
 use crate::route::Route;
 use anyhow::Error;
-use lumi::web::{FilterOptions, DEFAULT_ENTRIES_PER_PAGE};
+use lumi::web::{DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
 use rust_decimal::Decimal;
 use yew::context::ContextHandle;
 
 use yew::prelude::*;
+use yew_router::Routable;
 use yew_router::components::Link;
 use yew_router::history::{BrowserHistory, History};
-use yew_router::Routable;
 
 #[derive(Properties, Clone, PartialEq, Eq)]
 pub struct Props {
