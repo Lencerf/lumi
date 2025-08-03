@@ -810,6 +810,7 @@ impl<'source> Parser<'source> {
         }
         Ok(None)
     }
+
     fn parse_amount(&mut self) -> Result<Amount, Error> {
         let start = self.lexer.location();
         let num_str = self.lexer.take(Token::Number)?;

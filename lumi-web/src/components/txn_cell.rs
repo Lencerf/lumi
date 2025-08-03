@@ -32,11 +32,7 @@ fn flag_str(flag: TxnFlag) -> &'static str {
 }
 
 fn even_odd(index: usize) -> &'static str {
-    if (index & 1) == 0 {
-        "even"
-    } else {
-        "odd"
-    }
+    if (index & 1) == 0 { "even" } else { "odd" }
 }
 
 fn desc(txn: &Transaction) -> Html {

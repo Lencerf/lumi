@@ -1,5 +1,5 @@
 use crate::route::Route;
-use lumi::web::{FilterOptions, DEFAULT_ENTRIES_PER_PAGE};
+use lumi::web::{DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
 use yew::prelude::*;
 use yew_router::hooks::use_location;
 use yew_router::prelude::*;

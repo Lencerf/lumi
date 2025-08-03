@@ -1,8 +1,8 @@
 use crate::components::sidebar_item::SidebarItem;
 use crate::route::Route;
-use yew::{function_component, html, use_state_eq, Callback, Html};
-use yew_router::hooks::use_location;
+use yew::{Callback, Html, function_component, html, use_state_eq};
 use yew_router::Routable;
+use yew_router::hooks::use_location;
 
 #[function_component(Sidebar)]
 pub fn sidebar() -> Html {
