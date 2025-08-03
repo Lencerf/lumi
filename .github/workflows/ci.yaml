@@ -2,32 +2,31 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   ci:
-
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-    - name: Install toolchain
-      run: rustup target add wasm32-unknown-unknown
-    - uses: jetli/trunk-action@v0.5.1
-      with:
-        version: 'latest'
-    - name: Build
-      run: cargo build --all-features
-      env:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          rustup toolchain install nightly && \
+          rustup component add --toolchain nightly rustfmt && \
+          rustup default nightly && \
+          rustup target add wasm32-unknown-unknown
+      - name: Build
+        run: cargo build --all-features
+        env:
           RUST_BACKTRACE: 1
-    - name: Run tests
-      run: cargo test
-      env:
+      - name: Run tests
+        run: cargo test
+        env:
           RUST_BACKTRACE: 1
-    - name: Check formatting
-      run: cargo fmt -- --check
+      - name: Check formatting
+        run: cargo fmt -- --check
