@@ -1687,7 +1687,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
- "gloo-utils 0.1.7",
+ "gloo-utils 0.2.0",
  "log",
  "lumi",
  "reqwest",
