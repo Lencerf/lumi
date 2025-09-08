@@ -11,7 +11,7 @@ readme = "../README.md"
 documentation = "https://docs.rs/lumi"
 
 [dependencies]
-logos = "0.12.1"
+logos = "0.15.0"
 rust_decimal = { version = "1.29.1" }
 chrono = { version = "0.4", features = ["serde"] }
 num_cpus = "1.15.0"
