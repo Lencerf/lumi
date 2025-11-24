@@ -12,7 +12,7 @@ documentation = "https://docs.rs/lumi"
 
 [dependencies]
 logos = "0.12.1"
-rust_decimal = { version = "1.38.0" }
+rust_decimal = { version = "1.39.0" }
 chrono = { version = "0.4", features = ["serde"] }
 num_cpus = "1.15.0"
 serde = { version = "1.0", features = ["derive", "rc"], optional = true }
