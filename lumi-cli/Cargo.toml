@@ -1,33 +1,32 @@
 [package]
 name = "lumi-cli"
 version = "0.2.0"
-authors = ["Lencerf <changyuan.lv@gmail.com>"]
 edition = "2024"
-license = "MIT"
 description = "A cli-tool for double-entry accounting."
+documentation = "https://docs.rs/lumi"
+readme = "../README.md"
 homepage = "https://github.com/Lencerf/lumi"
 repository = "https://github.com/Lencerf/lumi"
-readme = "../README.md"
-documentation = "https://docs.rs/lumi"
-
-[dependencies]
-lumi = { version = "*", path = "../lumi", features = ["serde"] }
-clap = { version = "4", features = ["derive", "suggestions"] }
-rust_decimal = { version = "1.40.0" }
-chrono = { version = "0.4", features = ["serde"] }
-tokio = { version = "1", features = ["full"] }
-axum = "0.8"
-include_dir = "0.7.3"
-log = "0.4"
-pretty_env_logger = "0.5"
-mime = "0.3.17"
-
-[build-dependencies]
-lumi-web = { path = "../lumi-web", artifact = [
-    "bin",
-], target = "wasm32-unknown-unknown" }
-wasm-bindgen-cli-support = "0.2"
+license = "MIT"
 
 [[bin]]
 name = "lumi"
 path = "src/lumi.rs"
+
+[dependencies]
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "suggestions"] }
+include_dir = "0.7.3"
+log = "0.4"
+lumi = { path = "../lumi", version = "*", features = ["serde"] }
+mime = "0.3.17"
+pretty_env_logger = "0.5"
+rust_decimal = { version = "1.40.0" }
+tokio = { version = "1", features = ["full"] }
+
+[build-dependencies]
+lumi-web = { path = "../lumi-web", artifact = [
+  "bin",
+], target = "wasm32-unknown-unknown" }
+wasm-bindgen-cli-support = "0.2"

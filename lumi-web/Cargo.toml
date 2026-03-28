@@ -1,20 +1,19 @@
 [package]
 name = "lumi-web"
 version = "0.2.0"
-authors = ["Lencerf <changyuan.lv@gmail.com>"]
 edition = "2021"
 license = "MIT"
 
 [dependencies]
-yew = { version = "0.21", features = ["csr"] }
-yew-router = "0.18"
-reqwest = { version = "0.12", features = ["json"] }
-lumi = { version = "*", path = "../lumi", features = ["serde"]}
 anyhow = "1.0"
+chrono = "0.4"
+gloo-utils = "0.2.0"
+log = "0.4"
+lumi = { path = "../lumi", version = "*", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json"] }
+rust_decimal = "1.40.0"
 serde = "1.0"
 serde_urlencoded = "0.7.1"
-chrono = "0.4"
-rust_decimal = "1.40.0"
 wasm-logger = "0.2"
-log = "0.4"
-gloo-utils = "0.2.0"
+yew = { version = "0.21", features = ["csr"] }
+yew-router = "0.18"
