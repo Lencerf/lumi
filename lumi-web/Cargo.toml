@@ -15,5 +15,5 @@ rust_decimal = "1.40.0"
 serde = "1.0"
 serde_urlencoded = "0.7.1"
 wasm-logger = "0.2"
-yew = { version = "0.21", features = ["csr"] }
+yew = { version = "0.23", features = ["csr"] }
 yew-router = "0.18"
