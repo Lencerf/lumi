@@ -10,7 +10,7 @@ chrono = "0.4"
 gloo-utils = "0.2.0"
 log = "0.4"
 lumi = { path = "../lumi", version = "*", features = ["serde"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 rust_decimal = "1.40.0"
 serde = "1.0"
 serde_urlencoded = "0.7.1"
