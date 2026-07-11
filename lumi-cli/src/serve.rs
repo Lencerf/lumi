@@ -111,7 +111,7 @@ pub async fn serve(
     });
 
     let handle = tokio::task::spawn(async { server.await });
-    println!("listening on http://{}", &addr);
+    println!("listening on http://{}", addr);
 
     signal::ctrl_c().await?;
     tx.send(()).ok();

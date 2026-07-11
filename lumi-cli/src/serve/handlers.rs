@@ -145,7 +145,7 @@ pub async fn get_trie(
     Extension(data): Extension<Arc<RwLock<LedgerData>>>,
 ) -> Response {
     let ledger = &data.read().await.ledger;
-    let Some(trie_table) = build_trie_table(&ledger, &account, options) else {
+    let Some(trie_table) = build_trie_table(ledger, &account, options) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     Json(&trie_table).into_response()
@@ -182,7 +182,7 @@ fn update_balance<'t>(
     }
     let mut changes: HashMap<&str, Decimal> = HashMap::new();
     for posting in txn.postings().iter() {
-        if posting.cost.is_none() && posting.account.starts_with(&account) {
+        if posting.cost.is_none() && posting.account.starts_with(account) {
             *changes.entry(posting.amount.currency.as_str()).or_default() += posting.amount.number;
         }
     }
@@ -224,10 +224,10 @@ async fn account_journal(
             filter_account(txn, account)
         }));
     };
-    if let Some(time) = &options.time {
-        if let Ok(year) = time.parse::<i32>() {
-            filters.push(Box::new(move |txn: &Transaction| txn.date().year() == year));
-        }
+    if let Some(time) = &options.time
+        && let Ok(year) = time.parse::<i32>()
+    {
+        filters.push(Box::new(move |txn: &Transaction| txn.date().year() == year));
     }
     let txns: Vec<_> = ledger
         .txns()

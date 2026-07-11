@@ -1,7 +1,6 @@
 use lumi::web::{FilterOptions, JournalItem, Position, RefreshTime, TrieOptions, TrieTable};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::string::ToString;
 use yew::{Component, Context};
 
 pub enum FetchState<T> {
@@ -31,7 +30,7 @@ where
         "{}//{}/{}",
         location.protocol().unwrap(),
         location.host().unwrap(),
-        rel_url.to_string()
+        rel_url
     );
     link.send_future(async move {
         let result = fetch_json_content(url).await;
@@ -71,7 +70,7 @@ where
     F: Fn(anyhow::Result<Trie>) -> M + 'static,
     M: Into<C::Message>,
 {
-    let query = serde_urlencoded::to_string(&options).unwrap();
+    let query = serde_urlencoded::to_string(options).unwrap();
     let rel_url = format!("api/trie/{}?{}", root, query);
     fetch(ctx, &rel_url, callback);
 }
@@ -96,7 +95,7 @@ pub fn get_account_journal<C, F, M>(
     F: Fn(anyhow::Result<(Journal, usize)>) -> M + 'static,
     M: Into<C::Message>,
 {
-    let query = serde_urlencoded::to_string(&options).unwrap();
+    let query = serde_urlencoded::to_string(options).unwrap();
     let rel_url = if !account.is_empty() {
         format!("api/account/{}?{}", account, query)
     } else {

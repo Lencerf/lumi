@@ -16,8 +16,8 @@ impl UnitCost {
     fn matches(&self, unit_cost_amount: &Option<Amount>, date: &Option<NaiveDate>) -> bool {
         unit_cost_amount
             .as_ref()
-            .map_or(true, |amount| amount.eq(&self.amount))
-            && date.map_or(true, |date| date == self.date)
+            .is_none_or(|amount| amount.eq(&self.amount))
+            && date.is_none_or(|date| date == self.date)
     }
 }
 
@@ -75,7 +75,7 @@ fn check_accounts(
                         level: ErrorLevel::Error,
                         r#type: ErrorType::Account,
                         src: close_src,
-                        msg: format!("{} closed before being opened.", &account),
+                        msg: format!("{} closed before being opened.", account),
                     });
                     None
                 } else {
@@ -96,7 +96,7 @@ fn check_accounts(
             };
             result.insert(account, valid_info);
         } else {
-            let msg = format!("Reference to an unknown account {}.", &account);
+            let msg = format!("Reference to an unknown account {}.", account);
             for note in notes {
                 errors.push(Error {
                     level: ErrorLevel::Error,
@@ -118,7 +118,7 @@ fn check_accounts(
                     level: ErrorLevel::Error,
                     r#type: ErrorType::Account,
                     src: close_src,
-                    msg: msg,
+                    msg,
                 });
             }
         }
@@ -136,22 +136,22 @@ fn check_posting(
         if txn_date < info.open.0 {
             return Err(format!("{} unopened as of {}.", account, txn_date));
         }
-        if let Some((close_date, _)) = info.close {
-            if txn_date > close_date {
-                return Err(format!("{} closed as of {}.", account, txn_date));
-            }
+        if let Some((close_date, _)) = info.close
+            && txn_date > close_date
+        {
+            return Err(format!("{} closed as of {}.", account, txn_date));
         }
         if let Some(Amount {
             number: _,
             currency,
         }) = &posting.amount
+            && !info.currencies.is_empty()
+            && !info.currencies.contains(currency)
         {
-            if info.currencies.len() > 0 && !info.currencies.contains(currency) {
-                return Err(format!(
-                    "{} not in the allowed currency set of {}: {:?}.",
-                    currency, account, info.currencies
-                ));
-            }
+            return Err(format!(
+                "{} not in the allowed currency set of {}: {:?}.",
+                currency, account, info.currencies
+            ));
         }
         Ok(())
     } else {
@@ -168,13 +168,8 @@ fn is_opening_new(
             if cost.is_none() {
                 continue;
             }
-            if (number.is_sign_negative() && p_number.is_sign_positive())
-                || (number.is_sign_positive() && p_number.is_sign_negative())
-            {
-                return false;
-            } else {
-                return true;
-            }
+            return !((number.is_sign_negative() && p_number.is_sign_positive())
+                || (number.is_sign_positive() && p_number.is_sign_negative()));
         }
     }
     true
@@ -284,7 +279,7 @@ fn close_position(
                         "Account only has {} {} {}.",
                         holding_number,
                         p_amount.currency,
-                        &unit_cost.unwrap()
+                        unit_cost.unwrap()
                     ),
                     src: posting.src.clone(),
                 };
@@ -313,7 +308,7 @@ fn close_position(
             let candidates = running_balance.map_or(Vec::new(), |m| {
                 m.iter()
                     .filter(|(maybe_unit_cost, _)| {
-                        maybe_unit_cost.as_ref().map_or(false, |unit_cost| {
+                        maybe_unit_cost.as_ref().is_some_and(|unit_cost| {
                             unit_cost.matches(&unit_cost_amount, &cost_literal.date)
                         })
                     })
@@ -324,7 +319,7 @@ fn close_position(
                     let error = Error {
                         r#type: ErrorType::NoMatch,
                         level: ErrorLevel::Error,
-                        msg: format!("Account has no positions with cost {}.", &cost_literal),
+                        msg: format!("Account has no positions with cost {}.", cost_literal),
                         src: posting.src.clone(),
                     };
                     PostResult::Fail(error)
@@ -363,10 +358,7 @@ fn close_position(
                     let error = Error {
                         r#type: ErrorType::NoMatch,
                         level: ErrorLevel::Error,
-                        msg: format!(
-                            "Account has multiple positions with cost {}.",
-                            &cost_literal
-                        ),
+                        msg: format!("Account has multiple positions with cost {}.", cost_literal),
                         src: posting.src.clone(),
                     };
                     PostResult::Fail(error)
@@ -440,10 +432,10 @@ fn posting_flow(
         .and_then(|m| m.get(&p_amount.currency));
     let pending_change = balance_change
         .entry(posting.account.clone())
-        .or_insert(HashMap::new())
+        .or_default()
         .entry(p_amount.currency.clone())
-        .or_insert(HashMap::new());
-    if let Some(_) = &posting.cost {
+        .or_default();
+    if posting.cost.is_some() {
         if is_opening_new(p_amount.number, running_balance) {
             open_new_position(posting, txn_date, pending_change, per_currency_change)
         } else {
@@ -572,7 +564,7 @@ fn complete_posting(
             _ => unreachable!(),
         }
     } else {
-        if not_balanced.len() > 0 {
+        if !not_balanced.is_empty() {
             let error = Error {
                 msg: format!("Transaction not balanced: {}", not_balanced_list),
                 r#type: ErrorType::NotBalanced,
@@ -722,11 +714,7 @@ fn equal_within(
         let tolerance = tolerances
             .get(currency.as_str())
             .unwrap_or(tolerances.get(TOLERANCE_KEY_DEFAULT).unwrap());
-        if (lhs - rhs).abs() < *tolerance {
-            true
-        } else {
-            false
-        }
+        (lhs - rhs).abs() < *tolerance
     }
 }
 
@@ -747,9 +735,9 @@ fn find_pad_from(
 ) -> Result<Option<Account>, Error> {
     if let Some(info) = pad_from.get_mut(dest_account) {
         let from_account_currency_set = &valid_accounts.get(&info.from).unwrap().currencies;
-        if from_account_currency_set.len() > 0 && !from_account_currency_set.contains(currency) {
+        if !from_account_currency_set.is_empty() && !from_account_currency_set.contains(currency) {
             let error = Error {
-                msg: format!("Account {} cannot hold {}.", &info.from, currency),
+                msg: format!("Account {} cannot hold {}.", info.from, currency),
                 level: ErrorLevel::Error,
                 r#type: ErrorType::Account,
                 src: balance_src.clone(),
@@ -958,7 +946,7 @@ impl LedgerDraft {
             for posting in txn.postings.iter() {
                 if let Err(msg) = check_posting(posting, txn.date, &valid_accounts) {
                     errors.push(Error {
-                        msg: msg,
+                        msg,
                         src: posting.src.clone(),
                         level: ErrorLevel::Error,
                         r#type: ErrorType::Account,
@@ -988,7 +976,7 @@ impl LedgerDraft {
                         &valid_accounts,
                     );
                     errors.extend(balance_errors);
-                    if valid_txn.postings.len() > 0 {
+                    if !valid_txn.postings.is_empty() {
                         valid_txns.push(valid_txn);
                     }
                 }
@@ -1020,7 +1008,7 @@ impl LedgerDraft {
                             payee: String::new(),
                             narration: format!(
                                 "Pad {} from {}",
-                                &postings[0].account, &postings[1].account
+                                postings[0].account, postings[1].account
                             ),
                             links,
                             tags,

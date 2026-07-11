@@ -127,7 +127,7 @@ impl fmt::Display for Amount {
     }
 }
 
-impl<'a> Div<Decimal> for &'a Amount {
+impl Div<Decimal> for &Amount {
     type Output = Amount;
 
     fn div(self, rhs: Decimal) -> Self::Output {
@@ -149,7 +149,7 @@ impl Div<Decimal> for Amount {
     }
 }
 
-impl<'a> Mul<Decimal> for &'a Amount {
+impl Mul<Decimal> for &Amount {
     type Output = Amount;
 
     fn mul(self, rhs: Decimal) -> Self::Output {
@@ -223,7 +223,7 @@ pub struct Posting {
 impl fmt::Display for Posting {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let num_str = self.amount.to_string();
-        let index = num_str.find(|c| c == ' ' || c == '.').unwrap();
+        let index = num_str.find([' ', '.']).unwrap();
         let width = f.width().unwrap_or(46) - 1;
         let account_width = std::cmp::max(self.account.len() + 1, width - index);
         write!(
@@ -416,14 +416,8 @@ impl fmt::Display for Transaction {
         }
         let width = f.width().unwrap_or(50);
         match self.flag {
-            TxnFlag::Balance => {
-                if self.postings.len() == 1 {
-                    write!(f, " {:width$}", self.postings[0], width = width - 19)?;
-                } else {
-                    for posting in self.postings.iter() {
-                        write!(f, "\n    {:width$}", posting, width = width - 4)?;
-                    }
-                }
+            TxnFlag::Balance if self.postings.len() == 1 => {
+                write!(f, " {:width$}", self.postings[0], width = width - 19)?;
             }
             _ => {
                 for posting in self.postings.iter() {

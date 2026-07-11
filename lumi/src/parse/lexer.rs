@@ -95,7 +95,7 @@ impl<'source> Lexer<'source, Token> {
         let (token, text) = self.peek()?;
         if token != expected {
             Err(Error {
-                msg: format!("Expect {:?}, found {:?}({:?})", expected, &token, text),
+                msg: format!("Expect {:?}, found {:?}({:?})", expected, token, text),
                 src: Source {
                     file: self.file.clone(),
                     start: self.location,

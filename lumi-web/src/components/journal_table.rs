@@ -196,7 +196,7 @@ impl Component for JournalTable {
                     .entries
                     .unwrap_or(DEFAULT_ENTRIES_PER_PAGE);
                 let current_page = self.state.options.page.unwrap_or(1);
-                let total_pages = (total + entries - 1) / entries;
+                let total_pages = total.div_ceil(entries);
                 let mut link_pages = vec![];
                 if current_page > 0 && current_page <= total_pages {
                     if current_page > 4 {

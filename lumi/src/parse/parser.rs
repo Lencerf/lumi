@@ -51,10 +51,7 @@ impl CostLiteral {
     pub fn unwrap_unit_cost(self, p_number: Decimal) -> UnitCost {
         let date = self.date.unwrap();
         let amount = self.basis.unwrap().to_unit_cost(p_number);
-        UnitCost {
-            amount: amount,
-            date,
-        }
+        UnitCost { amount, date }
     }
 }
 
@@ -157,27 +154,27 @@ impl AccountInfoDraft {
             meta,
         } = another;
         let mut errors = vec![];
-        if let Some((_, src)) = &open {
-            if let Some((_, existing_src)) = &self.open {
-                errors.push(Error {
-                    level: ErrorLevel::Error,
-                    r#type: ErrorType::Duplicate,
-                    msg: format!("Account {} has been opened at {}.", name, existing_src),
-                    src: src.clone(),
-                });
-            }
+        if let Some((_, src)) = &open
+            && let Some((_, existing_src)) = &self.open
+        {
+            errors.push(Error {
+                level: ErrorLevel::Error,
+                r#type: ErrorType::Duplicate,
+                msg: format!("Account {} has been opened at {}.", name, existing_src),
+                src: src.clone(),
+            });
         }
-        if let Some((_, src)) = &close {
-            if let Some((_, existing_src)) = &self.close {
-                errors.push(Error {
-                    level: ErrorLevel::Error,
-                    r#type: ErrorType::Duplicate,
-                    msg: format!("Account {} has been closed at {}.", name, existing_src),
-                    src: src.clone(),
-                });
-            }
+        if let Some((_, src)) = &close
+            && let Some((_, existing_src)) = &self.close
+        {
+            errors.push(Error {
+                level: ErrorLevel::Error,
+                r#type: ErrorType::Duplicate,
+                msg: format!("Account {} has been closed at {}.", name, existing_src),
+                src: src.clone(),
+            });
         }
-        if errors.len() == 0 {
+        if errors.is_empty() {
             if open.is_some() {
                 self.open = open;
                 self.currencies = currencies;
@@ -216,7 +213,7 @@ impl LedgerDraft {
                 r#type: ErrorType::Duplicate,
                 msg: format!(
                     "Ignored directive: option {} has been specified at {}.",
-                    &key, existing_src
+                    key, existing_src
                 ),
                 src,
             })
@@ -240,7 +237,7 @@ impl LedgerDraft {
                 r#type: ErrorType::Duplicate,
                 msg: format!(
                     "Ignored directive: commodity {} has been defined at {}.",
-                    &commodity, existing_src
+                    commodity, existing_src
                 ),
                 src,
             })
@@ -363,10 +360,10 @@ impl<'source> Parser<'source> {
             let (lock, cvar) = cond.as_ref();
             let (task_path, refer_src) = {
                 let mut changed = lock.lock().unwrap();
-                while changed.0.len() == 0 && changed.1 > 0 {
+                while changed.0.is_empty() && changed.1 > 0 {
                     changed = cvar.wait(changed).unwrap();
                 }
-                if changed.0.len() > 0 {
+                if !changed.0.is_empty() {
                     changed.1 += 1;
                     changed.0.pop_front().unwrap()
                 } else {
@@ -433,9 +430,9 @@ impl<'source> Parser<'source> {
         let src = self.src_from(start);
         if let Some(sub_task) = self.sub_task_cond.as_mut() {
             {
-                (*sub_task).0.lock().unwrap().0.push_back((full_path, src));
+                sub_task.0.lock().unwrap().0.push_back((full_path, src));
             }
-            (*sub_task).1.notify_one();
+            sub_task.1.notify_one();
         } else {
             let mut q = VecDeque::new();
             q.push_back((full_path, src));
@@ -549,12 +546,7 @@ impl<'source> Parser<'source> {
             val: val.to_string(),
             src: self.src_from(start),
         };
-        draft
-            .accounts
-            .entry(account)
-            .or_insert(AccountInfoDraft::default())
-            .notes
-            .push(note);
+        draft.accounts.entry(account).or_default().notes.push(note);
         Ok(())
     }
 
@@ -568,12 +560,7 @@ impl<'source> Parser<'source> {
             val: val.to_string(),
             src: self.src_from(start),
         };
-        draft
-            .accounts
-            .entry(account)
-            .or_insert(AccountInfoDraft::default())
-            .docs
-            .push(doc);
+        draft.accounts.entry(account).or_default().docs.push(doc);
         Ok(())
     }
 
@@ -593,10 +580,7 @@ impl<'source> Parser<'source> {
         let account = self.parse_account()?;
         let set = self.parse_currency_set()?;
         let meta = self.parse_meta()?;
-        let info = draft
-            .accounts
-            .entry(account)
-            .or_insert(AccountInfoDraft::default());
+        let info = draft.accounts.entry(account).or_default();
         info.open = Some((date, self.src_from(start)));
         info.currencies = set;
         info.meta = meta;
@@ -607,10 +591,7 @@ impl<'source> Parser<'source> {
         let start = self.lexer.location();
         self.lexer.take(Token::Close)?;
         let account = self.parse_account()?;
-        let info = draft
-            .accounts
-            .entry(account)
-            .or_insert(AccountInfoDraft::default());
+        let info = draft.accounts.entry(account).or_default();
         info.close = Some((date, self.src_from(start)));
         Ok(())
     }
@@ -797,16 +778,16 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_price(&mut self) -> Result<Option<PriceLiteral>, Error> {
-        if let Ok((token, _)) = self.lexer.peek() {
-            if token == Token::AtUnit || token == Token::AtTotal {
-                self.lexer.consume();
-                let amount = self.parse_amount()?;
-                return if token == Token::AtUnit {
-                    Ok(Some(PriceLiteral::Unit(amount)))
-                } else {
-                    Ok(Some(PriceLiteral::Total(amount)))
-                };
-            }
+        if let Ok((token, _)) = self.lexer.peek()
+            && (token == Token::AtUnit || token == Token::AtTotal)
+        {
+            self.lexer.consume();
+            let amount = self.parse_amount()?;
+            return if token == Token::AtUnit {
+                Ok(Some(PriceLiteral::Unit(amount)))
+            } else {
+                Ok(Some(PriceLiteral::Total(amount)))
+            };
         }
         Ok(None)
     }
@@ -822,7 +803,7 @@ impl<'source> Parser<'source> {
         })?;
         let currency = self.lexer.take(Token::Currency)?;
         Ok(Amount {
-            number: number,
+            number,
             currency: currency.into(),
         })
     }
@@ -884,7 +865,7 @@ impl<'source> Parser<'source> {
                 let error = Error {
                     r#type: ErrorType::Io,
                     level: ErrorLevel::Error,
-                    msg: format!("Couldn't read {}: {:?}", &path, io_error),
+                    msg: format!("Couldn't read {}: {:?}", path, io_error),
                     src: refer_src,
                 };
                 (draft, vec![error])
