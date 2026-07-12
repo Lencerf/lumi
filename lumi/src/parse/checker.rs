@@ -937,9 +937,17 @@ impl LedgerDraft {
             .and_then(|s| s.parse().ok())
             .unwrap_or(false);
         if option_balance_at_day_end {
-            txns.sort_by_key(|t| (t.date, t.flag));
+            txns.sort_by(|t1, t2| {
+                let k1 = (t1.date, t1.flag, &t1.payee, &t1.narration);
+                let k2 = (t2.date, t2.flag, &t2.payee, &t2.narration);
+                k1.cmp(&k2)
+            });
         } else {
-            txns.sort_by_key(|t| (t.date, (t.flag as u8 + 1) % 4));
+            txns.sort_by(|t1, t2| {
+                let k1 = (t1.date, (t1.flag as u8 + 1) % 4, &t1.payee, &t1.narration);
+                let k2 = (t2.date, (t2.flag as u8 + 1) % 4, &t2.payee, &t2.narration);
+                k1.cmp(&k2)
+            });
         }
         for txn in txns {
             let mut valid = true;
