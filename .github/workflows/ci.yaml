@@ -20,7 +20,7 @@ jobs:
           components: rustfmt,llvm-tools
           targets: wasm32-unknown-unknown
       - name: Install tools
-        uses: taiki-e/install-action@v2.87.0
+        uses: taiki-e/install-action@v2.87.11
         with:
           tool: cargo-llvm-cov,cargo-deny
       - name: Build
