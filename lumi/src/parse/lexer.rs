@@ -3,7 +3,7 @@ use crate::{Error, ErrorLevel, ErrorType, Location, Source, SrcFile};
 use getset::{CopyGetters, Getters};
 use logos::{Lexer as LogosLexer, Logos};
 
-/// A lexer based on [`logos::Lexer`](https://docs.rs/logos/0.12.0/logos/struct.Lexer.html)
+/// A lexer based on [`logos::Lexer`](https://docs.rs/logos/0.16.1/logos/struct.Lexer.html)
 /// that can peek tokens and track locations.
 #[derive(Getters, CopyGetters)]
 pub struct Lexer<'source, Token: Logos<'source>> {
@@ -41,7 +41,11 @@ impl<'source> Lexer<'source, Token> {
     }
 
     fn skip_comment_space(&mut self) {
-        while let Some(token) = self.llex.next() {
+        while let Some(result) = self.llex.next() {
+            // Since logos 0.13, unrecognized input is reported as `Err(())`
+            // instead of a dedicated error variant; map it back to
+            // `Token::Error` so the parser can report it like any other token.
+            let token = result.unwrap_or(Token::Error);
             match token {
                 Token::Comment => {}
                 Token::NewLine => {
@@ -110,3 +114,7 @@ impl<'source> Lexer<'source, Token> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "lexer_test.rs"]
+mod tests;

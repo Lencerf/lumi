@@ -72,7 +72,9 @@ pub enum Token {
     #[token("}}")]
     RRBrace,
 
-    #[regex(r";[^\n]*")]
+    // A comment deliberately extends to the end of the line, which logos
+    // (>= 0.16) otherwise flags as an unbounded greedy repetition.
+    #[regex(r";[^\n]*", allow_greedy = true)]
     Comment,
 
     #[token(",")]
@@ -99,13 +101,18 @@ pub enum Token {
     #[regex(r#"[^A-Z,#\^":;{}\s\d\-\+\.][^,#\^":;{}\s]*:"#)]
     MetaLabel,
 
-    #[regex(r#"[^a-z,#\^":;{}\s\d\-\+\.][^,#\^":;{}\s]*"#)]
+    // This catch-all pattern can also match a single `*`, `?`, `!`, or `@`.
+    // Lower its priority so that the dedicated tokens above win those ties
+    // (logos still prefers the longest match, so e.g. `@@@` is a `Currency`).
+    #[regex(r#"[^a-z,#\^":;{}\s\d\-\+\.][^,#\^":;{}\s]*"#, priority = 1)]
     Currency,
 
     #[regex(r"[\-\+]?\d+(\.\d*)?")]
     #[regex(r"[\-\+]?\.\d+")]
     Number,
 
-    #[error]
+    /// Produced by [`Lexer`](super::Lexer) for input that does not match any
+    /// of the patterns above. This variant has no pattern of its own: logos
+    /// reports such input as `Err(())`, which the lexer maps to this variant.
     Error,
 }
