@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use gpui_kit::assets::icon_assets;
 use gpui_kit::{AssetSource, Result, SharedString};
 
-icon_assets!(pub ExtraIcons, [RefreshCw, Scale, TrendingUp]);
+icon_assets!(pub ExtraIcons, [Scale, ScrollText, TrendingUp, Wallet]);
 
 /// The icons the lumi views use on native platforms: GPUI Component's default
 /// set plus the catalog icons in [`ExtraIcons`]. Register it with

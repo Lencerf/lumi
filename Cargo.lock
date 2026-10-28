@@ -4683,6 +4683,8 @@ dependencies = [
  "anyhow",
  "gpui-kit",
  "lumi",
+ "rust_decimal",
+ "serde",
 ]
 
 [[package]]

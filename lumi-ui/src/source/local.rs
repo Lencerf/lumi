@@ -2,10 +2,10 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::{Result, anyhow};
 use gpui_kit::{App, AppContext as _, Task};
-use lumi::web::{TrieOptions, TrieTable, TrieTableRow};
+use lumi::web::{FilterOptions, JournalItem, TrieOptions, TrieTable, TrieTableRow};
 use lumi::{Ledger, query};
 
-use crate::source::LedgerSource;
+use crate::source::{JournalPage, LedgerSource, Positions};
 
 /// A ledger parsed in this process from a file on disk.
 ///
@@ -50,7 +50,7 @@ impl LocalLedger {
     fn query<T, F>(&self, cx: &mut App, query: F) -> Task<Result<T>>
     where
         T: Send + 'static,
-        F: FnOnce(&Ledger) -> T + Send + 'static,
+        F: FnOnce(&Loaded) -> T + Send + 'static,
     {
         let loaded = self.loaded.clone();
         let path = self.path.clone();
@@ -61,7 +61,7 @@ impl LocalLedger {
             let loaded = guard
                 .as_ref()
                 .ok_or_else(|| anyhow!("The ledger {path} has not been loaded yet."))?;
-            Ok(query(&loaded.ledger))
+            Ok(query(loaded))
         })
     }
 }
@@ -90,10 +90,49 @@ impl LedgerSource for LocalLedger {
     ) -> Task<Result<Option<TrieTable<String>>>> {
         let root_account = root_account.to_string();
         let options = options.clone();
-        self.query(cx, move |ledger| {
-            query::trie_table(ledger, &root_account, &options).map(owned_trie_table)
+        self.query(cx, move |loaded| {
+            query::trie_table(&loaded.ledger, &root_account, &options).map(owned_trie_table)
         })
     }
+
+    fn journal(
+        &self,
+        account: Option<&str>,
+        options: &FilterOptions,
+        cx: &mut App,
+    ) -> Task<Result<JournalPage>> {
+        let account = account.map(str::to_string);
+        let options = options.clone();
+        self.query(cx, move |loaded| {
+            let (items, total) = query::journal(&loaded.ledger, account.as_deref(), &options);
+            let items = items
+                .into_iter()
+                .map(|item| JournalItem {
+                    txn: Arc::new(item.txn.clone()),
+                    balance: owned_amounts(item.balance),
+                    changes: owned_amounts(item.changes),
+                })
+                .collect();
+            (items, total)
+        })
+    }
+
+    fn positions(&self, cx: &mut App) -> Task<Result<Positions>> {
+        self.query(cx, |loaded| query::positions(loaded.ledger.balance_sheet()))
+    }
+
+    fn errors(&self, cx: &mut App) -> Task<Result<Vec<lumi::Error>>> {
+        self.query(cx, |loaded| loaded.errors.clone())
+    }
+}
+
+fn owned_amounts(
+    amounts: std::collections::HashMap<&str, rust_decimal::Decimal>,
+) -> std::collections::HashMap<String, rust_decimal::Decimal> {
+    amounts
+        .into_iter()
+        .map(|(currency, number)| (currency.to_string(), number))
+        .collect()
 }
 
 fn owned_trie_table(table: TrieTable<&str>) -> TrieTable<String> {
