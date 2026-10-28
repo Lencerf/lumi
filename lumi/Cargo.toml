@@ -20,7 +20,7 @@ name = "parse_bench"
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 getset = "0.1.2"
-logos = "0.12.1"
+logos = "0.16.1"
 num_cpus = "1.15.0"
 rust_decimal = { version = "1.41.0" }
 serde = { version = "1.0", features = ["derive", "rc"], optional = true }
