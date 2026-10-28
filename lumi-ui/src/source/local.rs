@@ -1,0 +1,112 @@
+use std::sync::{Arc, RwLock};
+
+use anyhow::{Result, anyhow};
+use gpui_kit::{App, AppContext as _, Task};
+use lumi::web::{TrieOptions, TrieTable, TrieTableRow};
+use lumi::{Ledger, query};
+
+use crate::source::LedgerSource;
+
+/// A ledger parsed in this process from a file on disk.
+///
+/// Parsing and querying run on GPUI's background executor; the parsed ledger
+/// is shared behind a lock so a query never blocks the interface.
+pub struct LocalLedger {
+    path: Arc<str>,
+    loaded: Arc<RwLock<Option<Loaded>>>,
+}
+
+struct Loaded {
+    ledger: Ledger,
+    errors: Vec<lumi::Error>,
+}
+
+impl LocalLedger {
+    /// A ledger read from the file at `path`. Nothing is parsed until the
+    /// first [`reload`](LedgerSource::reload).
+    pub fn new(path: impl Into<Arc<str>>) -> Self {
+        Self {
+            path: path.into(),
+            loaded: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// The path of the ledger file.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The number of errors the last reload reported, if any reload has
+    /// completed.
+    pub fn error_count(&self) -> Option<usize> {
+        self.loaded
+            .read()
+            .ok()?
+            .as_ref()
+            .map(|loaded| loaded.errors.len())
+    }
+
+    /// Runs `query` against the parsed ledger on the background executor.
+    fn query<T, F>(&self, cx: &mut App, query: F) -> Task<Result<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Ledger) -> T + Send + 'static,
+    {
+        let loaded = self.loaded.clone();
+        let path = self.path.clone();
+        cx.background_spawn(async move {
+            let guard = loaded
+                .read()
+                .map_err(|_| anyhow!("The ledger {path} is unavailable after a failed reload."))?;
+            let loaded = guard
+                .as_ref()
+                .ok_or_else(|| anyhow!("The ledger {path} has not been loaded yet."))?;
+            Ok(query(&loaded.ledger))
+        })
+    }
+}
+
+impl LedgerSource for LocalLedger {
+    fn reload(&self, cx: &mut App) -> Task<Result<()>> {
+        let loaded = self.loaded.clone();
+        let path = self.path.clone();
+        cx.background_spawn(async move {
+            if !std::path::Path::new(&*path).is_file() {
+                return Err(anyhow!("Couldn't find the ledger file {path}."));
+            }
+            let (ledger, errors) = Ledger::from_file(&path);
+            *loaded.write().map_err(|_| {
+                anyhow!("The ledger {path} is unavailable after a failed reload.")
+            })? = Some(Loaded { ledger, errors });
+            Ok(())
+        })
+    }
+
+    fn trie_table(
+        &self,
+        root_account: &str,
+        options: &TrieOptions,
+        cx: &mut App,
+    ) -> Task<Result<Option<TrieTable<String>>>> {
+        let root_account = root_account.to_string();
+        let options = options.clone();
+        self.query(cx, move |ledger| {
+            query::trie_table(ledger, &root_account, &options).map(owned_trie_table)
+        })
+    }
+}
+
+fn owned_trie_table(table: TrieTable<&str>) -> TrieTable<String> {
+    TrieTable {
+        rows: table
+            .rows
+            .into_iter()
+            .map(|row| TrieTableRow {
+                level: row.level,
+                name: row.name.to_string(),
+                numbers: row.numbers,
+            })
+            .collect(),
+        currencies: table.currencies.into_iter().map(str::to_string).collect(),
+    }
+}

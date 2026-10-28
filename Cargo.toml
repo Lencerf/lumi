@@ -1,6 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["lumi", "lumi-cli", "lumi-web"]
+members = ["lumi", "lumi-app", "lumi-cli", "lumi-ui", "lumi-web"]
+
+# GPUI and its text and layout engines are slow enough unoptimized to make a
+# debug build of the native application unpleasant to use; the same overrides
+# gpui-kit uses for its own development.
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+gpui-pre-sum-tree = { opt-level = 3 }
+resvg = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+smol = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
 
 [profile.release]
 strip = true

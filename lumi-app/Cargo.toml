@@ -1,0 +1,16 @@
+[package]
+name = "lumi-app"
+version = "0.2.0"
+edition = "2024"
+description = "A desktop application for double-entry accounting with lumi."
+repository = "https://github.com/Lencerf/lumi"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "lumi-app"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "0.8.1"
+lumi-ui = { path = "../lumi-ui" }
