@@ -8,6 +8,9 @@
 
 mod app;
 mod assets;
+mod errors_report;
+mod holdings_report;
+mod journal_report;
 mod navigation;
 mod session;
 pub mod source;
@@ -17,7 +20,10 @@ pub use app::{LumiApp, Refresh};
 pub use assets::ExtraIcons;
 #[cfg(not(target_family = "wasm"))]
 pub use assets::LumiAssets;
-pub use navigation::Page;
+pub use errors_report::ErrorsReport;
+pub use holdings_report::HoldingsReport;
+pub use journal_report::{ActivateRow, JournalReport, OpenAccount, TogglePostings};
+pub use navigation::{Page, ReportEvent};
 pub use session::LedgerSession;
 pub use trie_report::TrieReport;
 
@@ -31,5 +37,9 @@ pub fn init(cx: &mut App) {
     let refresh = "cmd-r";
     #[cfg(not(target_os = "macos"))]
     let refresh = "ctrl-r";
-    cx.bind_keys([KeyBinding::new(refresh, Refresh, Some(app::KEY_CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new(refresh, Refresh, Some(app::KEY_CONTEXT)),
+        KeyBinding::new("enter", ActivateRow, Some(journal_report::KEY_CONTEXT)),
+        KeyBinding::new("enter", ActivateRow, Some(holdings_report::KEY_CONTEXT)),
+    ]);
 }

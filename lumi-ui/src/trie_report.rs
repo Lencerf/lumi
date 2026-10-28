@@ -1,5 +1,5 @@
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
@@ -7,12 +7,12 @@ use gpui_kit::component::table::{Table, TableBody, TableCell, TableHead, TableHe
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
+    AnyElement, Context, ElementId, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div, rems,
 };
 use lumi::web::{TrieOptions, TrieTable};
 
-use crate::navigation::Page;
+use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 
 /// A report made of account hierarchies with their balances, such as the
@@ -68,14 +68,14 @@ struct TrieRow {
 }
 
 /// The root accounts of each column of `page`.
-fn columns(page: Page) -> &'static [&'static [&'static str]] {
+fn columns(page: &Page) -> &'static [&'static [&'static str]] {
     match page {
-        Page::BalanceSheet => &[&["Assets"], &["Liabilities", "Equity"]],
         Page::Income => &[&["Income"], &["Expenses"]],
+        _ => &[&["Assets"], &["Liabilities", "Equity"]],
     }
 }
 
-fn roots(page: Page) -> impl Iterator<Item = &'static str> {
+fn roots(page: &Page) -> impl Iterator<Item = &'static str> {
     columns(page)
         .iter()
         .flat_map(|column| column.iter().copied())
@@ -98,8 +98,8 @@ impl TrieReport {
         this
     }
 
-    pub fn page(&self) -> Page {
-        self.page
+    pub fn page(&self) -> &Page {
+        &self.page
     }
 
     pub fn is_showing_closed(&self) -> bool {
@@ -146,7 +146,7 @@ impl TrieReport {
         let options = TrieOptions {
             show_closed: Some(self.show_closed),
         };
-        let requests: Vec<_> = roots(self.page)
+        let requests: Vec<_> = roots(&self.page)
             .map(|root| (root, source.trie_table(root, &options, cx)))
             .collect();
         if self.tables.is_empty() {
@@ -182,6 +182,10 @@ impl TrieReport {
     fn retry(&mut self, cx: &mut Context<Self>) {
         self.requested = None;
         self.load(cx);
+    }
+
+    fn open_account(&mut self, account: SharedString, cx: &mut Context<Self>) {
+        cx.emit(ReportEvent::OpenAccount(account));
     }
 
     fn render_table(
@@ -235,13 +239,25 @@ impl TrieReport {
                     )
                     .child(
                         TableBody::new().children(presentation.rows.iter().map(|row| {
+                            let account = row.account.clone();
                             TableRow::new()
                                 .child(
                                     TableCell::new().child(
-                                        div()
-                                            .pl(rems(row.level as f32 * 1.25))
-                                            .when(row.level == 0, |this| this.font_semibold())
-                                            .child(row.name.clone()),
+                                        div().pl(rems(row.level as f32 * 1.25)).child(
+                                            // Opens the account's journal.
+                                            Button::new((
+                                                ElementId::from("account"),
+                                                row.account.clone(),
+                                            ))
+                                            .ghost()
+                                            .xsmall()
+                                            .compact()
+                                            .label(row.name.clone())
+                                            .accessibility_label(row.account.clone())
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.open_account(account.clone(), cx)
+                                            })),
+                                        ),
                                     ),
                                 )
                                 .children(row.numbers.iter().map(|number| {
@@ -304,9 +320,11 @@ impl TriePresentation {
     }
 }
 
+impl EventEmitter<ReportEvent> for TrieReport {}
+
 impl Render for TrieReport {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let page = self.page;
+        let page = self.page.clone();
         let mut tables = self.tables.iter();
         div()
             .v_flex()
@@ -331,7 +349,7 @@ impl Render for TrieReport {
                     .min_h_0()
                     .overflow_scrollbar()
                     .child(div().h_flex().items_start().gap_6().p_6().children(
-                        columns(page).iter().map(|column| {
+                        columns(&page).iter().map(|column| {
                             div()
                                 .v_flex()
                                 .flex_none()

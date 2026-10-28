@@ -11,12 +11,15 @@ use gpui_kit::component::sidebar::{
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window,
-    actions, div,
+    AnyView, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, actions, div,
 };
 
-use crate::navigation::Page;
+use crate::errors_report::ErrorsReport;
+use crate::holdings_report::HoldingsReport;
+use crate::journal_report::JournalReport;
+use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
 use crate::trie_report::TrieReport;
@@ -32,20 +35,28 @@ pub struct LumiApp {
     session: Entity<LedgerSession>,
     ledger_name: SharedString,
     page: Page,
-    /// Reports are created the first time they are opened and kept so that
+    /// Reports are created the first time they are opened and kept, so that
     /// returning to one does not query the ledger again.
-    reports: HashMap<Page, Entity<TrieReport>>,
+    reports: HashMap<Page, Report>,
     sidebar_collapsed: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
+/// The view behind a page, and the subscription that routes its requests to
+/// the application, for the views that make any.
+struct Report {
+    view: AnyView,
+    _subscription: Option<Subscription>,
+}
+
 impl LumiApp {
-    /// Opens `source`, named `ledger_name` in the sidebar, and starts loading
-    /// it. The balance sheet is shown first.
+    /// Opens `source`, named `ledger_name` in the sidebar, showing `page`, and
+    /// starts loading it.
     pub fn new(
         source: Arc<dyn LedgerSource>,
         ledger_name: impl Into<SharedString>,
+        page: Page,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -57,39 +68,79 @@ impl LumiApp {
         let mut this = Self {
             session,
             ledger_name: ledger_name.into(),
-            page: Page::BalanceSheet,
+            page: page.clone(),
             reports: HashMap::new(),
             sidebar_collapsed: false,
             focus_handle,
             _subscriptions,
         };
-        this.report(Page::BalanceSheet, cx);
+        this.report(&page, window, cx);
         this
     }
 
-    pub fn page(&self) -> Page {
-        self.page
+    pub fn page(&self) -> &Page {
+        &self.page
     }
 
     pub fn session(&self) -> &Entity<LedgerSession> {
         &self.session
     }
 
-    /// The report for `page`, created on first use.
-    fn report(&mut self, page: Page, cx: &mut Context<Self>) -> Entity<TrieReport> {
-        self.reports
-            .entry(page)
-            .or_insert_with(|| {
-                let session = self.session.clone();
-                cx.new(|cx| TrieReport::new(page, session, cx))
-            })
-            .clone()
+    /// The view for `page`, created on first use.
+    fn report(&mut self, page: &Page, window: &mut Window, cx: &mut Context<Self>) -> AnyView {
+        if let Some(report) = self.reports.get(page) {
+            return report.view.clone();
+        }
+        let session = self.session.clone();
+        let report = match page {
+            Page::BalanceSheet | Page::Income => {
+                let view = cx.new(|cx| TrieReport::new(page.clone(), session, cx));
+                Report {
+                    _subscription: Some(cx.subscribe(&view, Self::on_report_event)),
+                    view: view.into(),
+                }
+            }
+            Page::Journal | Page::Account(_) => {
+                let view = cx.new(|cx| JournalReport::new(page.clone(), session, window, cx));
+                Report {
+                    _subscription: Some(cx.subscribe(&view, Self::on_report_event)),
+                    view: view.into(),
+                }
+            }
+            Page::Holdings => {
+                let view = cx.new(|cx| HoldingsReport::new(session, window, cx));
+                Report {
+                    _subscription: Some(cx.subscribe(&view, Self::on_report_event)),
+                    view: view.into(),
+                }
+            }
+            Page::Errors => {
+                let view = cx.new(|cx| ErrorsReport::new(session, window, cx));
+                Report {
+                    _subscription: None,
+                    view: view.into(),
+                }
+            }
+        };
+        let view = report.view.clone();
+        self.reports.insert(page.clone(), report);
+        view
+    }
+
+    fn on_report_event<T: 'static>(
+        &mut self,
+        _: Entity<T>,
+        event: &ReportEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ReportEvent::OpenAccount(account) => self.open_page(Page::Account(account.clone()), cx),
+        }
     }
 
     fn open_page(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.page != page {
             self.page = page;
-            self.report(page, cx);
             cx.notify();
         }
     }
@@ -141,14 +192,17 @@ impl LumiApp {
                     }),
             )
             .child(
-                SidebarGroup::new("Reports").child(SidebarMenu::new().children(Page::ALL.map(
-                    |page| {
+                SidebarGroup::new("Reports").child(SidebarMenu::new().children(
+                    Page::sidebar().map(|page| {
+                        let active = self.page == page;
                         SidebarMenuItem::new(page.title())
                             .icon(page.icon())
-                            .active(self.page == page)
-                            .on_click(cx.listener(move |this, _, _, cx| this.open_page(page, cx)))
-                    },
-                ))),
+                            .active(active)
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.open_page(page.clone(), cx)),
+                            )
+                    }),
+                )),
             )
     }
 
@@ -168,12 +222,19 @@ impl LumiApp {
                     .h_flex()
                     .items_center()
                     .gap_3()
+                    .min_w_0()
                     .child(
                         SidebarToggleButton::new()
                             .collapsed(self.sidebar_collapsed)
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
                     )
-                    .child(div().text_lg().font_semibold().child(self.page.title())),
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_semibold()
+                            .truncate()
+                            .child(self.page.title()),
+                    ),
             )
             .child(
                 Button::new("refresh")
@@ -197,8 +258,9 @@ impl Focusable for LumiApp {
 }
 
 impl Render for LumiApp {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let report = self.report(self.page, cx);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let page = self.page.clone();
+        let report = self.report(&page, window, cx);
         let last_error = self.session.read(cx).last_error().cloned();
         div()
             .h_flex()

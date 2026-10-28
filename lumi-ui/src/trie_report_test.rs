@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions, px, size,
+    AppContext as _, Bounds, ElementId, Entity, TestAppContext, WindowBounds, WindowOptions, px,
+    size,
 };
 use lumi::web::{TrieTable, TrieTableRow};
 
@@ -180,6 +181,7 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
                     crate::LumiApp::new(
                         Arc::new(LocalLedger::new(FIXTURE)),
                         "query_test.bean",
+                        Page::BalanceSheet,
                         window,
                         cx,
                     )
@@ -190,7 +192,7 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
     });
     cx.run_until_parked();
     cx.read(|cx| {
-        assert_eq!(app.read(cx).page(), Page::BalanceSheet);
+        assert_eq!(app.read(cx).page(), &Page::BalanceSheet);
         assert_eq!(app.read(cx).session().read(cx).revision(), 1);
     });
 
@@ -201,7 +203,7 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
         window.within("lumi-sidebar").click("0-0-1", cx);
     })
     .unwrap();
-    cx.read(|cx| assert_eq!(app.read(cx).page(), Page::Income));
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Income));
 
     cx.update_window(handle, |_, window, cx| {
         window.click("refresh", cx);
@@ -212,4 +214,24 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
     })
     .await;
     cx.read(|cx| assert!(!app.read(cx).session().read(cx).is_reloading()));
+
+    // Every sidebar destination opens, and an account name in the balance
+    // sheet opens that account's journal.
+    for (ix, page) in Page::sidebar().into_iter().enumerate() {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("lumi-sidebar").click(format!("0-0-{ix}"), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| assert_eq!(app.read(cx).page(), &page));
+    }
+    cx.update_window(handle, |_, window, cx| {
+        window.within("lumi-sidebar").click("0-0-0", cx);
+        window.render_frame(cx);
+        window.click((ElementId::from("account"), "Assets:Cash"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into())));
 }
