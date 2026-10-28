@@ -1694,7 +1694,6 @@ dependencies = [
  "lumi-web",
  "mime",
  "pretty_env_logger",
- "rust_decimal",
  "tokio",
  "wasm-bindgen-cli-support",
 ]

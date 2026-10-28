@@ -1,0 +1,51 @@
+option "title" "Query fixture"
+option "operating_currency" "USD"
+
+2024-01-01 open Equity:Opening-Balances
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Assets:Bank:Checking USD,EUR
+2024-01-01 open Assets:Investments:Brokerage
+2024-01-01 open Assets:Old:Savings USD
+2024-01-01 open Liabilities:CreditCard USD
+2024-01-01 open Income:Salary USD
+2024-01-01 open Expenses:Food:Groceries USD
+2024-01-01 open Expenses:Food:Restaurants USD
+2024-01-01 open Expenses:Travel EUR
+
+2024-01-01 * "Opening balances"
+  Assets:Cash               100.00 USD
+  Assets:Bank:Checking     1000.00 USD
+  Assets:Old:Savings        500.00 USD
+  Equity:Opening-Balances
+
+2024-01-15 * "Employer" "Salary"
+  Income:Salary           -3000.00 USD
+  Assets:Bank:Checking     3000.00 USD
+
+2024-02-03 * "Grocer" "Weekly groceries"
+  Expenses:Food:Groceries    80.00 USD
+  Liabilities:CreditCard    -80.00 USD
+
+2024-02-10 * "Bistro" "Dinner"
+  Expenses:Food:Restaurants  45.50 USD
+  Assets:Cash               -45.50 USD
+
+2024-03-01 * "Broker" "Buy shares"
+  Assets:Investments:Brokerage   10 VTI {250.00 USD}
+  Assets:Bank:Checking     -2500.00 USD
+
+2024-03-15 balance Assets:Cash 54.50 USD
+
+2024-04-01 * "Close old account"
+  Assets:Old:Savings       -500.00 USD
+  Assets:Bank:Checking      500.00 USD
+
+2024-04-02 close Assets:Old:Savings
+
+2025-05-20 * "Airline" "Flight to Paris"
+  Expenses:Travel           300.00 EUR
+  Assets:Bank:Checking     -300.00 EUR
+
+2025-06-01 * "Pay card"
+  Liabilities:CreditCard     80.00 USD
+  Assets:Bank:Checking      -80.00 USD

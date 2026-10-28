@@ -7,6 +7,7 @@
 mod ledger;
 mod options;
 pub mod parse;
+pub mod query;
 pub mod utils;
 pub mod web;
 
