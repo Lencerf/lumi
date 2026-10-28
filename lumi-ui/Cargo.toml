@@ -1,0 +1,16 @@
+[package]
+name = "lumi-ui"
+version = "0.2.0"
+edition = "2024"
+description = "The lumi user interface, shared by the native and the web application."
+repository = "https://github.com/Lencerf/lumi"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+gpui-kit = "0.8.1"
+lumi = { path = "../lumi", version = "0.2.0", features = ["serde"] }
+
+[dev-dependencies]
+gpui-kit = { version = "0.8.1", features = ["test-support"] }
