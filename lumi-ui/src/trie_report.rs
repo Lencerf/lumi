@@ -347,6 +347,10 @@ impl Render for TrieReport {
                     .id((ElementId::from("trie-report"), page.id()))
                     .flex_1()
                     .min_h_0()
+                    // A two-way scroll area lays this out as an item of a flex
+                    // row, which would stretch it to the area's height and so
+                    // leave nothing to scroll to vertically.
+                    .self_start()
                     .overflow_scrollbar()
                     .child(div().h_flex().items_start().gap_6().p_6().children(
                         columns(&page).iter().map(|column| {
