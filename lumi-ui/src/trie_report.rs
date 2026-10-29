@@ -265,7 +265,7 @@ impl TrieReport {
                                             )),
                                     ),
                             )
-                            .child(TableBody::new().children(
+                            .child(TableBody::new().border_t_1().border_color(border).children(
                                 presentation.rows.iter().enumerate().map(|(row_ix, row)| {
                                     let account = row.account.clone();
                                     let row_bg = if row_ix.is_multiple_of(2) {
