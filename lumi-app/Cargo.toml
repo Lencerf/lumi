@@ -6,11 +6,17 @@ description = "A desktop application for double-entry accounting with lumi."
 repository = "https://github.com/Lencerf/lumi"
 license = "MIT"
 publish = false
+default-run = "lumi-app"
 
 [[bin]]
 name = "lumi-app"
 path = "src/main.rs"
 
+[[bin]]
+name = "bundle-macos"
+path = "src/bin/bundle_macos.rs"
+
 [dependencies]
 gpui-kit = "0.8.1"
 lumi-ui = { path = "../lumi-ui" }
+resvg = { version = "0.46.0", default-features = false }

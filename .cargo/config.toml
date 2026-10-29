@@ -1,2 +1,5 @@
 [unstable]
 bindeps = true
+
+[alias]
+bundle-macos = "run --release -p lumi-app --bin bundle-macos --"
