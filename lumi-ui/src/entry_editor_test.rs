@@ -595,3 +595,60 @@ fn test_payee_and_narration_completions_close_quotes_and_save(cx: &mut TestAppCo
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_completion_menu_renders_above_dialog_and_accepts_mouse_clicks(cx: &mut TestAppContext) {
+    let ledger = TempLedger::new("completion-menu-pointer");
+    let (handle, app) = open_journal(&ledger, cx);
+    let session = cx.read(|cx| app.read(cx).session().clone());
+    let txn = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        report.read(cx).entries(cx)[0].txn.clone()
+    });
+
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            EntryEditor::open(&txn, session, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let state = editor.read(cx).editor_state().clone();
+        let initial = "2025-06-01 * \"Test\"\n  ";
+        state.update(cx, |state, cx| {
+            state.set_value(initial, window, cx);
+            state.set_selected_range(initial.len()..initial.len(), cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.input("Lia", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Clicking the popup item dispatches real mouse events through GPUI's hit-tester,
+    // proving the completion menu is painted above `#entry-editor-dialog` and not occluded.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(window.find("completion-menu").visible());
+        assert_eq!(
+            window.within("completion-menu").find(0usize).label(),
+            Some("Liabilities:CreditCard")
+        );
+        window.within("completion-menu").click(0usize, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("Entry text").value(),
+            Some("2025-06-01 * \"Test\"\n  Liabilities:CreditCard")
+        );
+    })
+    .unwrap();
+}

@@ -24,7 +24,7 @@ pub use app::{GoBack, LumiApp, OpenLedger, PathOpener, Refresh, ledger_name_for_
 pub use assets::ExtraIcons;
 #[cfg(not(target_family = "wasm"))]
 pub use assets::LumiAssets;
-pub use entry_editor::{EntryEditor, SaveEntry};
+pub use entry_editor::{CancelEntry, EntryEditor, SaveEntry};
 pub use errors_report::ErrorsReport;
 pub use holdings_report::HoldingsReport;
 pub use journal_report::{ActivateRow, EditEntry, JournalReport, OpenAccount, TogglePostings};
@@ -49,6 +49,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(open, OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new(refresh, Refresh, Some(app::KEY_CONTEXT)),
         KeyBinding::new(save, SaveEntry, Some(entry_editor::KEY_CONTEXT)),
+        KeyBinding::new("escape", CancelEntry, Some(entry_editor::KEY_CONTEXT)),
         KeyBinding::new(
             "ctrl-space",
             ShowCompletions,

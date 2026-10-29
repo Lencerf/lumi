@@ -1,19 +1,21 @@
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::dialog::{DialogClose, DialogFooter};
+use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Editor, EditorState, Enter, Escape, InputEvent};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, StyledExt as _, WindowExt as _, h_flex,
+    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, h_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, actions,
-    div, px,
+    AnyWindowHandle, App, AppContext as _, Context, Empty, Entity, EntityId, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Task, WeakEntity, WeakFocusHandle, Window, actions, div, px,
 };
 use lumi::{Source, Transaction};
 
@@ -21,7 +23,7 @@ use crate::completion::BeancountCompletionProvider;
 use crate::session::LedgerSession;
 use crate::{completion, highlight};
 
-actions!(lumi_ui, [SaveEntry]);
+actions!(lumi_ui, [CancelEntry, SaveEntry]);
 
 /// The key context of the entry editor; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "EntryEditor";
@@ -57,6 +59,162 @@ enum PendingWrite {
     Deleting,
 }
 
+#[derive(Default)]
+struct EntryEditorRegistry {
+    layers: HashMap<AnyWindowHandle, WeakEntity<EntryEditorLayer>>,
+}
+
+impl Global for EntryEditorRegistry {}
+
+struct ActiveEditor {
+    editor: Entity<EntryEditor>,
+    previous_focus: Option<WeakFocusHandle>,
+    _subscription: Subscription,
+}
+
+/// Modal layer mounted inside [`crate::LumiApp`] in the base draw pass so that
+/// [`Editor`]'s completion popover (which GPUI Kit 0.8.1 defers at priority `0`)
+/// paints above the dialog rather than behind `gpui_base::Dialog` (priority `10`).
+pub(crate) struct EntryEditorLayer {
+    active: Option<ActiveEditor>,
+}
+
+impl EntryEditorLayer {
+    pub(crate) fn register(window: &Window, cx: &mut App) -> Entity<Self> {
+        let layer = cx.new(|_| Self { active: None });
+        if !cx.has_global::<EntryEditorRegistry>() {
+            cx.set_global(EntryEditorRegistry::default());
+        }
+        cx.global_mut::<EntryEditorRegistry>()
+            .layers
+            .insert(window.window_handle(), layer.downgrade());
+        layer
+    }
+
+    fn show(editor: Entity<EntryEditor>, window: &mut Window, cx: &mut App) {
+        let Some(layer) = cx
+            .try_global::<EntryEditorRegistry>()
+            .and_then(|reg| reg.layers.get(&window.window_handle()))
+            .and_then(WeakEntity::upgrade)
+        else {
+            return;
+        };
+        let previous_focus = window.focused(cx).map(|h| h.downgrade());
+        layer.update(cx, |this, cx| {
+            let previous_focus = this
+                .active
+                .take()
+                .and_then(|prev| prev.previous_focus)
+                .or(previous_focus);
+            let subscription = cx.observe(&editor, |_, _, cx| cx.notify());
+            this.active = Some(ActiveEditor {
+                editor,
+                previous_focus,
+                _subscription: subscription,
+            });
+            cx.notify();
+        });
+    }
+
+    pub(crate) fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(active) = self.active.take() {
+            if let Some(focus) = active.previous_focus.and_then(|h| h.upgrade()) {
+                window.focus(&focus, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn close_editor(editor_id: EntityId, window: &mut Window, cx: &mut App) {
+        let Some(layer) = cx
+            .try_global::<EntryEditorRegistry>()
+            .and_then(|reg| reg.layers.get(&window.window_handle()))
+            .and_then(WeakEntity::upgrade)
+        else {
+            return;
+        };
+        layer.update(cx, |this, cx| {
+            if this
+                .active
+                .as_ref()
+                .is_some_and(|active| active.editor.entity_id() == editor_id)
+            {
+                this.close(window, cx);
+            }
+        });
+    }
+}
+
+impl Render for EntryEditorLayer {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(active) = self.active.as_ref() else {
+            return Empty.into_any_element();
+        };
+        let editor = active.editor.clone();
+        let (duplicating, busy) = {
+            let state = editor.read(cx);
+            (
+                state.is_duplicating(),
+                state.is_saving() || state.is_deleting(),
+            )
+        };
+        let title = if duplicating {
+            "Duplicate entry"
+        } else {
+            "Edit entry"
+        };
+        let viewport = window.viewport_size();
+        div()
+            .id("entry-editor-backdrop")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(cx.theme().overlay)
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(viewport.height / 10.)
+            .px_4()
+            .child(
+                div()
+                    .id("entry-editor-dialog")
+                    .occlude()
+                    .v_flex()
+                    .w(px(720.))
+                    .max_w_full()
+                    .max_h(viewport.height - px(32.))
+                    .p_4()
+                    .gap_3()
+                    .bg(cx.theme().background)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius_lg)
+                    .shadow_xl()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_lg().font_semibold().child(title))
+                            .child(
+                                Button::new("close-entry-editor")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Close)
+                                    .disabled(busy)
+                                    .on_click({
+                                        let editor = editor.clone();
+                                        move |_, window, cx| {
+                                            editor.update(cx, |this, cx| this.close(window, cx));
+                                        }
+                                    }),
+                            ),
+                    )
+                    .child(editor),
+            )
+            .into_any_element()
+    }
+}
+
 impl EntryEditor {
     /// Opens a dialog editing `txn` where it is written in the ledger, and
     /// returns the editor behind it.
@@ -67,23 +225,7 @@ impl EntryEditor {
         cx: &mut App,
     ) -> Entity<Self> {
         let editor = cx.new(|cx| Self::new(txn.src().clone(), session, window, cx));
-        window.open_dialog(cx, {
-            let editor = editor.clone();
-            move |dialog, _, cx| {
-                let title = if editor.read(cx).is_duplicating() {
-                    "Duplicate entry"
-                } else {
-                    "Edit entry"
-                };
-                dialog
-                    .title(title)
-                    .w(px(720.))
-                    // Edits are not lost to a click beside the dialog; Cancel,
-                    // the close button and Escape leave it.
-                    .overlay_closable(false)
-                    .child(editor.clone())
-            }
-        });
+        EntryEditorLayer::show(editor.clone(), window, cx);
         editor
     }
 
@@ -280,7 +422,7 @@ impl EntryEditor {
                 match result {
                     Ok(()) => {
                         this.session.update(cx, |session, cx| session.reload(cx));
-                        window.close_dialog(cx);
+                        this.close(window, cx);
                     }
                     Err(error) => this.error = Some(format!("{error:#}").into()),
                 }
@@ -290,13 +432,25 @@ impl EntryEditor {
         }));
     }
 
+    /// Closes the editor modal if no write is in flight.
+    pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending.is_some() {
+            return;
+        }
+        EntryEditorLayer::close_editor(cx.entity().entity_id(), window, cx);
+    }
+
     fn on_save(&mut self, _: &SaveEntry, window: &mut Window, cx: &mut Context<Self>) {
         self.save(window, cx);
     }
 
-    fn on_editor_escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_cancel(&mut self, _: &CancelEntry, window: &mut Window, cx: &mut Context<Self>) {
+        self.close(window, cx);
+    }
+
+    fn on_editor_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
         if !self.dismissing_overlay.replace(false) {
-            cx.propagate();
+            self.close(window, cx);
         }
     }
 
@@ -313,6 +467,7 @@ impl Render for EntryEditor {
         div()
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::on_save))
+            .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_editor_escape))
             .on_action(cx.listener(Self::on_editor_enter))
             .v_flex()
@@ -378,12 +533,13 @@ impl Render for EntryEditor {
                         h_flex()
                             .gap_2()
                             .child(
-                                DialogClose::new().child(
-                                    Button::new("cancel")
-                                        .label("Cancel")
-                                        .outline()
-                                        .disabled(busy),
-                                ),
+                                Button::new("cancel")
+                                    .label("Cancel")
+                                    .outline()
+                                    .disabled(busy)
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.close(window, cx)),
+                                    ),
                             )
                             .child(
                                 Button::new("save-entry")

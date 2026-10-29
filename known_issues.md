@@ -34,3 +34,14 @@ vertically. The upstream fix is proposed in
 `Lencerf/gpui-kit`, branch `fix/scrollable-both-axes`. Once `lumi-ui` is on
 a GPUI Kit release that includes it, the `self_start()` call and its comment
 can be removed.
+
+### Entry editor hosts its own modal layer instead of `window.open_dialog`
+
+In GPUI Kit 0.8.1, `gpui_base::Dialog` renders inside `deferred(...).with_priority(10 + layer)`,
+whereas `gpui_component`'s `CompletionMenu` (and other code-editor popovers)
+uses `deferred(...)` with default priority `0` instead of `POPUP_PRIORITY` (`100`).
+As a result, any `Editor` placed inside `window.open_dialog` has its completion
+dropdown painted underneath the opaque dialog surface. `lumi-ui/src/entry_editor.rs`
+mounts `EntryEditorLayer` in `LumiApp`'s base pass so `Editor` popovers at
+priority `0` paint above the modal. Once GPUI Kit gives `Editor` popovers
+`POPUP_PRIORITY`, `EntryEditor` can return to `window.open_dialog`.
