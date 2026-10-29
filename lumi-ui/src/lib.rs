@@ -18,7 +18,7 @@ pub mod source;
 mod style;
 mod trie_report;
 
-pub use app::{LumiApp, Refresh};
+pub use app::{LumiApp, OpenLedger, PathOpener, Refresh, ledger_name_for_path};
 pub use assets::ExtraIcons;
 #[cfg(not(target_family = "wasm"))]
 pub use assets::LumiAssets;
@@ -37,10 +37,11 @@ use gpui_kit::{App, KeyBinding};
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
     #[cfg(target_os = "macos")]
-    let (refresh, save) = ("cmd-r", "cmd-s");
+    let (open, refresh, save) = ("cmd-o", "cmd-r", "cmd-s");
     #[cfg(not(target_os = "macos"))]
-    let (refresh, save) = ("ctrl-r", "ctrl-s");
+    let (open, refresh, save) = ("ctrl-o", "ctrl-r", "ctrl-s");
     cx.bind_keys([
+        KeyBinding::new(open, OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new(refresh, Refresh, Some(app::KEY_CONTEXT)),
         KeyBinding::new(save, SaveEntry, Some(entry_editor::KEY_CONTEXT)),
         KeyBinding::new("enter", ActivateRow, Some(journal_report::KEY_CONTEXT)),
