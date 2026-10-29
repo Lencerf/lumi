@@ -116,3 +116,12 @@ pub enum Token {
     /// reports such input as `Err(())`, which the lexer maps to this variant.
     Error,
 }
+
+/// Yields every token in `src` — including whitespace, comments, newlines, and
+/// unrecognized slices mapped to [`Token::Error`] — together with its byte
+/// range in `src`.
+pub fn tokenize(src: &str) -> impl Iterator<Item = (Token, std::ops::Range<usize>)> + '_ {
+    Token::lexer(src)
+        .spanned()
+        .map(|(result, span)| (result.unwrap_or(Token::Error), span))
+}

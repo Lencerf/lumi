@@ -1,7 +1,7 @@
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, StyledExt as _, WindowExt as _, h_flex,
@@ -14,6 +14,7 @@ use gpui_kit::{
 };
 use lumi::{Source, Transaction};
 
+use crate::highlight;
 use crate::session::LedgerSession;
 
 actions!(lumi_ui, [SaveEntry]);
@@ -31,7 +32,7 @@ pub(crate) const KEY_CONTEXT: &str = "EntryEditor";
 pub struct EntryEditor {
     session: Entity<LedgerSession>,
     source: Source,
-    text: Entity<TextareaState>,
+    text: Entity<EditorState>,
     /// The entry's text as read; `None` until it has arrived.
     original: Option<SharedString>,
     /// When `true`, saving appends the text as a new entry in `source.file`
@@ -85,7 +86,14 @@ impl EntryEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let text = cx.new(|cx| TextareaState::new(window, cx).soft_wrap(false));
+        let text = cx.new(|cx| {
+            let mut state = EditorState::new(window, cx).language(highlight::LANGUAGE);
+            state.set_soft_wrap(false, window, cx);
+            state.set_line_number(false, window, cx);
+            state.set_folding(false, window, cx);
+            state.set_highlighter_factory(highlight::highlighter_factory(), cx);
+            state
+        });
         let _subscriptions = vec![cx.subscribe(&text, |_, _, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -159,6 +167,11 @@ impl EntryEditor {
 
     pub fn error(&self) -> Option<&SharedString> {
         self.error.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn editor_state(&self) -> &Entity<EditorState> {
+        &self.text
     }
 
     fn can_save(&self, cx: &App) -> bool {
@@ -274,9 +287,8 @@ impl Render for EntryEditor {
                 div()
                     .relative()
                     .child(
-                        Textarea::new(&self.text)
+                        Editor::new(&self.text)
                             .h(px(320.))
-                            .font_family(cx.theme().mono_font_family.clone())
                             .aria_label("Entry text")
                             .disabled(!loaded || busy),
                     )
