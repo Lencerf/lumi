@@ -233,6 +233,11 @@ impl LumiApp {
                             .text_lg()
                             .font_semibold()
                             .truncate()
+                            // An account name is an identifier, set in the
+                            // monospace face wherever it appears.
+                            .when(self.page.account().is_some(), |this| {
+                                this.font_family(cx.theme().mono_font_family.clone())
+                            })
                             .child(self.page.title()),
                     ),
             )

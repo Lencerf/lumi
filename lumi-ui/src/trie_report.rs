@@ -244,14 +244,18 @@ impl TrieReport {
                                 .child(
                                     TableCell::new().child(
                                         div().pl(rems(row.level as f32 * 1.25)).child(
-                                            // Opens the account's journal.
+                                            // Opens the account's journal. Small,
+                                            // like the table, so the name is set
+                                            // like the numbers beside it.
                                             Button::new((
                                                 ElementId::from("account"),
                                                 row.account.clone(),
                                             ))
                                             .ghost()
-                                            .xsmall()
+                                            .small()
                                             .compact()
+                                            .font_family(mono.clone())
+                                            .when(row.level == 0, |this| this.font_semibold())
                                             .label(row.name.clone())
                                             .accessibility_label(row.account.clone())
                                             .on_click(cx.listener(move |this, _, _, cx| {

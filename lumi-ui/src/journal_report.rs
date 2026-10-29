@@ -654,7 +654,7 @@ impl TableDelegate for JournalDelegate {
                                 .first()
                                 .map(|posting| posting.account.to_string())
                                 .unwrap_or_default();
-                            div().child(account).into_any_element()
+                            div().font_family(mono).child(account).into_any_element()
                         } else {
                             let expanded = self.is_expanded(entry_ix);
                             div()
@@ -718,6 +718,7 @@ impl TableDelegate for JournalDelegate {
                 match column {
                     "description" => div()
                         .pl_6()
+                        .font_family(mono)
                         .child(posting.account.to_string())
                         .into_any_element(),
                     "position" => div()
