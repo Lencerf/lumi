@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rust_decimal::Decimal;
 
 use crate::Ledger;
-use crate::query::{journal, positions, trie, trie_table};
+use crate::query::{completions, journal, positions, trie, trie_table};
 use crate::web::{FilterOptions, TrieOptions};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/query_test.bean");
@@ -314,4 +314,87 @@ fn test_journal_filters() {
         ..Default::default()
     };
     assert_eq!(page(&ledger, None, &bad_time).1, 9);
+}
+
+#[test]
+fn test_completions_extracts_open_accounts_currencies_payees_and_narrations() {
+    let ledger = fixture();
+    let got = completions(&ledger);
+
+    // Closed account Assets:Old:Savings is excluded; open accounts are sorted.
+    assert_eq!(
+        got.accounts,
+        [
+            "Assets:Bank:Checking",
+            "Assets:Cash",
+            "Assets:Investments:Brokerage",
+            "Equity:Opening-Balances",
+            "Expenses:Food:Groceries",
+            "Expenses:Food:Restaurants",
+            "Expenses:Travel",
+            "Income:Salary",
+            "Liabilities:CreditCard",
+        ]
+    );
+
+    // Operating and most-recently-posted currencies appear first.
+    assert_eq!(got.currencies, ["USD", "EUR", "VTI"]);
+
+    // Payees and narrations are distinct, non-empty, and newest-first.
+    assert_eq!(
+        got.payees,
+        ["Airline", "Broker", "Bistro", "Grocer", "Employer"]
+    );
+    assert_eq!(
+        got.narrations,
+        [
+            "Pay card",
+            "Flight to Paris",
+            "Close old account",
+            "Buy shares",
+            "Dinner",
+            "Weekly groceries",
+            "Salary",
+            "Opening balances",
+        ]
+    );
+    assert_eq!(got.payee_narrations["Airline"], ["Flight to Paris"]);
+    assert_eq!(got.payee_narrations["Grocer"], ["Weekly groceries"]);
+    assert!(!got.payee_narrations.contains_key(""));
+}
+
+#[test]
+fn test_completions_deduplicates_payee_narrations_and_includes_declared_commodities() {
+    let path = std::env::temp_dir().join(format!(
+        "lumi-completions-query-test-{}.bean",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        "\
+2024-01-01 commodity CHF
+2024-01-01 open Assets:Cash USD,GBP
+2024-01-01 open Expenses:Coffee
+2024-01-02 * \"Cafe\" \"Latte\"
+  Expenses:Coffee  5.00 EUR @ 1.10 USD
+  Assets:Cash     -5.50 USD
+2024-01-05 * \"Cafe\" \"Espresso\"
+  Expenses:Coffee  3.50 USD
+  Assets:Cash     -3.50 USD
+2024-01-09 * \"Cafe\" \"Latte\"
+  Expenses:Coffee  5.00 USD
+  Assets:Cash     -5.00 USD
+",
+    )
+    .unwrap();
+    let (ledger, errors) = Ledger::from_file(path.to_str().unwrap());
+    let _ = std::fs::remove_file(&path);
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let got = completions(&ledger);
+    assert_eq!(got.payees, ["Cafe"]);
+    assert_eq!(got.narrations, ["Latte", "Espresso"]);
+    assert_eq!(got.payee_narrations["Cafe"], ["Latte", "Espresso"]);
+    // Used currencies (USD, EUR from @ price) come before declared-only (CHF, GBP).
+    assert_eq!(got.currencies, ["USD", "EUR", "CHF", "GBP"]);
 }

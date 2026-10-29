@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use gpui_kit::{App, Task};
+pub use lumi::web::Completions;
 use lumi::web::{FilterOptions, JournalItem, Position, TrieOptions, TrieTable};
 use lumi::{Source, Transaction};
 
@@ -67,6 +68,10 @@ pub trait LedgerSource: 'static {
 
     /// The errors the last reload reported.
     fn errors(&self, cx: &mut App) -> Task<Result<Vec<lumi::Error>>>;
+
+    /// Vocabulary for entry editing auto-completion (open accounts,
+    /// currencies, payees, and narrations).
+    fn completions(&self, cx: &mut App) -> Task<Result<Completions>>;
 
     /// The text of the entry at `src` in its ledger file, as
     /// [`lumi::edit::entry_text`] reads it: the line the entry starts on and

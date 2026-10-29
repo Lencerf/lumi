@@ -5,7 +5,7 @@ use gpui_kit::{App, AppContext as _, Task};
 use lumi::web::{FilterOptions, JournalItem, TrieOptions, TrieTable, TrieTableRow};
 use lumi::{Ledger, Source, edit, query};
 
-use crate::source::{JournalPage, LedgerSource, Positions};
+use crate::source::{Completions, JournalPage, LedgerSource, Positions};
 
 /// A ledger parsed in this process from a file on disk.
 ///
@@ -123,6 +123,10 @@ impl LedgerSource for LocalLedger {
 
     fn errors(&self, cx: &mut App) -> Task<Result<Vec<lumi::Error>>> {
         self.query(cx, |loaded| loaded.errors.clone())
+    }
+
+    fn completions(&self, cx: &mut App) -> Task<Result<Completions>> {
+        self.query(cx, |loaded| query::completions(&loaded.ledger))
     }
 
     fn entry_text(&self, src: &Source, cx: &mut App) -> Task<Result<String>> {
