@@ -1,6 +1,6 @@
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, Theme};
-use gpui_kit::{App, Div, ElementId, Styled as _, div};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, Theme};
+use gpui_kit::{App, Div, ElementId, Hsla, InteractiveElement as _, Stateful, Styled as _, div};
 
 /// Customizes the global GPUI Kit theme tokens for lumi's report tables.
 pub(crate) fn configure_theme(cx: &mut App) {
@@ -8,16 +8,40 @@ pub(crate) fn configure_theme(cx: &mut App) {
         // Alternating row backgrounds already separate rows, so omit the thin
         // horizontal divider between them.
         theme.table_row_border = theme.transparent;
+        // Deeper grey header and alternating white/grey rows across all tables.
+        theme.table_head = theme.secondary;
+        theme.table_head_foreground = theme.secondary_foreground;
+        theme.table_even = if theme.is_dark() {
+            theme.muted.opacity(0.45)
+        } else {
+            theme.muted
+        };
     });
 }
 
-/// A sharp-cornered bordered container for report tables.
+/// A sharp-cornered paper-card container for report tables.
 pub(crate) fn table_card(cx: &App) -> Div {
     let theme = cx.theme();
     div()
         .border_1()
         .border_color(theme.border)
         .bg(theme.tokens.table)
+        .shadow_sm()
+}
+
+/// The shared header row style for `DataTable` delegates, matching
+/// `TrieReport`'s medium-weight header.
+pub(crate) fn table_header() -> Stateful<Div> {
+    div().id("header").font_medium()
+}
+
+/// Alternating white/grey row background by logical row index.
+pub(crate) fn table_row_bg(row_ix: usize, cx: &App) -> Hsla {
+    if row_ix.is_multiple_of(2) {
+        cx.theme().table
+    } else {
+        cx.theme().table_even
+    }
 }
 
 /// A compact inline button colored to show that a datum in a table — a date
