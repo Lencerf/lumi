@@ -24,7 +24,7 @@ use crate::session::LedgerSession;
 use crate::source::LedgerSource;
 use crate::trie_report::TrieReport;
 
-actions!(lumi_ui, [OpenLedger, Refresh]);
+actions!(lumi_ui, [GoBack, OpenLedger, Refresh]);
 
 /// The key context of the application view; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "LumiApp";
@@ -66,6 +66,9 @@ pub struct LumiApp {
     path_opener: Option<PathOpener>,
     open_error: Option<SharedString>,
     page: Page,
+    /// Pages left behind when opening an account view, so "Go back" returns to
+    /// the previous view.
+    back_stack: Vec<Page>,
     /// Reports are created the first time they are opened and kept, so that
     /// returning to one does not query the ledger again; cleared when
     /// switching to another root file.
@@ -111,6 +114,7 @@ impl LumiApp {
             path_opener: default_path_opener(),
             open_error: None,
             page,
+            back_stack: Vec::new(),
             reports: HashMap::new(),
             focus_handle,
             _open_task: None,
@@ -199,6 +203,7 @@ impl LumiApp {
         self.ledger_name = Some(ledger_name);
         self.ledger_path = ledger_path;
         self.open_error = None;
+        self.back_stack.clear();
         self.reports.clear();
         // When switching ledgers, an account page belonged to the previous
         // ledger's chart of accounts.
@@ -295,13 +300,28 @@ impl LumiApp {
         cx: &mut Context<Self>,
     ) {
         match event {
-            ReportEvent::OpenAccount(account) => self.open_page(Page::Account(account.clone()), cx),
+            ReportEvent::OpenAccount(account) => {
+                let next = Page::Account(account.clone());
+                if self.page != next {
+                    let prev = std::mem::replace(&mut self.page, next);
+                    self.back_stack.push(prev);
+                    cx.notify();
+                }
+            }
         }
     }
 
     fn open_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        self.back_stack.clear();
         if self.page != page {
             self.page = page;
+            cx.notify();
+        }
+    }
+
+    fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(prev) = self.back_stack.pop() {
+            self.page = prev;
             cx.notify();
         }
     }
@@ -430,6 +450,11 @@ impl LumiApp {
             let session = self.session.read(cx);
             (session.has_source(), session.is_reloading())
         };
+        let previous = self
+            .page
+            .account()
+            .and_then(|_| self.back_stack.last())
+            .map(|page| page.title());
         div()
             .h_flex()
             .items_center()
@@ -441,16 +466,40 @@ impl LumiApp {
             .border_color(cx.theme().border)
             .child(
                 div()
-                    .text_lg()
-                    .font_semibold()
+                    .h_flex()
+                    .items_center()
+                    .gap_3()
                     .min_w_0()
-                    .truncate()
-                    // An account name is an identifier, set in the
-                    // monospace face wherever it appears.
-                    .when(self.page.account().is_some(), |this| {
-                        this.font_family(cx.theme().mono_font_family.clone())
+                    .when_some(previous, |this, prev_title| {
+                        this.child(
+                            Button::new("go-back")
+                                .outline()
+                                .small()
+                                .icon(IconName::ArrowLeft)
+                                .label("Go back")
+                                .tooltip_with_action(
+                                    format!("Back to {prev_title}"),
+                                    &GoBack,
+                                    Some(KEY_CONTEXT),
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.go_back(&GoBack, window, cx)
+                                })),
+                        )
                     })
-                    .child(self.page.title()),
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_semibold()
+                            .min_w_0()
+                            .truncate()
+                            // An account name is an identifier, set in the
+                            // monospace face wherever it appears.
+                            .when(self.page.account().is_some(), |this| {
+                                this.font_family(cx.theme().mono_font_family.clone())
+                            })
+                            .child(self.page.title()),
+                    ),
             )
             .child(
                 Button::new("refresh")
@@ -528,6 +577,7 @@ impl Render for LumiApp {
             .text_color(cx.theme().foreground)
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::on_open_ledger))
             .on_action(cx.listener(Self::refresh))
             .child(self.render_sidebar(cx))
