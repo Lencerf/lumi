@@ -1,17 +1,19 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AppContext as _, Bounds, ElementId, Entity, TestAppContext, WindowBounds, WindowOptions, px,
-    size,
+    AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, TestAppContext, WindowBounds,
+    WindowOptions, px, size,
 };
 use lumi::web::{TrieTable, TrieTableRow};
 
+use crate::LumiApp;
 use crate::navigation::Page;
 use crate::session::LedgerSession;
 use crate::source::LocalLedger;
-use crate::trie_report::{TrieLoad, TriePresentation, TrieReport};
+use crate::trie_report::{TrieLoad, TriePresentation, TrieReport, roots};
 
 /// The query fixture of the `lumi` crate.
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../lumi/src/query_test.bean");
@@ -163,10 +165,10 @@ fn test_missing_ledger_is_reported(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext) {
+/// The app in a window, opened on `page` of the fixture ledger.
+fn open_app(page: Page, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<LumiApp>) {
     cx.update(crate::init);
-    let (handle, app) = cx.update(|cx| {
+    cx.update(|cx| {
         gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -178,10 +180,10 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
             cx,
             |window, cx| {
                 cx.new(|cx| {
-                    crate::LumiApp::new(
+                    LumiApp::new(
                         Arc::new(LocalLedger::new(FIXTURE)),
                         "query_test.bean",
-                        Page::BalanceSheet,
+                        page,
                         window,
                         cx,
                     )
@@ -189,7 +191,12 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
             },
         )
         .expect("open test window")
-    });
+    })
+}
+
+#[gpui_kit::test]
+async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext) {
+    let (handle, app) = open_app(Page::BalanceSheet, cx);
     cx.run_until_parked();
     cx.read(|cx| {
         assert_eq!(app.read(cx).page(), &Page::BalanceSheet);
@@ -225,8 +232,8 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
         .unwrap();
         cx.run_until_parked();
         cx.read(|cx| assert_eq!(app.read(cx).page(), &page));
-        // Render the page with its data loaded; this also builds the
-        // accessibility tree, which rejects duplicate element identities.
+        // Render the page with its data loaded. (The test platform never
+        // activates accessibility, so this does not build that tree.)
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
             .unwrap();
     }
@@ -238,4 +245,32 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
     .unwrap();
     cx.run_until_parked();
     cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into())));
+}
+
+/// GPUI derives accessibility node ids from element paths and rejects
+/// duplicates, and `Table` has no id of its own, so sibling tables need
+/// distinct scopes. The root row is the first row of every table, so the
+/// root buttons' parents share a path unless the tables are scoped apart.
+#[gpui_kit::test]
+fn test_sibling_tables_have_distinct_paths(cx: &mut TestAppContext) {
+    for page in [Page::BalanceSheet, Page::Income] {
+        let (handle, _app) = open_app(page.clone(), cx);
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let parents: HashSet<Vec<ElementId>> = roots(&page)
+                .map(|root| {
+                    let button = window.find((ElementId::from("account"), root));
+                    let path = button.path();
+                    path[..path.len() - 1].to_vec()
+                })
+                .collect();
+            assert_eq!(
+                parents.len(),
+                roots(&page).count(),
+                "{page:?}: the root rows of sibling tables share a path: {parents:?}"
+            );
+        })
+        .unwrap();
+    }
 }

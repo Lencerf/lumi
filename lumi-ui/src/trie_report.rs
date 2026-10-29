@@ -356,7 +356,13 @@ impl Render for TrieReport {
                                 .gap_6()
                                 .children(column.iter().map(|root| {
                                     let table = tables.next().unwrap_or(&TrieLoad::Pending);
-                                    self.render_table(root, table, cx)
+                                    // `Table` has no id of its own, so without
+                                    // this scope sibling tables would share
+                                    // element paths and so accessibility node
+                                    // ids.
+                                    div()
+                                        .id((ElementId::from("trie-table"), *root))
+                                        .child(self.render_table(root, table, cx))
                                 }))
                         }),
                     )),
