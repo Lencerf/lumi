@@ -85,4 +85,8 @@ pub struct Completions {
     /// Distinct non-empty narrations previously used with each payee, most
     /// recently used first.
     pub payee_narrations: HashMap<String, Vec<String>>,
+    /// Distinct tags (including leading `#`), most recently used first.
+    pub tags: Vec<String>,
+    /// Distinct links (including leading `^`), most recently used first.
+    pub links: Vec<String>,
 }

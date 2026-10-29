@@ -22,7 +22,7 @@ option "operating_currency" "USD"
   Income:Salary           -3000.00 USD
   Assets:Bank:Checking     3000.00 USD
 
-2024-02-03 * "Grocer" "Weekly groceries"
+2024-02-03 * "Grocer" "Weekly groceries" #groceries ^grocery-receipt
   Expenses:Food:Groceries    80.00 USD
   Liabilities:CreditCard    -80.00 USD
 
@@ -42,7 +42,7 @@ option "operating_currency" "USD"
 
 2024-04-02 close Assets:Old:Savings
 
-2025-05-20 * "Airline" "Flight to Paris"
+2025-05-20 * "Airline" "Flight to Paris" #paris-2025 ^flight-receipt
   Expenses:Travel           300.00 EUR
   Assets:Bank:Checking     -300.00 EUR
 

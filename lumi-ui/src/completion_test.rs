@@ -36,6 +36,12 @@ fn sample_completions() -> Completions {
         ]
         .into_iter()
         .collect(),
+        tags: vec![
+            "#paris-2025".to_string(),
+            "#trip-paris".to_string(),
+            "#comparison".to_string(),
+        ],
+        links: vec!["^flight-receipt".to_string(), "^inv-2025-001".to_string()],
     }
 }
 
@@ -291,17 +297,96 @@ fn test_unindented_posting_line_completes_accounts_with_two_space_indent() {
         })
     );
 
-    // Line 0, ISO dates, tags, and directive keywords never trigger unindented posting completion.
+    // Line 0, ISO dates, flags, and directive keywords never trigger unindented posting completion.
     for non_posting in [
         "Lia|",
         "2025-06-01 * \"Pay card\"\n2025-06-02|",
         "2025-06-01 * \"Pay card\"\npoptag|",
-        "2025-06-01 * \"Pay card\"\n#trip|",
+        "2025-06-01 * \"Pay card\"\n* |",
     ] {
         let (rope, offset) = cursor_case(non_posting);
         assert!(
             provider.complete_at(&rope, offset, false).is_empty(),
             "unexpected completion for: {non_posting}"
+        );
+    }
+}
+
+#[test]
+fn test_tag_and_link_completion_on_headers_continuations_and_directives() {
+    let provider = BeancountCompletionProvider::new();
+    provider.set_completions(sample_completions());
+
+    // Typing `#` or `^` on a transaction header immediately lists tags or links.
+    let (rope, offset) = cursor_case("2025-06-01 * \"Airline\" \"Flight to Paris\" #|");
+    let items = provider.complete_at(&rope, offset, false);
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, ["#paris-2025", "#trip-paris", "#comparison"]);
+
+    let (rope, offset) = cursor_case("2025-06-01 * \"Airline\" \"Flight to Paris\" ^|");
+    let items = provider.complete_at(&rope, offset, false);
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, ["^flight-receipt", "^inv-2025-001"]);
+
+    // Ranking: bare prefix (`#paris-2025`) beats hyphen-segment prefix (`#trip-paris`),
+    // which beats plain substring (`#comparison`).
+    let (rope, offset) = cursor_case("2025-06-01 * \"Flight\" #par|is ^inv-2025-001");
+    let items = provider.complete_at(&rope, offset, false);
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, ["#paris-2025", "#trip-paris", "#comparison"]);
+    let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+        panic!("expected explicit text edit");
+    };
+    assert_eq!(edit.new_text, "#paris-2025");
+    assert_eq!(edit.range.start.character, 22);
+    assert_eq!(edit.range.end.character, 28);
+
+    // Segment prefix matches `^inv-2025-001` on `^001`.
+    let (rope, offset) = cursor_case("2025-06-01 * \"Flight\" ^001|");
+    let items = provider.complete_at(&rope, offset, false);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].label, "^inv-2025-001");
+
+    // Indented continuation line keeps existing indentation; unindented line inserts 2 spaces.
+    let (rope, offset) = cursor_case("2025-06-01 * \"Flight\"\n  #paris-2025 ^fli|");
+    let items = provider.complete_at(&rope, offset, false);
+    assert_eq!(items[0].label, "^flight-receipt");
+    let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+        panic!("expected explicit text edit");
+    };
+    assert_eq!(edit.new_text, "^flight-receipt");
+    assert_eq!(edit.range.start.character, 14);
+
+    let (rope, offset) = cursor_case("2025-06-01 * \"Flight\"\n#trip|");
+    let items = provider.complete_at(&rope, offset, false);
+    assert_eq!(items[0].label, "#trip-paris");
+    let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+        panic!("expected explicit text edit");
+    };
+    assert_eq!(edit.new_text, "  #trip-paris");
+    assert_eq!(edit.range.start.character, 0);
+    assert_eq!(edit.range.end.character, 5);
+
+    // `pushtag` and `poptag` complete tags with or without a leading `#`.
+    for case in ["pushtag |", "pushtag #|", "poptag #par|", "pushtag par|"] {
+        let (rope, offset) = cursor_case(case);
+        let items = provider.complete_at(&rope, offset, false);
+        assert!(!items.is_empty(), "expected tag items for: {case}");
+        assert_eq!(items[0].label, "#paris-2025", "case: {case}");
+    }
+
+    // Invalid positions never suggest tags or links.
+    for invalid in [
+        "pushtag ^|",
+        "pushtag #paris-2025 |",
+        "2024-01-01 open Assets:Cash #|",
+        "  Assets:Cash  100.00 USD #|",
+        "2025-06-01 * \"Flight\"; #|",
+    ] {
+        let (rope, offset) = cursor_case(invalid);
+        assert!(
+            provider.complete_at(&rope, offset, false).is_empty(),
+            "unexpected completion for: {invalid}"
         );
     }
 }

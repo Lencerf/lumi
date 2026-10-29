@@ -105,6 +105,16 @@ pub(crate) enum CompletionTarget {
         replace: Range<usize>,
         query: String,
     },
+    Tag {
+        replace: Range<usize>,
+        query: String,
+        indent: bool,
+    },
+    Link {
+        replace: Range<usize>,
+        query: String,
+        indent: bool,
+    },
 }
 
 pub(crate) fn detect_target(text: &Rope, offset: usize, invoked: bool) -> Option<CompletionTarget> {
@@ -241,6 +251,13 @@ fn detect_indented_target(
         return None;
     }
 
+    if code[indent_end..].starts_with(['#', '^']) {
+        if all_sigil_tokens(&code[indent_end..col]) {
+            return detect_sigil_token(code, col, line_start, false);
+        }
+        return None;
+    }
+
     let first_end = indent_end
         + code[indent_end..]
             .find(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '{' | '}'))
@@ -272,8 +289,16 @@ fn detect_unindented_posting_target(
         .unwrap_or(code.len());
     let token = &code[..first_end];
 
+    if token.starts_with(['#', '^']) {
+        if all_sigil_tokens(&code[..col]) {
+            let indent = !code[..col].contains(char::is_whitespace);
+            return detect_sigil_token(code, col, line_start, indent);
+        }
+        return None;
+    }
+
     if is_iso_date(token)
-        || token.starts_with(['#', '^', '*', '!'])
+        || token.starts_with(['*', '!'])
         || matches!(
             token,
             "option" | "include" | "commodity" | "pushtag" | "poptag" | "plugin"
@@ -308,6 +333,9 @@ fn detect_directive_target(code: &str, col: usize, line_start: usize) -> Option<
     if &code[first.clone()] == "commodity" && col > first.end {
         return Some(currency_arg_target(code, col, line_start, spans.get(1)));
     }
+    if matches!(&code[first.clone()], "pushtag" | "poptag") && col > first.end {
+        return tag_arg_target(code, col, line_start, spans.get(1));
+    }
 
     if !is_iso_date(&code[first.clone()]) {
         return None;
@@ -318,6 +346,7 @@ fn detect_directive_target(code: &str, col: usize, line_start: usize) -> Option<
     }
 
     match &code[second.clone()] {
+        "*" | "!" | "?" | "txn" => detect_sigil_token(code, col, line_start, false),
         "commodity" => Some(currency_arg_target(code, col, line_start, spans.get(2))),
         kw @ ("open" | "close" | "balance" | "pad" | "note" | "document") => {
             let Some(third) = spans.get(2) else {
@@ -372,6 +401,80 @@ fn detect_directive_target(code: &str, col: usize, line_start: usize) -> Option<
         }
         _ => None,
     }
+}
+
+fn tag_arg_target(
+    code: &str,
+    col: usize,
+    line_start: usize,
+    arg: Option<&Range<usize>>,
+) -> Option<CompletionTarget> {
+    match arg {
+        None => Some(CompletionTarget::Tag {
+            replace: (line_start + col)..(line_start + col),
+            query: String::new(),
+            indent: false,
+        }),
+        Some(span) if col <= span.end => {
+            if code[span.clone()].starts_with('^') {
+                return None;
+            }
+            let start = span.start.min(col);
+            let typed = &code[start..col];
+            let query = typed.strip_prefix('#').unwrap_or(typed);
+            Some(CompletionTarget::Tag {
+                replace: (line_start + start)..(line_start + span.end),
+                query: query.to_string(),
+                indent: false,
+            })
+        }
+        Some(_) => None,
+    }
+}
+
+fn detect_sigil_token(
+    code: &str,
+    col: usize,
+    line_start: usize,
+    indent: bool,
+) -> Option<CompletionTarget> {
+    let clamped = col.min(code.len());
+    let tok_start = code[..clamped]
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| !ch.is_whitespace())
+        .last()
+        .map_or(clamped, |(idx, _)| idx);
+    if clamped <= tok_start {
+        return None;
+    }
+    let tok_end = clamped
+        + code[clamped..]
+            .chars()
+            .take_while(|ch| !ch.is_whitespace())
+            .map(char::len_utf8)
+            .sum::<usize>();
+    let typed = &code[tok_start..clamped];
+    let replace = (line_start + tok_start)..(line_start + tok_end);
+    if let Some(query) = typed.strip_prefix('#') {
+        Some(CompletionTarget::Tag {
+            replace,
+            query: query.to_string(),
+            indent,
+        })
+    } else {
+        typed.strip_prefix('^').map(|query| CompletionTarget::Link {
+            replace,
+            query: query.to_string(),
+            indent,
+        })
+    }
+}
+
+fn all_sigil_tokens(slice: &str) -> bool {
+    slice
+        .split_whitespace()
+        .all(|tok| tok.starts_with(['#', '^']))
 }
 
 fn currency_arg_target(
@@ -543,6 +646,54 @@ fn build_items(data: &Completions, text: &Rope, target: CompletionTarget) -> Vec
                 )
             })
             .collect(),
+        CompletionTarget::Tag {
+            replace,
+            query,
+            indent,
+        } => rank_sigil_candidates(&data.tags, '#', &query)
+            .into_iter()
+            .take(MAX_COMPLETION_ITEMS)
+            .map(|tag| {
+                let new_text = if indent {
+                    format!("  {tag}")
+                } else {
+                    tag.to_string()
+                };
+                make_item(
+                    tag,
+                    new_text,
+                    CompletionItemKind::CONSTANT,
+                    None,
+                    &query,
+                    text,
+                    &replace,
+                )
+            })
+            .collect(),
+        CompletionTarget::Link {
+            replace,
+            query,
+            indent,
+        } => rank_sigil_candidates(&data.links, '^', &query)
+            .into_iter()
+            .take(MAX_COMPLETION_ITEMS)
+            .map(|link| {
+                let new_text = if indent {
+                    format!("  {link}")
+                } else {
+                    link.to_string()
+                };
+                make_item(
+                    link,
+                    new_text,
+                    CompletionItemKind::REFERENCE,
+                    None,
+                    &query,
+                    text,
+                    &replace,
+                )
+            })
+            .collect(),
     }
 }
 
@@ -671,6 +822,26 @@ fn rank_narrations<'a>(data: &'a Completions, payee: Option<&str>, query: &str) 
     out
 }
 
+fn rank_sigil_candidates<'a>(candidates: &'a [String], sigil: char, query: &str) -> Vec<&'a str> {
+    if query.is_empty() {
+        return candidates.iter().map(String::as_str).collect();
+    }
+    let query_lower = query.to_lowercase();
+    let mut scored: Vec<(u8, usize, &'a str)> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, candidate)| {
+            let bare = candidate.strip_prefix(sigil).unwrap_or(candidate);
+            match_tier(bare, &query_lower).map(|tier| (tier, ix, candidate.as_str()))
+        })
+        .collect();
+    scored.sort_by_key(|(tier, ix, _)| (*tier, *ix));
+    scored
+        .into_iter()
+        .map(|(_, _, candidate)| candidate)
+        .collect()
+}
+
 fn match_tier(candidate: &str, query_lower: &str) -> Option<u8> {
     let candidate_lower = candidate.to_lowercase();
     if candidate_lower.starts_with(query_lower) {
@@ -681,13 +852,10 @@ fn match_tier(candidate: &str, query_lower: &str) -> Option<u8> {
             return Some(1);
         }
     } else if candidate_lower
-        .split(':')
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, ':' | '-' | '_' | '/' | '.'))
+        .filter(|segment| !segment.is_empty())
         .skip(1)
         .any(|segment| segment.starts_with(query_lower))
-        || candidate_lower
-            .split_whitespace()
-            .skip(1)
-            .any(|word| word.starts_with(query_lower))
     {
         return Some(1);
     }
