@@ -16,9 +16,26 @@ fn sample_completions() -> Completions {
             "Liabilities:CreditCard".to_string(),
         ],
         currencies: vec!["USD".to_string(), "EUR".to_string(), "VTI".to_string()],
-        payees: Vec::new(),
-        narrations: Vec::new(),
-        payee_narrations: Default::default(),
+        payees: vec![
+            "Airline".to_string(),
+            "Grocer".to_string(),
+            "Bistro".to_string(),
+        ],
+        narrations: vec![
+            "Pay card".to_string(),
+            "Flight to Paris".to_string(),
+            "Dinner".to_string(),
+            "Weekly groceries".to_string(),
+        ],
+        payee_narrations: [
+            (
+                "Grocer".to_string(),
+                vec!["Weekly groceries".to_string(), "Party snacks".to_string()],
+            ),
+            ("Airline".to_string(), vec!["Flight to Paris".to_string()]),
+        ]
+        .into_iter()
+        .collect(),
     }
 }
 
@@ -143,4 +160,102 @@ fn test_completion_highlighter_uses_full_token_query() {
     // Even if the menu's incremental query only saw ":c", filter_text carries "a:b:c".
     let ranges = hl(":c", &items[0]);
     assert_eq!(ranges, vec![0..1, 6..8, 11..13]);
+}
+
+#[test]
+fn test_single_header_string_completes_payees_and_narrations_and_closes_quote() {
+    let provider = BeancountCompletionProvider::new();
+    provider.set_completions(sample_completions());
+
+    // Unclosed 1st string matches both payees (Tier 0) and narrations (Tier 1 word-prefix).
+    let (rope, offset) = cursor_case("2025-06-01 * \"Gro|");
+    let items = provider.complete_at(&rope, offset, false);
+    let summary: Vec<(&str, Option<&str>)> = items
+        .iter()
+        .map(|item| (item.label.as_str(), item.detail.as_deref()))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("Grocer", Some("payee")),
+            ("Weekly groceries", Some("narration")),
+        ]
+    );
+    let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+        panic!("expected explicit text edit");
+    };
+    assert_eq!(edit.new_text, "Grocer\"");
+    assert_eq!(edit.range.start.character, 14);
+    assert_eq!(edit.range.end.character, 17);
+
+    // Closed 1st string includes the existing closing quote in its edit range so it is not doubled.
+    let (rope, offset) = cursor_case("2025-06-01 * \"Par|is\"");
+    let items = provider.complete_at(&rope, offset, false);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].label, "Flight to Paris");
+    let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+        panic!("expected explicit text edit");
+    };
+    assert_eq!(edit.new_text, "Flight to Paris\"");
+    assert_eq!(edit.range.start.character, 14);
+    assert_eq!(edit.range.end.character, 20);
+}
+
+#[test]
+fn test_two_header_strings_scope_first_to_payees_and_second_to_payee_narrations() {
+    let provider = BeancountCompletionProvider::new();
+    provider.set_completions(sample_completions());
+
+    // Closed 1st string when a 2nd string exists offers payees only.
+    let (rope, offset) = cursor_case("2025-06-01 * \"Gro|cer\" \"Weekly groceries\"");
+    let items = provider.complete_at(&rope, offset, false);
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, ["Grocer"]);
+    assert_eq!(items[0].detail.as_deref(), Some("payee"));
+
+    // Unclosed 1st string inserted before an existing narration replaces only up to cursor.
+    let (rope, offset) = cursor_case("2025-06-01 * \"Gro| \"Weekly groceries\"");
+    let items = provider.complete_at(&rope, offset, false);
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, ["Grocer"]);
+    let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+        panic!("expected explicit text edit");
+    };
+    assert_eq!(edit.range.start.character, 14);
+    assert_eq!(edit.range.end.character, 17);
+    assert_eq!(edit.new_text, "Grocer\"");
+
+    // Opening the 2nd string immediately ranks the chosen payee's narrations first.
+    let (rope, offset) = cursor_case("2025-06-01 txn \"Grocer\" \"|");
+    let items = provider.complete_at(&rope, offset, false);
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "Weekly groceries",
+            "Party snacks",
+            "Pay card",
+            "Flight to Paris",
+            "Dinner",
+        ]
+    );
+    assert!(
+        items
+            .iter()
+            .all(|item| item.detail.as_deref() == Some("narration"))
+    );
+
+    // Non-transaction directives with quoted strings do not suggest payees or narrations.
+    for non_txn in [
+        "option \"title\" \"Gro|",
+        "2024-01-01 event \"location\" \"Par|",
+        "2024-01-01 note Assets:Cash \"Gro|",
+        "  Assets:Cash \"Gro|",
+    ] {
+        let (rope, offset) = cursor_case(non_txn);
+        assert!(
+            provider.complete_at(&rope, offset, false).is_empty(),
+            "unexpected completion for: {non_txn}"
+        );
+    }
 }

@@ -495,3 +495,103 @@ fn test_account_and_currency_completions_insert_and_escape_keeps_dialog_open(
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_payee_and_narration_completions_close_quotes_and_save(cx: &mut TestAppContext) {
+    let ledger = TempLedger::new("payee-narration-completion");
+    let (handle, app) = open_journal(&ledger, cx);
+    let session = cx.read(|cx| app.read(cx).session().clone());
+    let txn = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        report.read(cx).entries(cx)[0].txn.clone()
+    });
+
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            EntryEditor::open(&txn, session, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // Start typing an unclosed payee quote on the transaction header.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let state = editor.read(cx).editor_state().clone();
+        state.update(cx, |state, cx| {
+            state.set_value(
+                "2025-06-01 * \n  Liabilities:CreditCard     80.00 USD\n  Assets:Bank:Checking      -80.00 USD",
+                window,
+                cx,
+            );
+            state.set_selected_range(13..13, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.input("\"Gro", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Confirm `"Grocer"` — which closes the quote and places the caret after `"`.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            editor
+                .read(cx)
+                .editor_state()
+                .read(cx)
+                .completion_menu_state()
+                .open
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Type ` "` to open the 2nd string: `"Grocer"`'s narration `"Weekly groceries"` is ranked #1.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.input(" \"", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            editor
+                .read(cx)
+                .editor_state()
+                .read(cx)
+                .completion_menu_state()
+                .open
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("Entry text").value(),
+            Some(
+                "2025-06-01 * \"Grocer\" \"Weekly groceries\"\n  Liabilities:CreditCard     80.00 USD\n  Assets:Bank:Checking      -80.00 USD"
+            )
+        );
+        window.click("save-entry", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        ledger
+            .text()
+            .contains("2025-06-01 * \"Grocer\" \"Weekly groceries\"")
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find_by_label("Entry text").is_none());
+    })
+    .unwrap();
+}

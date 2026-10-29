@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -90,6 +91,19 @@ pub(crate) enum CompletionTarget {
         replace: Range<usize>,
         query: String,
     },
+    Payee {
+        replace: Range<usize>,
+        query: String,
+    },
+    PayeeOrNarration {
+        replace: Range<usize>,
+        query: String,
+    },
+    Narration {
+        payee: Option<String>,
+        replace: Range<usize>,
+        query: String,
+    },
 }
 
 pub(crate) fn detect_target(text: &Rope, offset: usize, invoked: bool) -> Option<CompletionTarget> {
@@ -109,7 +123,7 @@ pub(crate) fn detect_target(text: &Rope, offset: usize, invoked: bool) -> Option
         }
     }
     if in_quotes {
-        return None;
+        return detect_header_string_target(line, col, line_start);
     }
 
     let code = strip_unquoted_comment(line);
@@ -117,6 +131,97 @@ pub(crate) fn detect_target(text: &Rope, offset: usize, invoked: bool) -> Option
         detect_indented_target(code, col, line_start, invoked)
     } else {
         detect_directive_target(code, col, line_start)
+    }
+}
+
+fn detect_header_string_target(
+    line: &str,
+    col: usize,
+    line_start: usize,
+) -> Option<CompletionTarget> {
+    if line.starts_with([' ', '\t']) {
+        return None;
+    }
+
+    let quotes_before: Vec<usize> = line[..col]
+        .char_indices()
+        .filter_map(|(idx, ch)| (ch == '"').then_some(idx))
+        .collect();
+    if quotes_before.len() != 1 && quotes_before.len() != 3 {
+        return None;
+    }
+
+    let prefix = &line[..quotes_before[0]];
+    let spans = whitespace_spans(prefix);
+    if spans.len() != 2
+        || !is_iso_date(&prefix[spans[0].clone()])
+        || !matches!(&prefix[spans[1].clone()], "*" | "!" | "?" | "txn")
+    {
+        return None;
+    }
+
+    let mut quotes_after = Vec::new();
+    let mut in_q = true;
+    for (rel, ch) in line[col..].char_indices() {
+        if ch == '"' {
+            in_q = !in_q;
+            quotes_after.push(col + rel);
+        } else if ch == ';' && !in_q {
+            break;
+        }
+    }
+
+    if quotes_before.len() == 1 {
+        let content_start = quotes_before[0] + 1;
+        let query = line[content_start..col].to_string();
+        let (replace_end, has_second_string) = if quotes_after.len() % 2 == 1 {
+            if quotes_after.len() > 3 {
+                return None;
+            }
+            let close_quote = quotes_after[0];
+            let has_second =
+                quotes_after.len() == 3 && line[close_quote + 1..quotes_after[1]].trim().is_empty();
+            (close_quote + 1, has_second)
+        } else {
+            if quotes_after.len() > 2 {
+                return None;
+            }
+            let has_second =
+                quotes_after.len() == 2 && line[col..quotes_after[0]].trim().is_empty();
+            (col, has_second)
+        };
+        let replace = (line_start + content_start)..(line_start + replace_end);
+        if has_second_string {
+            Some(CompletionTarget::Payee { replace, query })
+        } else {
+            Some(CompletionTarget::PayeeOrNarration { replace, query })
+        }
+    } else {
+        if !line[quotes_before[1] + 1..quotes_before[2]]
+            .trim()
+            .is_empty()
+        {
+            return None;
+        }
+        let payee = &line[quotes_before[0] + 1..quotes_before[1]];
+        let content_start = quotes_before[2] + 1;
+        let query = line[content_start..col].to_string();
+        let replace_end = if quotes_after.len() % 2 == 1 {
+            if quotes_after.len() > 1 {
+                return None;
+            }
+            quotes_after[0] + 1
+        } else {
+            if !quotes_after.is_empty() {
+                return None;
+            }
+            col
+        };
+        Some(CompletionTarget::Narration {
+            payee: (!payee.is_empty()).then(|| payee.to_string()),
+            replace: (line_start + content_start)..(line_start + replace_end),
+            query,
+        })
     }
 }
 
@@ -304,6 +409,7 @@ fn build_items(data: &Completions, text: &Rope, target: CompletionTarget) -> Vec
             .map(|account| {
                 make_item(
                     account,
+                    account.to_string(),
                     CompletionItemKind::STRUCT,
                     None,
                     &query,
@@ -318,8 +424,60 @@ fn build_items(data: &Completions, text: &Rope, target: CompletionTarget) -> Vec
             .map(|currency| {
                 make_item(
                     currency,
+                    currency.to_string(),
                     CompletionItemKind::UNIT,
                     None,
+                    &query,
+                    text,
+                    &replace,
+                )
+            })
+            .collect(),
+        CompletionTarget::Payee { replace, query } => rank_candidates(&data.payees, &query)
+            .into_iter()
+            .take(MAX_COMPLETION_ITEMS)
+            .map(|payee| {
+                make_item(
+                    payee,
+                    format!("{payee}\""),
+                    CompletionItemKind::VALUE,
+                    Some("payee"),
+                    &query,
+                    text,
+                    &replace,
+                )
+            })
+            .collect(),
+        CompletionTarget::PayeeOrNarration { replace, query } => {
+            rank_payees_and_narrations(&data.payees, &data.narrations, &query)
+                .into_iter()
+                .take(MAX_COMPLETION_ITEMS)
+                .map(|(candidate, detail)| {
+                    make_item(
+                        candidate,
+                        format!("{candidate}\""),
+                        CompletionItemKind::VALUE,
+                        Some(detail),
+                        &query,
+                        text,
+                        &replace,
+                    )
+                })
+                .collect()
+        }
+        CompletionTarget::Narration {
+            payee,
+            replace,
+            query,
+        } => rank_narrations(data, payee.as_deref(), &query)
+            .into_iter()
+            .take(MAX_COMPLETION_ITEMS)
+            .map(|narration| {
+                make_item(
+                    narration,
+                    format!("{narration}\""),
+                    CompletionItemKind::VALUE,
+                    Some("narration"),
                     &query,
                     text,
                     &replace,
@@ -331,6 +489,7 @@ fn build_items(data: &Completions, text: &Rope, target: CompletionTarget) -> Vec
 
 fn make_item(
     label: &str,
+    new_text: String,
     kind: CompletionItemKind,
     detail: Option<&str>,
     query: &str,
@@ -346,10 +505,7 @@ fn make_item(
         kind: Some(kind),
         detail: detail.map(str::to_string),
         filter_text: Some(query.to_string()),
-        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-            range,
-            new_text: label.to_string(),
-        })),
+        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
         ..Default::default()
     }
 }
@@ -373,6 +529,89 @@ fn rank_candidates<'a>(candidates: &'a [String], query: &str) -> Vec<&'a str> {
         .collect()
 }
 
+fn rank_payees_and_narrations<'a>(
+    payees: &'a [String],
+    narrations: &'a [String],
+    query: &str,
+) -> Vec<(&'a str, &'static str)> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    if query.is_empty() {
+        for payee in payees {
+            if seen.insert(payee.as_str()) {
+                out.push((payee.as_str(), "payee"));
+            }
+        }
+        for narration in narrations {
+            if seen.insert(narration.as_str()) {
+                out.push((narration.as_str(), "narration"));
+            }
+        }
+        return out;
+    }
+
+    let query_lower = query.to_lowercase();
+    let mut scored: Vec<(u8, u8, usize, &'a str, &'static str)> = payees
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, payee)| {
+            match_tier(payee, &query_lower).map(|tier| (tier, 0, ix, payee.as_str(), "payee"))
+        })
+        .chain(narrations.iter().enumerate().filter_map(|(ix, narration)| {
+            match_tier(narration, &query_lower)
+                .map(|tier| (tier, 1, ix, narration.as_str(), "narration"))
+        }))
+        .collect();
+    scored.sort_by_key(|(tier, group, ix, _, _)| (*tier, *group, *ix));
+    for (_, _, _, candidate, detail) in scored {
+        if seen.insert(candidate) {
+            out.push((candidate, detail));
+        }
+    }
+    out
+}
+
+fn rank_narrations<'a>(data: &'a Completions, payee: Option<&str>, query: &str) -> Vec<&'a str> {
+    let preferred = payee
+        .and_then(|p| data.payee_narrations.get(p))
+        .map_or(&[][..], Vec::as_slice);
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    if query.is_empty() {
+        for narration in preferred.iter().chain(data.narrations.iter()) {
+            if seen.insert(narration.as_str()) {
+                out.push(narration.as_str());
+            }
+        }
+        return out;
+    }
+
+    let query_lower = query.to_lowercase();
+    let mut scored: Vec<(u8, u8, usize, &'a str)> = preferred
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, narration)| {
+            match_tier(narration, &query_lower).map(|tier| (0, tier, ix, narration.as_str()))
+        })
+        .chain(
+            data.narrations
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, narration)| {
+                    match_tier(narration, &query_lower)
+                        .map(|tier| (1, tier, ix, narration.as_str()))
+                }),
+        )
+        .collect();
+    scored.sort_by_key(|(group, tier, ix, _)| (*group, *tier, *ix));
+    for (_, _, _, narration) in scored {
+        if seen.insert(narration) {
+            out.push(narration);
+        }
+    }
+    out
+}
+
 fn match_tier(candidate: &str, query_lower: &str) -> Option<u8> {
     let candidate_lower = candidate.to_lowercase();
     if candidate_lower.starts_with(query_lower) {
@@ -386,6 +625,10 @@ fn match_tier(candidate: &str, query_lower: &str) -> Option<u8> {
         .split(':')
         .skip(1)
         .any(|segment| segment.starts_with(query_lower))
+        || candidate_lower
+            .split_whitespace()
+            .skip(1)
+            .any(|word| word.starts_with(query_lower))
     {
         return Some(1);
     }
