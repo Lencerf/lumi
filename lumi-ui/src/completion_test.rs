@@ -61,6 +61,7 @@ fn test_indented_posting_account_detection_and_ranking() {
         Some(CompletionTarget::Account {
             replace: 24..24,
             query: String::new(),
+            indent: false,
         })
     );
 
@@ -256,6 +257,51 @@ fn test_two_header_strings_scope_first_to_payees_and_second_to_payee_narrations(
         assert!(
             provider.complete_at(&rope, offset, false).is_empty(),
             "unexpected completion for: {non_txn}"
+        );
+    }
+}
+
+#[test]
+fn test_unindented_posting_line_completes_accounts_with_two_space_indent() {
+    let provider = BeancountCompletionProvider::new();
+    provider.set_completions(sample_completions());
+
+    // Typing at column 0 below a transaction header suggests accounts and inserts 2 leading spaces.
+    let (rope, offset) = cursor_case("2025-06-01 * \"Pay card\"\nLia|");
+    let items = provider.complete_at(&rope, offset, false);
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, ["Liabilities:CreditCard"]);
+    let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+        panic!("expected explicit text edit");
+    };
+    assert_eq!(edit.new_text, "  Liabilities:CreditCard");
+    assert_eq!(edit.range.start.line, 1);
+    assert_eq!(edit.range.start.character, 0);
+    assert_eq!(edit.range.end.character, 3);
+
+    // Explicit invocation (`Ctrl+Space`) on a blank line below the header also offers accounts.
+    let (rope, offset) = cursor_case("2025-06-01 * \"Pay card\"\n|");
+    assert_eq!(detect_target(&rope, offset, false), None);
+    assert_eq!(
+        detect_target(&rope, offset, true),
+        Some(CompletionTarget::Account {
+            replace: 24..24,
+            query: String::new(),
+            indent: true,
+        })
+    );
+
+    // Line 0, ISO dates, tags, and directive keywords never trigger unindented posting completion.
+    for non_posting in [
+        "Lia|",
+        "2025-06-01 * \"Pay card\"\n2025-06-02|",
+        "2025-06-01 * \"Pay card\"\npoptag|",
+        "2025-06-01 * \"Pay card\"\n#trip|",
+    ] {
+        let (rope, offset) = cursor_case(non_posting);
+        assert!(
+            provider.complete_at(&rope, offset, false).is_empty(),
+            "unexpected completion for: {non_posting}"
         );
     }
 }
