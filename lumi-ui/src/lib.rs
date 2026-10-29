@@ -15,6 +15,7 @@ mod journal_report;
 mod navigation;
 mod session;
 pub mod source;
+mod style;
 mod trie_report;
 
 pub use app::{LumiApp, Refresh};

@@ -1,11 +1,16 @@
 use std::sync::Arc;
 
-use gpui_kit::{AppContext as _, Entity, TestAppContext};
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{
+    AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
+    px, size,
+};
 use lumi::web::Position;
 use rust_decimal::Decimal;
 
+use crate::LumiApp;
 use crate::holdings_report::{HoldingsReport, holdings};
-use crate::navigation::ReportEvent;
+use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::{LocalLedger, Positions};
 
@@ -119,4 +124,46 @@ fn test_holdings_load_and_open_accounts(cx: &mut TestAppContext) {
     report.update(cx, |report, cx| report.open_row(2, cx));
     cx.run_until_parked();
     assert_eq!(opened.lock().unwrap().as_slice(), ["Assets:Cash"]);
+}
+
+#[gpui_kit::test]
+fn test_clicking_holding_account_button_opens_its_account(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Holdings,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("holding-account", 3usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert_eq!(
+            app.read(cx).page(),
+            &Page::Account("Assets:Investments:Brokerage".into())
+        );
+    });
 }

@@ -1,5 +1,5 @@
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
@@ -14,6 +14,7 @@ use lumi::web::{TrieOptions, TrieTable};
 
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
+use crate::style::interactive_button;
 
 /// A report made of account hierarchies with their balances, such as the
 /// balance sheet (Assets beside Liabilities and Equity) or the income
@@ -247,20 +248,19 @@ impl TrieReport {
                                             // Opens the account's journal. Small,
                                             // like the table, so the name is set
                                             // like the numbers beside it.
-                                            Button::new((
-                                                ElementId::from("account"),
-                                                row.account.clone(),
-                                            ))
-                                            .ghost()
-                                            .small()
-                                            .compact()
+                                            interactive_button(
+                                                (ElementId::from("account"), row.account.clone()),
+                                                cx,
+                                            )
                                             .font_family(mono.clone())
                                             .when(row.level == 0, |this| this.font_semibold())
                                             .label(row.name.clone())
                                             .accessibility_label(row.account.clone())
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.open_account(account.clone(), cx)
-                                            })),
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.open_account(account.clone(), cx)
+                                                }),
+                                            ),
                                         ),
                                     ),
                                 )

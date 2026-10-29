@@ -1,12 +1,15 @@
-//! Editing one entry of a ledger file in place.
+//! Editing entries of a ledger file in place.
 //!
 //! An entry's text is the line it starts on and the indented lines after it,
 //! which hold its metadata and postings; a blank or unindented line ends it,
-//! unless a string is still open. That is the text [`entry_text`] returns and
-//! [`replace_entry_text`] replaces, so an editor can work on one entry
-//! without the rest of the file.
+//! unless a string is still open. That is the text [`entry_text`] returns,
+//! [`replace_entry_text`] replaces, and [`delete_entry_text`] removes, while
+//! [`append_entry_text`] adds a new entry at the end of the file, so an editor
+//! can work on one entry without the rest of the file.
 
 use std::{fmt, fs, io};
+
+use chrono::{Local, NaiveDate};
 
 /// Why an entry's text couldn't be read or replaced.
 #[derive(Debug)]
@@ -91,13 +94,100 @@ pub fn replace_entry_text(
         text.push_str(line);
         text.push_str(file.newline);
     }
-    if !file.ends_with_newline {
+    if !file.ends_with_newline && !text.is_empty() {
         text.truncate(text.len() - file.newline.len());
     }
     fs::write(path, text).map_err(|error| EditError::Io {
         path: path.to_string(),
         error,
     })
+}
+
+/// Deletes the entry starting on `line` (counted from 1) of the file at
+/// `path`, together with the blank lines that separated it from its neighbor.
+///
+/// `original` must be the entry's text as [`entry_text`] returned it. If the
+/// entry's text differs from it, the file changed since it was read; nothing
+/// is written and [`EditError::Changed`] is returned.
+pub fn delete_entry_text(path: &str, line: usize, original: &str) -> Result<(), EditError> {
+    let file = read(path)?;
+    let lines = file.lines(line, path)?;
+    if lines.join("\n") != original {
+        return Err(EditError::Changed {
+            path: path.to_string(),
+            line,
+        });
+    }
+    let mut start = line - 1;
+    let mut end = start + lines.len();
+    while end < file.lines.len() && file.lines[end].trim().is_empty() {
+        end += 1;
+    }
+    if end == file.lines.len() {
+        while start > 0 && file.lines[start - 1].trim().is_empty() {
+            start -= 1;
+        }
+    }
+    let mut text = String::with_capacity(file.text.len());
+    for line in file.lines[..start].iter().chain(&file.lines[end..]) {
+        text.push_str(line);
+        text.push_str(file.newline);
+    }
+    if !file.ends_with_newline && !text.is_empty() {
+        text.truncate(text.len() - file.newline.len());
+    }
+    fs::write(path, text).map_err(|error| EditError::Io {
+        path: path.to_string(),
+        error,
+    })
+}
+
+/// Appends `entry` to the file at `path`, separated from any preceding
+/// content by one blank line, keeping the file's own line breaks.
+pub fn append_entry_text(path: &str, entry: &str) -> Result<(), EditError> {
+    let file = read(path)?;
+    let entry = entry.trim_end_matches(['\r', '\n']);
+    let mut text = String::with_capacity(file.text.len() + entry.len() + 4);
+    let has_content = file.lines.iter().any(|line| !line.trim().is_empty());
+    if has_content {
+        text.push_str(&file.text);
+        if !file.ends_with_newline {
+            text.push_str(file.newline);
+        }
+        let ends_with_blank = file.lines.last().is_some_and(|line| line.trim().is_empty());
+        if !ends_with_blank {
+            text.push_str(file.newline);
+        }
+    }
+    for line in entry.split('\n') {
+        text.push_str(line.strip_suffix('\r').unwrap_or(line));
+        text.push_str(file.newline);
+    }
+    if has_content && !file.ends_with_newline && !text.is_empty() {
+        text.truncate(text.len() - file.newline.len());
+    }
+    fs::write(path, text).map_err(|error| EditError::Io {
+        path: path.to_string(),
+        error,
+    })
+}
+
+/// `entry` with the `YYYY-MM-DD` date at the start of its first line replaced
+/// by `date`, or `entry` unchanged when it does not begin with a date.
+pub fn with_date(entry: &str, date: NaiveDate) -> String {
+    if entry.is_char_boundary(10)
+        && NaiveDate::parse_from_str(&entry[..10], "%Y-%m-%d").is_ok()
+        && (entry.len() == 10 || entry[10..].starts_with(char::is_whitespace))
+    {
+        format!("{date}{}", &entry[10..])
+    } else {
+        entry.to_string()
+    }
+}
+
+/// `entry` with its leading `YYYY-MM-DD` date replaced by today's local date.
+pub fn with_today(entry: &str) -> String {
+    with_date(entry, Local::now().date_naive())
 }
 
 /// A file read as lines, remembering how to write it back unchanged.

@@ -84,4 +84,14 @@ pub trait LedgerSource: 'static {
         text: String,
         cx: &mut App,
     ) -> Task<Result<()>>;
+
+    /// Deletes the entry at `src` from its ledger file. `original` is what
+    /// [`entry_text`](Self::entry_text) returned; if the entry's text has
+    /// changed since, nothing is written and the task fails. The ledger is
+    /// not reloaded.
+    fn delete_entry_text(&self, src: &Source, original: String, cx: &mut App) -> Task<Result<()>>;
+
+    /// Appends `text` as a new entry at the end of `file`, separated by a
+    /// blank line. The ledger is not reloaded.
+    fn append_entry_text(&self, file: &str, text: String, cx: &mut App) -> Task<Result<()>>;
 }
