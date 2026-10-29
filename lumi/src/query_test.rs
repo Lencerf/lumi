@@ -317,6 +317,51 @@ fn test_journal_filters() {
 }
 
 #[test]
+fn test_journal_search_query_matches_date_account_payee_narration_and_currency() {
+    let ledger = fixture();
+    let search = |q: &str| FilterOptions {
+        query: Some(q.to_string()),
+        ..Default::default()
+    };
+
+    // Date substring.
+    let (rows, total) = page(&ledger, None, &search("2024-03"));
+    assert_eq!(total, 2);
+    assert_eq!(dates(&rows), ["2024-03-15", "2024-03-01"]);
+
+    // Account name (case-insensitive).
+    let (rows, total) = page(&ledger, None, &search("brokerage"));
+    assert_eq!(total, 1);
+    assert_eq!(dates(&rows), ["2024-03-01"]);
+
+    // Payee and narration (case-insensitive).
+    let (rows, total) = page(&ledger, None, &search("bistro"));
+    assert_eq!(total, 1);
+    assert_eq!(dates(&rows), ["2024-02-10"]);
+
+    let (rows, total) = page(&ledger, None, &search("flight to paris"));
+    assert_eq!(total, 1);
+    assert_eq!(dates(&rows), ["2025-05-20"]);
+
+    // Currency on postings (including held-at-cost shares).
+    let (rows, total) = page(&ledger, None, &search("vti"));
+    assert_eq!(total, 1);
+    assert_eq!(dates(&rows), ["2024-03-01"]);
+
+    let (rows, total) = page(&ledger, None, &search("EUR"));
+    assert_eq!(total, 1);
+    assert_eq!(dates(&rows), ["2025-05-20"]);
+
+    // Multi-word terms must all match across any fields of the entry.
+    let (rows, total) = page(&ledger, None, &search("2024 cash 54.50"));
+    assert_eq!(total, 1);
+    assert_eq!(dates(&rows), ["2024-03-15"]);
+
+    // Blank query matches all entries.
+    assert_eq!(page(&ledger, None, &search("   ")).1, 9);
+}
+
+#[test]
 fn test_completions_extracts_open_accounts_currencies_payees_and_narrations() {
     let ledger = fixture();
     let got = completions(&ledger);

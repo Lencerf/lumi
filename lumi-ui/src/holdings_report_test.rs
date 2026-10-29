@@ -220,3 +220,68 @@ fn test_holdings_rows_alternate_background_and_header_uses_medium_weight(cx: &mu
         assert_eq!(filler_bg, None);
     });
 }
+
+#[gpui_kit::test]
+fn test_holdings_search_shortcut_filters_by_currency_date_and_account(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Holdings,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+    })
+    .unwrap();
+
+    #[cfg(target_os = "macos")]
+    let find_shortcut = "cmd-f";
+    #[cfg(not(target_os = "macos"))]
+    let find_shortcut = "ctrl-f";
+
+    cx.simulate_keystrokes(handle, find_shortcut);
+    cx.update_window(handle, |_, window, cx| {
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        assert!(report.read(cx).is_search_focused(window, cx));
+    })
+    .unwrap();
+
+    // Filter by currency and acquisition date ("2024-03 VTI").
+    cx.simulate_keystrokes(handle, "2 0 2 4 - 0 3 space v t i");
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        assert_eq!(
+            report.read(cx).accounts(cx),
+            ["Assets:Investments:Brokerage"]
+        );
+    });
+
+    // Escape clears the query and restores all holdings.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        assert_eq!(report.read(cx).accounts(cx).len(), 4);
+    });
+}

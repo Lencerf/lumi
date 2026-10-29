@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{Input, InputEvent, InputState, Search};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::table::{
     Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
 };
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Div, Entity, EventEmitter, Focusable as _,
@@ -31,6 +32,7 @@ pub(crate) const KEY_CONTEXT: &str = "HoldingsReport";
 pub struct HoldingsReport {
     session: Entity<LedgerSession>,
     table: Entity<TableState<HoldingsDelegate>>,
+    search_input: Entity<InputState>,
     requested_revision: Option<u64>,
     _subscriptions: Vec<Subscription>,
 }
@@ -48,7 +50,10 @@ struct Holding {
 struct HoldingsDelegate {
     source: Arc<dyn LedgerSource>,
     columns: Vec<Column>,
+    all_holdings: Vec<Holding>,
     holdings: Vec<Holding>,
+    query: SharedString,
+    sort: ColumnSort,
     loading: bool,
     failed: Option<SharedString>,
     generation: u64,
@@ -63,13 +68,20 @@ impl HoldingsReport {
     ) -> Self {
         let source = session.read(cx).source().clone();
         let table = cx.new(|cx| TableState::new(HoldingsDelegate::new(source), window, cx));
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Search account, currency, date…")
+                .clean_on_escape()
+        });
         let _subscriptions = vec![
             cx.observe(&session, |this, _, cx| this.load(cx)),
             cx.subscribe(&table, Self::on_table_event),
+            cx.subscribe(&search_input, Self::on_search_input_event),
         ];
         let mut this = Self {
             session,
             table,
+            search_input,
             requested_revision: None,
             _subscriptions,
         };
@@ -86,6 +98,61 @@ impl HoldingsReport {
             .iter()
             .map(|holding| holding.account.clone())
             .collect()
+    }
+
+    pub fn search_query(&self, cx: &App) -> SharedString {
+        self.table.read(cx).delegate().query.clone()
+    }
+
+    pub fn is_search_focused(&self, window: &Window, cx: &App) -> bool {
+        self.search_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    }
+
+    /// Focuses the search box and selects any existing query text.
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+    }
+
+    /// Filters the holdings table by `query`.
+    pub fn set_search_query(
+        &mut self,
+        query: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query: SharedString = query.into();
+        self.search_input
+            .update(cx, |input, cx| input.set_value(query.clone(), window, cx));
+        self.apply_search_query(query, cx);
+    }
+
+    fn apply_search_query(&mut self, query: SharedString, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if delegate.query != query {
+                delegate.query = query;
+                delegate.apply_filter_and_sort();
+                cx.notify();
+            }
+        });
+    }
+
+    fn on_search_input_event(
+        &mut self,
+        input: Entity<InputState>,
+        event: &InputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            let query = input.read(cx).value();
+            self.apply_search_query(query, cx);
+        }
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -144,11 +211,18 @@ impl EventEmitter<ReportEvent> for HoldingsReport {}
 
 impl Render for HoldingsReport {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (count, failed) = {
+        let (count, total, filtered, failed) = {
             let delegate = self.table.read(cx).delegate();
-            (delegate.holdings.len(), delegate.failed.clone())
+            (
+                delegate.holdings.len(),
+                delegate.all_holdings.len(),
+                !delegate.query.trim().is_empty(),
+                delegate.failed.clone(),
+            )
         };
-        let summary: SharedString = if count == 1 {
+        let summary: SharedString = if filtered {
+            format!("{count} of {total} positions").into()
+        } else if count == 1 {
             "1 position".into()
         } else {
             format!("{count} positions").into()
@@ -160,13 +234,36 @@ impl Render for HoldingsReport {
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::open_selected_row))
             .on_action(cx.listener(Self::on_open_account))
+            .on_action(cx.listener(|this, _: &Search, window, cx| this.focus_search(window, cx)))
             .child(
                 div()
+                    .h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
                     .px_6()
                     .pt_4()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(summary),
+                    .child(
+                        div().w(px(320.)).max_w_full().child(
+                            Input::new(&self.search_input)
+                                .id("holdings-search")
+                                .small()
+                                .cleanable(true)
+                                .aria_label("Search holdings")
+                                .prefix(
+                                    Icon::new(IconName::Search)
+                                        .small()
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(summary),
+                    ),
             )
             .when_some(failed, |this, message| {
                 this.child(
@@ -215,11 +312,33 @@ impl HoldingsDelegate {
                     .width(px(170.))
                     .text_right(),
             ],
+            all_holdings: Vec::new(),
             holdings: Vec::new(),
+            query: SharedString::default(),
+            sort: ColumnSort::Default,
             loading: false,
             failed: None,
             generation: 0,
             _load_task: None,
+        }
+    }
+
+    fn apply_filter_and_sort(&mut self) {
+        let terms: Vec<String> = self
+            .query
+            .split_whitespace()
+            .filter(|term| !term.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        self.holdings = self
+            .all_holdings
+            .iter()
+            .filter(|holding| holding_matches_terms(holding, &terms))
+            .cloned()
+            .collect();
+        match self.sort {
+            ColumnSort::Descending => self.holdings.sort_by(|a, b| b.account.cmp(&a.account)),
+            _ => self.holdings.sort_by(|a, b| a.account.cmp(&b.account)),
         }
     }
 
@@ -239,7 +358,10 @@ impl HoldingsDelegate {
                     }
                     delegate.loading = false;
                     match result {
-                        Ok(positions) => delegate.holdings = holdings(positions),
+                        Ok(positions) => {
+                            delegate.all_holdings = holdings(positions);
+                            delegate.apply_filter_and_sort();
+                        }
                         Err(error) => delegate.failed = Some(format!("{error:#}").into()),
                     }
                     cx.notify();
@@ -248,6 +370,29 @@ impl HoldingsDelegate {
         }));
         cx.notify();
     }
+}
+
+fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        return haystack
+            .as_bytes()
+            .windows(needle_lower.len())
+            .any(|window| window.eq_ignore_ascii_case(needle_lower.as_bytes()));
+    }
+    haystack.to_lowercase().contains(needle_lower)
+}
+
+fn holding_matches_terms(holding: &Holding, terms: &[String]) -> bool {
+    terms.iter().all(|term| {
+        contains_ignore_case(&holding.account, term)
+            || contains_ignore_case(&holding.units, term)
+            || contains_ignore_case(&holding.cost, term)
+            || contains_ignore_case(&holding.acquired, term)
+            || contains_ignore_case(&holding.book_value, term)
+    })
 }
 
 /// The rows for `positions`: non-zero positions of asset and liability
@@ -351,10 +496,8 @@ impl TableDelegate for HoldingsDelegate {
         if self.columns[col_ix].key.as_ref() != "account" {
             return;
         }
-        match sort {
-            ColumnSort::Descending => self.holdings.sort_by(|a, b| b.account.cmp(&a.account)),
-            _ => self.holdings.sort_by(|a, b| a.account.cmp(&b.account)),
-        }
+        self.sort = sort;
+        self.apply_filter_and_sort();
     }
 
     fn context_menu(

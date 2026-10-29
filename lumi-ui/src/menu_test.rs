@@ -32,6 +32,16 @@ fn test_init_installs_application_menus_and_quit_binding(cx: &mut TestAppContext
         assert!(app_items.contains(&"Quit Lumi"));
         assert!(app_items.contains(&"Hide Lumi"));
 
+        let edit_items: Vec<&str> = menus[2]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                OwnedMenuItem::Action { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(edit_items.contains(&"Find…"));
+
         #[cfg(target_os = "macos")]
         let (quit_key, close_key) = ("cmd-q", "cmd-w");
         #[cfg(not(target_os = "macos"))]

@@ -398,3 +398,99 @@ fn test_description_cell_toggles_postings_and_sub_rows_match_parent_background(
         );
     });
 }
+
+#[gpui_kit::test]
+fn test_search_shortcut_focuses_search_box_and_filters_journal_and_account_views(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+    })
+    .unwrap();
+
+    #[cfg(target_os = "macos")]
+    let find_shortcut = "cmd-f";
+    #[cfg(not(target_os = "macos"))]
+    let find_shortcut = "ctrl-f";
+
+    // Pressing cmd+f / ctrl+f focuses the journal search input so typing filters
+    // immediately by currency ("VTI").
+    cx.simulate_keystrokes(handle, find_shortcut);
+    cx.update_window(handle, |_, window, cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert!(report.read(cx).is_search_focused(window, cx));
+    })
+    .unwrap();
+
+    cx.simulate_keystrokes(handle, "v t i");
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(report.read(cx).search_query(cx), "vti");
+        assert_eq!(report.read(cx).total(cx), 1);
+        assert_eq!(report.read(cx).entries(cx)[0].txn.payee(), "Broker");
+    });
+
+    // Pressing Escape clears the search box and restores all entries.
+    cx.simulate_keystrokes(handle, "escape");
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(report.read(cx).search_query(cx), "");
+        assert_eq!(report.read(cx).total(cx), 9);
+    });
+
+    // Opening an account view also supports cmd+f / ctrl+f search over that account.
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(crate::journal_report::OpenAccount("Assets:Cash".into())),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+    })
+    .unwrap();
+
+    cx.simulate_keystrokes(handle, find_shortcut);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_keystrokes(handle, "b i s t r o");
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into()));
+        let report = app.read(cx).journal().expect("account journal is shown");
+        assert_eq!(report.read(cx).total(cx), 1);
+        assert_eq!(report.read(cx).entries(cx)[0].txn.narration(), "Dinner");
+    });
+}

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::Search;
 use gpui_kit::component::sidebar::{
     Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
@@ -195,6 +196,16 @@ impl LumiApp {
             .ok()
     }
 
+    /// The holdings report shown, if the page is [`Page::Holdings`].
+    pub fn holdings(&self) -> Option<Entity<HoldingsReport>> {
+        self.reports
+            .get(&self.page)?
+            .view
+            .clone()
+            .downcast::<HoldingsReport>()
+            .ok()
+    }
+
     /// Switches the application to `source`, named `ledger_name`, clearing
     /// cached reports from the previous ledger and loading the new one.
     pub fn open_ledger(
@@ -293,21 +304,21 @@ impl LumiApp {
             Page::BalanceSheet | Page::Income => {
                 let view = cx.new(|cx| TrieReport::new(page.clone(), session, cx));
                 Report {
-                    _subscription: Some(cx.subscribe(&view, Self::on_report_event)),
+                    _subscription: Some(cx.subscribe_in(&view, window, Self::on_report_event)),
                     view: view.into(),
                 }
             }
             Page::Journal | Page::Account(_) => {
                 let view = cx.new(|cx| JournalReport::new(page.clone(), session, window, cx));
                 Report {
-                    _subscription: Some(cx.subscribe(&view, Self::on_report_event)),
+                    _subscription: Some(cx.subscribe_in(&view, window, Self::on_report_event)),
                     view: view.into(),
                 }
             }
             Page::Holdings => {
                 let view = cx.new(|cx| HoldingsReport::new(session, window, cx));
                 Report {
-                    _subscription: Some(cx.subscribe(&view, Self::on_report_event)),
+                    _subscription: Some(cx.subscribe_in(&view, window, Self::on_report_event)),
                     view: view.into(),
                 }
             }
@@ -326,8 +337,9 @@ impl LumiApp {
 
     fn on_report_event<T: 'static>(
         &mut self,
-        _: Entity<T>,
+        _: &Entity<T>,
         event: &ReportEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -336,24 +348,40 @@ impl LumiApp {
                 if self.page != next {
                     let prev = std::mem::replace(&mut self.page, next);
                     self.back_stack.push(prev);
+                    self.focus_handle.focus(window, cx);
                     cx.notify();
                 }
             }
         }
     }
 
-    fn open_page(&mut self, page: Page, cx: &mut Context<Self>) {
+    fn open_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         self.back_stack.clear();
         if self.page != page {
             self.page = page;
+            self.focus_handle.focus(window, cx);
             cx.notify();
         }
     }
 
-    fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
+    fn go_back(&mut self, _: &GoBack, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(prev) = self.back_stack.pop() {
             self.page = prev;
+            self.focus_handle.focus(window, cx);
             cx.notify();
+        }
+    }
+
+    fn on_search(&mut self, _: &Search, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_layer.read(cx).is_open() || !self.session.read(cx).has_source() {
+            return;
+        }
+        let page = self.page.clone();
+        let view = self.report(&page, window, cx);
+        if let Ok(journal) = view.clone().downcast::<JournalReport>() {
+            journal.update(cx, |journal, cx| journal.focus_search(window, cx));
+        } else if let Ok(holdings) = view.downcast::<HoldingsReport>() {
+            holdings.update(cx, |holdings, cx| holdings.focus_search(window, cx));
         }
     }
 
@@ -468,9 +496,9 @@ impl LumiApp {
                         SidebarMenuItem::new(page.title())
                             .icon(page.icon())
                             .active(active)
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.open_page(page.clone(), cx)),
-                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_page(page.clone(), window, cx)
+                            }))
                     }),
                 )),
             )
@@ -612,17 +640,22 @@ impl Render for LumiApp {
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::on_open_ledger))
             .on_action(cx.listener(Self::refresh))
-            .on_action(cx.listener(|this, _: &ShowBalanceSheet, _, cx| {
-                this.open_page(Page::BalanceSheet, cx)
+            .on_action(cx.listener(Self::on_search))
+            .on_action(cx.listener(|this, _: &ShowBalanceSheet, window, cx| {
+                this.open_page(Page::BalanceSheet, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &ShowIncome, _, cx| this.open_page(Page::Income, cx)))
-            .on_action(
-                cx.listener(|this, _: &ShowJournal, _, cx| this.open_page(Page::Journal, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &ShowHoldings, _, cx| this.open_page(Page::Holdings, cx)),
-            )
-            .on_action(cx.listener(|this, _: &ShowErrors, _, cx| this.open_page(Page::Errors, cx)))
+            .on_action(cx.listener(|this, _: &ShowIncome, window, cx| {
+                this.open_page(Page::Income, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowJournal, window, cx| {
+                this.open_page(Page::Journal, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowHoldings, window, cx| {
+                this.open_page(Page::Holdings, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowErrors, window, cx| {
+                this.open_page(Page::Errors, window, cx)
+            }))
             .child(self.render_sidebar(cx))
             .child(
                 div()
