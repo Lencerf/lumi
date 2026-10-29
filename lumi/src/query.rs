@@ -139,6 +139,72 @@ fn touches_account(txn: &Transaction, account: &str) -> bool {
         .any(|posting| posting.account.starts_with(account))
 }
 
+fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        return haystack
+            .as_bytes()
+            .windows(needle_lower.len())
+            .any(|window| window.eq_ignore_ascii_case(needle_lower.as_bytes()));
+    }
+    haystack.to_lowercase().contains(needle_lower)
+}
+
+fn query_terms(query: Option<&str>) -> Vec<String> {
+    query
+        .map(|q| {
+            q.split_whitespace()
+                .filter(|term| !term.is_empty())
+                .map(str::to_lowercase)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn txn_matches_term(txn: &Transaction, term_lower: &str, date_text: &str) -> bool {
+    if contains_ignore_case(date_text, term_lower)
+        || contains_ignore_case(txn.payee(), term_lower)
+        || contains_ignore_case(txn.narration(), term_lower)
+        || txn
+            .tags()
+            .iter()
+            .any(|tag| contains_ignore_case(tag, term_lower))
+        || txn
+            .links()
+            .iter()
+            .any(|link| contains_ignore_case(link, term_lower))
+    {
+        return true;
+    }
+
+    txn.postings().iter().any(|posting| {
+        contains_ignore_case(&posting.account, term_lower)
+            || contains_ignore_case(&posting.amount.currency, term_lower)
+            || contains_ignore_case(&posting.amount.number.to_string(), term_lower)
+            || posting.cost.as_ref().is_some_and(|cost| {
+                contains_ignore_case(&cost.amount.currency, term_lower)
+                    || contains_ignore_case(&cost.amount.number.to_string(), term_lower)
+                    || contains_ignore_case(&cost.date.to_string(), term_lower)
+            })
+            || posting.price.as_ref().is_some_and(|price| {
+                contains_ignore_case(&price.currency, term_lower)
+                    || contains_ignore_case(&price.number.to_string(), term_lower)
+            })
+    })
+}
+
+fn txn_matches_query(txn: &Transaction, terms: &[String]) -> bool {
+    if terms.is_empty() {
+        return true;
+    }
+    let date_text = txn.date().to_string();
+    terms
+        .iter()
+        .all(|term| txn_matches_term(txn, term, &date_text))
+}
+
 /// Adds the amounts `txn` posts to `account` (and its sub-accounts) to
 /// `running_balance`, and returns those changes by currency. Postings held at
 /// cost and balance assertions do not change the balance.
@@ -183,6 +249,7 @@ pub fn journal<'t>(
         .time
         .as_ref()
         .and_then(|time| time.parse::<i32>().ok());
+    let terms = query_terms(options.query.as_deref());
     let matches = |txn: &Transaction| {
         account.is_none_or(|account| touches_account(txn, account))
             && options
@@ -190,6 +257,7 @@ pub fn journal<'t>(
                 .as_deref()
                 .is_none_or(|account| touches_account(txn, account))
             && year.is_none_or(|year| txn.date().year() == year)
+            && txn_matches_query(txn, &terms)
     };
     let txns: Vec<_> = ledger.txns().iter().filter(|txn| matches(txn)).collect();
     let total_number = txns.len();

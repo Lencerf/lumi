@@ -80,6 +80,10 @@ pub(crate) struct EntryEditorLayer {
 }
 
 impl EntryEditorLayer {
+    pub(crate) fn is_open(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub(crate) fn register(window: &Window, cx: &mut App) -> Entity<Self> {
         let layer = cx.new(|_| Self { active: None });
         if !cx.has_global::<EntryEditorRegistry>() {

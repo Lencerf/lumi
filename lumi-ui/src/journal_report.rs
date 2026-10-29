@@ -4,12 +4,15 @@ use std::sync::Arc;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState, Search};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::pagination::Pagination;
 use gpui_kit::component::table::{
     Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
 };
-use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, Size, StyledExt as _};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, Size, StyledExt as _,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Action, App, AppContext as _, Context, Div, ElementId, Entity, EventEmitter, Focusable as _,
@@ -66,6 +69,7 @@ pub struct JournalReport {
     page: Page,
     session: Entity<LedgerSession>,
     table: Entity<TableState<JournalDelegate>>,
+    search_input: Entity<InputState>,
     /// The ledger revision the table was last reset for.
     requested_revision: Option<u64>,
     _subscriptions: Vec<Subscription>,
@@ -87,6 +91,7 @@ struct JournalDelegate {
     expanded: HashSet<usize>,
     expand_all: bool,
     old_first: bool,
+    query: SharedString,
     /// The page shown, counted from 1.
     page: usize,
     page_size: usize,
@@ -110,14 +115,21 @@ impl JournalReport {
         let source = session.read(cx).source().clone();
         let delegate = JournalDelegate::new(source, page.account().cloned());
         let table = cx.new(|cx| TableState::new(delegate, window, cx));
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Search date, account, payee, narration, currency…")
+                .clean_on_escape()
+        });
         let _subscriptions = vec![
             cx.observe(&session, |this, _, cx| this.load(cx)),
             cx.subscribe(&table, Self::on_table_event),
+            cx.subscribe(&search_input, Self::on_search_input_event),
         ];
         let mut this = Self {
             page,
             session,
             table,
+            search_input,
             requested_revision: None,
             _subscriptions,
         };
@@ -150,6 +162,61 @@ impl JournalReport {
 
     pub fn is_showing_postings(&self, cx: &App) -> bool {
         self.table.read(cx).delegate().expand_all
+    }
+
+    pub fn search_query(&self, cx: &App) -> SharedString {
+        self.table.read(cx).delegate().query.clone()
+    }
+
+    pub fn is_search_focused(&self, window: &Window, cx: &App) -> bool {
+        self.search_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    }
+
+    /// Focuses the search box and selects any existing query text.
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+    }
+
+    /// Sets the search query and reloads the first page of matching entries.
+    pub fn set_search_query(
+        &mut self,
+        query: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query: SharedString = query.into();
+        self.search_input
+            .update(cx, |input, cx| input.set_value(query.clone(), window, cx));
+        self.apply_search_query(query, cx);
+    }
+
+    fn apply_search_query(&mut self, query: SharedString, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if delegate.query != query {
+                delegate.query = query;
+                delegate.page = 1;
+                delegate.load_page(cx);
+            }
+        });
+    }
+
+    fn on_search_input_event(
+        &mut self,
+        input: Entity<InputState>,
+        event: &InputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            let query = input.read(cx).value();
+            self.apply_search_query(query, cx);
+        }
     }
 
     /// Reads the page again for the current ledger revision, unless that has
@@ -367,6 +434,7 @@ impl Render for JournalReport {
             .on_action(cx.listener(Self::on_open_account))
             .on_action(cx.listener(Self::on_toggle_postings))
             .on_action(cx.listener(Self::on_edit_entry))
+            .on_action(cx.listener(|this, _: &Search, window, cx| this.focus_search(window, cx)))
             .child(
                 div()
                     .h_flex()
@@ -377,17 +445,46 @@ impl Render for JournalReport {
                     .pt_4()
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(summary),
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div().w(px(320.)).max_w_full().child(
+                                    Input::new(&self.search_input)
+                                        .id((ElementId::from("journal-search"), self.page.id()))
+                                        .small()
+                                        .cleanable(true)
+                                        .aria_label("Search entries")
+                                        .prefix(
+                                            Icon::new(IconName::Search)
+                                                .small()
+                                                .text_color(cx.theme().muted_foreground),
+                                        ),
+                                ),
+                            ),
                     )
                     .child(
-                        Checkbox::new((ElementId::from("show-postings"), self.page.id()))
-                            .label("Show postings")
-                            .checked(expand_all)
-                            .on_change(cx.listener(|this, checked, _, cx| {
-                                this.set_show_postings(*checked, cx)
-                            })),
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_4()
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(summary),
+                            )
+                            .child(
+                                Checkbox::new((ElementId::from("show-postings"), self.page.id()))
+                                    .label("Show postings")
+                                    .checked(expand_all)
+                                    .on_change(cx.listener(|this, checked, _, cx| {
+                                        this.set_show_postings(*checked, cx)
+                                    })),
+                            ),
                     ),
             )
             .when_some(failed, |this, message| {
@@ -458,6 +555,7 @@ impl JournalDelegate {
             expanded: HashSet::new(),
             expand_all: false,
             old_first: false,
+            query: SharedString::default(),
             page: 1,
             page_size: DEFAULT_ENTRIES_PER_PAGE,
             total: 0,
@@ -476,10 +574,12 @@ impl JournalDelegate {
         self.failed = None;
         self.generation += 1;
         let generation = self.generation;
+        let query = (!self.query.trim().is_empty()).then(|| self.query.to_string());
         let options = FilterOptions {
             entries: Some(self.page_size),
             page: Some(self.page),
             old_first: Some(self.old_first),
+            query,
             ..Default::default()
         };
         let task = self.source.journal(self.account.as_deref(), &options, cx);

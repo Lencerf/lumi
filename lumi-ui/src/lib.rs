@@ -37,6 +37,8 @@ pub use navigation::{Page, ReportEvent};
 pub use session::LedgerSession;
 pub use trie_report::TrieReport;
 
+pub use gpui_kit::component::input::Search;
+
 use gpui_kit::component::input::ShowCompletions;
 use gpui_kit::{App, KeyBinding};
 
@@ -56,6 +58,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-cmd-h", HideOthers, None),
         KeyBinding::new("cmd-m", Minimize, None),
         KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+        KeyBinding::new("cmd-f", Search, Some(app::KEY_CONTEXT)),
+        KeyBinding::new("cmd-f", Search, Some(journal_report::KEY_CONTEXT)),
+        KeyBinding::new("cmd-f", Search, Some(holdings_report::KEY_CONTEXT)),
         KeyBinding::new("cmd-[", GoBack, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-o", OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-r", Refresh, Some(app::KEY_CONTEXT)),
@@ -72,6 +77,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-q", Quit, None),
         KeyBinding::new("ctrl-w", CloseWindow, None),
         KeyBinding::new("f11", ToggleFullScreen, None),
+        KeyBinding::new("ctrl-f", Search, Some(app::KEY_CONTEXT)),
+        KeyBinding::new("ctrl-f", Search, Some(journal_report::KEY_CONTEXT)),
+        KeyBinding::new("ctrl-f", Search, Some(holdings_report::KEY_CONTEXT)),
         KeyBinding::new("alt-left", GoBack, Some(app::KEY_CONTEXT)),
         KeyBinding::new("ctrl-o", OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new("ctrl-r", Refresh, Some(app::KEY_CONTEXT)),

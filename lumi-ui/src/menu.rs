@@ -1,4 +1,4 @@
-use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+use gpui_kit::component::input::{Copy, Cut, Paste, Redo, Search, SelectAll, Undo};
 use gpui_kit::{AnyWindowHandle, App, Menu, MenuItem, OsAction, SystemMenuType};
 
 use crate::app::{
@@ -73,6 +73,8 @@ fn app_menus() -> [Menu; 5] {
             MenuItem::os_action("Copy", Copy, OsAction::Copy),
             MenuItem::os_action("Paste", Paste, OsAction::Paste),
             MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+            MenuItem::separator(),
+            MenuItem::action("Find…", Search),
         ]),
         Menu::new("View").items([
             MenuItem::action("Balance Sheet", ShowBalanceSheet),
