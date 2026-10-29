@@ -1,5 +1,5 @@
 use crate::parse::lexer::Lexer;
-use crate::parse::token::Token;
+use crate::parse::token::{Token, tokenize};
 use crate::{ErrorType, SrcFile};
 
 /// A token, its text, the `(line, col)` at which it starts, and the location
@@ -327,4 +327,31 @@ fn test_take_and_peek() {
     let eof = lexer.peek().unwrap_err();
     assert_eq!(eof.msg, "Unexpected end of file.");
     assert_eq!(eof.src.start, (1, 17).into());
+}
+
+#[test]
+fn test_tokenize_preserves_whitespace_comments_and_byte_spans() {
+    let src = "2024-01-02 * \"Coffee\" ; morning\n  Assets:Cash -4.50 USD";
+    let got: Vec<(Token, &str)> = tokenize(src)
+        .map(|(token, span)| (token, &src[span]))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (Token::Date, "2024-01-02"),
+            (Token::WhiteSpace, " "),
+            (Token::Asterisk, "*"),
+            (Token::WhiteSpace, " "),
+            (Token::String, "\"Coffee\""),
+            (Token::WhiteSpace, " "),
+            (Token::Comment, "; morning"),
+            (Token::NewLine, "\n"),
+            (Token::WhiteSpace, "  "),
+            (Token::Account, "Assets:Cash"),
+            (Token::WhiteSpace, " "),
+            (Token::Number, "-4.50"),
+            (Token::WhiteSpace, " "),
+            (Token::Currency, "USD"),
+        ]
+    );
 }

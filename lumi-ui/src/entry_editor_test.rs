@@ -351,3 +351,28 @@ async fn test_duplicate_dates_the_copy_today_and_appends_on_save(cx: &mut TestAp
         assert_eq!(report.read(cx).total(cx), 10);
     });
 }
+
+#[gpui_kit::test]
+fn test_entry_editor_configures_beancount_code_editor(cx: &mut TestAppContext) {
+    let ledger = TempLedger::new("highlight");
+    let (handle, app) = open_journal(&ledger, cx);
+    let session = cx.read(|cx| app.read(cx).session().clone());
+    let txn = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        report.read(cx).entries(cx)[0].txn.clone()
+    });
+
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            EntryEditor::open(&txn, session, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let state = editor.read(cx).editor_state().read(cx);
+        assert!(state.is_code_editor());
+        assert_eq!(state.language_name(), "beancount");
+    })
+    .unwrap();
+}

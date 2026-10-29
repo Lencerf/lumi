@@ -10,6 +10,7 @@ mod app;
 mod assets;
 mod entry_editor;
 mod errors_report;
+mod highlight;
 mod holdings_report;
 mod journal_report;
 mod navigation;
@@ -36,6 +37,7 @@ use gpui_kit::{App, KeyBinding};
 /// Call it once, before opening a window.
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
+    highlight::register_language(cx);
     #[cfg(target_os = "macos")]
     let (back, open, refresh, save) = ("cmd-[", "cmd-o", "cmd-r", "cmd-s");
     #[cfg(not(target_os = "macos"))]
