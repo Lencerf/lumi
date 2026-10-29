@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, TestAppContext, WindowBounds,
-    WindowOptions, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, Pixels, ScrollDelta, Size,
+    TestAppContext, WindowBounds, WindowOptions, point, px, size,
 };
 use lumi::web::{TrieTable, TrieTableRow};
 
@@ -165,15 +165,20 @@ fn test_missing_ledger_is_reported(cx: &mut TestAppContext) {
     });
 }
 
-/// The app in a window, opened on `page` of the fixture ledger.
-fn open_app(page: Page, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<LumiApp>) {
+/// The app in a window of `window_size`, opened on `page` of the fixture
+/// ledger.
+fn open_app(
+    page: Page,
+    window_size: Size<Pixels>,
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<LumiApp>) {
     cx.update(crate::init);
     cx.update(|cx| {
         gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                     Default::default(),
-                    size(px(1200.), px(800.)),
+                    window_size,
                 ))),
                 ..Default::default()
             },
@@ -196,7 +201,7 @@ fn open_app(page: Page, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Lum
 
 #[gpui_kit::test]
 async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext) {
-    let (handle, app) = open_app(Page::BalanceSheet, cx);
+    let (handle, app) = open_app(Page::BalanceSheet, size(px(1200.), px(800.)), cx);
     cx.run_until_parked();
     cx.read(|cx| {
         assert_eq!(app.read(cx).page(), &Page::BalanceSheet);
@@ -254,7 +259,7 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
 #[gpui_kit::test]
 fn test_sibling_tables_have_distinct_paths(cx: &mut TestAppContext) {
     for page in [Page::BalanceSheet, Page::Income] {
-        let (handle, _app) = open_app(page.clone(), cx);
+        let (handle, _app) = open_app(page.clone(), size(px(1200.), px(800.)), cx);
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -273,4 +278,34 @@ fn test_sibling_tables_have_distinct_paths(cx: &mut TestAppContext) {
         })
         .unwrap();
     }
+}
+
+/// The report scrolls both ways: the window is too short for the Assets
+/// hierarchy and too narrow for the two columns of the balance sheet.
+#[gpui_kit::test]
+fn test_report_scrolls_both_ways(cx: &mut TestAppContext) {
+    let (handle, _app) = open_app(Page::BalanceSheet, size(px(600.), px(240.)), cx);
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let last_asset = (ElementId::from("account"), "Assets:Investments:Brokerage");
+        let equity = (ElementId::from("account"), "Equity");
+        let over = (ElementId::from("account"), "Assets");
+        let last_asset_y = window.find(last_asset.clone()).bounds().origin.y;
+        let equity_x = window.find(equity.clone()).bounds().origin.x;
+
+        window.scroll(over.clone(), ScrollDelta::Lines(point(0., -1.)), cx);
+        assert!(
+            window.find(last_asset.clone()).bounds().origin.y < last_asset_y,
+            "scrolling down moves the rows up"
+        );
+        assert_eq!(window.find(equity.clone()).bounds().origin.x, equity_x);
+
+        window.scroll(over, ScrollDelta::Lines(point(-1., 0.)), cx);
+        assert!(
+            window.find(equity).bounds().origin.x < equity_x,
+            "scrolling right moves the second column left"
+        );
+    })
+    .unwrap();
 }
