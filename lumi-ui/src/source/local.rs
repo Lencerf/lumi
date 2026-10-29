@@ -117,6 +117,21 @@ impl LedgerSource for LocalLedger {
         })
     }
 
+    fn journal_page_of(
+        &self,
+        account: Option<&str>,
+        options: &FilterOptions,
+        target: &Source,
+        cx: &mut App,
+    ) -> Task<Result<Option<usize>>> {
+        let account = account.map(str::to_string);
+        let options = options.clone();
+        let target = target.clone();
+        self.query(cx, move |loaded| {
+            query::journal_page_of(&loaded.ledger, account.as_deref(), &options, &target)
+        })
+    }
+
     fn positions(&self, cx: &mut App) -> Task<Result<Positions>> {
         self.query(cx, |loaded| query::positions(loaded.ledger.balance_sheet()))
     }

@@ -63,6 +63,16 @@ pub trait LedgerSource: 'static {
         cx: &mut App,
     ) -> Task<Result<JournalPage>>;
 
+    /// The 1-based page number on which the entry at `target` appears in
+    /// [`journal`](Self::journal), ignoring `options.page`.
+    fn journal_page_of(
+        &self,
+        account: Option<&str>,
+        options: &FilterOptions,
+        target: &Source,
+        cx: &mut App,
+    ) -> Task<Result<Option<usize>>>;
+
     /// Every position of every account, including zero balances.
     fn positions(&self, cx: &mut App) -> Task<Result<Positions>>;
 
