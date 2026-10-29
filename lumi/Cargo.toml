@@ -5,7 +5,6 @@ edition = "2024"
 description = "A library for processing text-based ledger files."
 documentation = "https://docs.rs/lumi"
 readme = "../README.md"
-homepage = "https://github.com/Lencerf/lumi"
 repository = "https://github.com/Lencerf/lumi"
 license = "MIT"
 

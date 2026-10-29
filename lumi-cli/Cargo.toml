@@ -5,7 +5,6 @@ edition = "2024"
 description = "A cli-tool for double-entry accounting."
 documentation = "https://docs.rs/lumi"
 readme = "../README.md"
-homepage = "https://github.com/Lencerf/lumi"
 repository = "https://github.com/Lencerf/lumi"
 license = "MIT"
 
