@@ -268,9 +268,15 @@ impl TableDelegate for ErrorsDelegate {
         let error = &self.errors[row_ix];
         match self.columns[col_ix].key.as_ref() {
             "level" => div()
-                .when(error.level == ErrorLevel::Error, |this| {
-                    this.text_color(cx.theme().danger)
+                .text_color(match error.level {
+                    ErrorLevel::Error => cx.theme().red,
+                    ErrorLevel::Warning => cx.theme().yellow,
+                    ErrorLevel::Info => cx.theme().blue,
                 })
+                .when(
+                    matches!(error.level, ErrorLevel::Error | ErrorLevel::Warning),
+                    |this| this.font_semibold(),
+                )
                 .child(level_text(error.level)),
             "message" => div().child(error.message.clone()),
             "location" => div()

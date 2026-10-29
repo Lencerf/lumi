@@ -1,7 +1,11 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::edit::{EditError, entry_text, replace_entry_text};
+use chrono::NaiveDate;
+
+use crate::edit::{
+    EditError, append_entry_text, delete_entry_text, entry_text, replace_entry_text, with_date,
+};
 use crate::{Ledger, TxnFlag};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/query_test.bean");
@@ -187,4 +191,83 @@ fn test_replace_entry_text_keeps_the_line_breaks_and_the_end_of_the_file() {
     assert!(file.text().ends_with(
         "2024-01-03 * \"Two, edited\"\r\n  Assets:Cash  2 USD\r\n  Equity:Opening-Balances"
     ));
+}
+
+#[test]
+fn test_delete_entry_text_removes_the_entry_and_its_blank_separator() {
+    let file = TempFile::new(
+        "delete-middle",
+        "2024-01-01 * \"First\"\n  Assets:Cash  1 USD\n  Equity:Opening-Balances\n\n2024-01-02 * \"Second\"\n  Assets:Cash  2 USD\n  Equity:Opening-Balances\n\n2024-01-03 * \"Third\"\n  Assets:Cash  3 USD\n  Equity:Opening-Balances\n",
+    );
+    let second = "2024-01-02 * \"Second\"\n  Assets:Cash  2 USD\n  Equity:Opening-Balances";
+    delete_entry_text(file.path(), 5, second).unwrap();
+    assert_eq!(
+        file.text(),
+        "2024-01-01 * \"First\"\n  Assets:Cash  1 USD\n  Equity:Opening-Balances\n\n2024-01-03 * \"Third\"\n  Assets:Cash  3 USD\n  Equity:Opening-Balances\n"
+    );
+
+    // Deleting the last entry trims the blank line before it rather than
+    // leaving a trailing blank line.
+    let third = "2024-01-03 * \"Third\"\n  Assets:Cash  3 USD\n  Equity:Opening-Balances";
+    delete_entry_text(file.path(), 5, third).unwrap();
+    assert_eq!(
+        file.text(),
+        "2024-01-01 * \"First\"\n  Assets:Cash  1 USD\n  Equity:Opening-Balances\n"
+    );
+
+    // Deleting the only remaining entry leaves an empty file.
+    let first = "2024-01-01 * \"First\"\n  Assets:Cash  1 USD\n  Equity:Opening-Balances";
+    delete_entry_text(file.path(), 1, first).unwrap();
+    assert_eq!(file.text(), "");
+}
+
+#[test]
+fn test_delete_entry_text_refuses_an_entry_that_changed() {
+    let file = TempFile::copy_of_fixture("delete-changed");
+    let before = file.text();
+    assert!(matches!(
+        delete_entry_text(file.path(), 29, "2024-02-10 * \"Stale\""),
+        Err(EditError::Changed { line: 29, .. })
+    ));
+    assert_eq!(file.text(), before);
+}
+
+#[test]
+fn test_append_entry_text_separates_by_one_blank_line_and_keeps_line_breaks() {
+    let file = TempFile::new(
+        "append-crlf",
+        "2024-01-01 open Assets:Cash\r\n2024-01-01 open Equity:Opening-Balances",
+    );
+    append_entry_text(
+        file.path(),
+        "2024-01-02 * \"Added\"\n  Assets:Cash  5 USD\n  Equity:Opening-Balances\n",
+    )
+    .unwrap();
+    assert_eq!(
+        file.text(),
+        "2024-01-01 open Assets:Cash\r\n2024-01-01 open Equity:Opening-Balances\r\n\r\n2024-01-02 * \"Added\"\r\n  Assets:Cash  5 USD\r\n  Equity:Opening-Balances"
+    );
+
+    // A file that already ends with a blank line does not gain a second one.
+    let lf = TempFile::new("append-lf", "2024-01-01 open Assets:Cash\n\n");
+    append_entry_text(lf.path(), "2024-01-02 balance Assets:Cash 0 USD").unwrap();
+    assert_eq!(
+        lf.text(),
+        "2024-01-01 open Assets:Cash\n\n2024-01-02 balance Assets:Cash 0 USD\n"
+    );
+}
+
+#[test]
+fn test_with_date_replaces_only_a_leading_iso_date() {
+    let date = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+    assert_eq!(
+        with_date(BISTRO, date),
+        "2026-10-28 * \"Bistro\" \"Dinner\"\n  Expenses:Food:Restaurants  45.50 USD\n  Assets:Cash               -45.50 USD"
+    );
+    assert_eq!(with_date("2024-01-01", date), "2026-10-28");
+    assert_eq!(
+        with_date("; comment without date\n2024-01-01 * \"No\"", date),
+        "; comment without date\n2024-01-01 * \"No\""
+    );
+    assert_eq!(with_date("2024-01-01extra", date), "2024-01-01extra");
 }

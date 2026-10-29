@@ -25,6 +25,7 @@ use crate::entry_editor::EntryEditor;
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
+use crate::style::interactive_button;
 
 /// Opens the journal of an account, from a posting's context menu.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
@@ -429,12 +430,12 @@ impl JournalDelegate {
             Column::new("date", "Date").width(px(120.)).sortable(),
             Column::new("flag", "Flag").width(px(48.)).text_center(),
             Column::new("description", "Description").width(px(if account.is_some() {
-                280.
+                320.
             } else {
-                340.
+                380.
             })),
             Column::new("position", "Position")
-                .width(px(230.))
+                .width(px(280.))
                 .text_right(),
         ];
         if account.is_some() {
@@ -566,6 +567,15 @@ fn flag_text(flag: TxnFlag) -> &'static str {
     }
 }
 
+fn flag_color(flag: TxnFlag, cx: &App) -> gpui_kit::Hsla {
+    match flag {
+        TxnFlag::Posted => cx.theme().muted_foreground,
+        TxnFlag::Pending => cx.theme().yellow,
+        TxnFlag::Pad => cx.theme().cyan,
+        TxnFlag::Balance => cx.theme().green,
+    }
+}
+
 impl TableDelegate for JournalDelegate {
     fn columns_count(&self, _: &App) -> usize {
         self.columns.len()
@@ -656,39 +666,66 @@ impl TableDelegate for JournalDelegate {
                 let txn = &entry.txn;
                 match column {
                     // The date opens the editor on the transaction.
-                    "date" => Button::new(("edit", entry_ix))
-                        .ghost()
-                        .small()
-                        .compact()
-                        .font_family(mono)
-                        .label(txn.date().to_string())
-                        .accessibility_label(format!("Edit the entry of {}", txn.date()))
-                        .on_click(cx.listener(move |table, _, window, cx| {
-                            // Along the table's path, whatever has focus, so
-                            // the journal above the table receives it; after
-                            // this update of the table, which it reads.
-                            let handle = table.focus_handle(cx);
-                            window.defer(cx, move |window, cx| {
-                                handle.dispatch_action(&EditEntry(entry_ix), window, cx);
-                            });
-                        }))
+                    "date" => div()
+                        .h_flex()
+                        .child(
+                            interactive_button(("edit", entry_ix), cx)
+                                .font_family(mono)
+                                .label(txn.date().to_string())
+                                .accessibility_label(format!("Edit the entry of {}", txn.date()))
+                                .on_click(cx.listener(move |table, _, window, cx| {
+                                    // Along the table's path, whatever has focus, so
+                                    // the journal above the table receives it; after
+                                    // this update of the table, which it reads.
+                                    let handle = table.focus_handle(cx);
+                                    window.defer(cx, move |window, cx| {
+                                        handle.dispatch_action(&EditEntry(entry_ix), window, cx);
+                                    });
+                                })),
+                        )
                         .into_any_element(),
                     "flag" => div()
                         .font_family(mono)
+                        .text_color(flag_color(txn.flag(), cx))
+                        .when(txn.flag() == TxnFlag::Pending, |this| this.font_semibold())
                         .child(flag_text(txn.flag()))
                         .into_any_element(),
                     "description" => {
                         if txn.flag() == TxnFlag::Balance {
-                            let account = txn
+                            let account: SharedString = txn
                                 .postings()
                                 .first()
                                 .map(|posting| posting.account.to_string())
-                                .unwrap_or_default();
-                            div().font_family(mono).child(account).into_any_element()
-                        } else {
-                            let expanded = self.is_expanded(entry_ix);
+                                .unwrap_or_default()
+                                .into();
+                            let to_open = account.clone();
                             div()
                                 .h_flex()
+                                .child(
+                                    interactive_button(("balance-account", entry_ix), cx)
+                                        .font_family(mono)
+                                        .label(account.clone())
+                                        .accessibility_label(format!("Open account {account}"))
+                                        .on_click(cx.listener(move |table, _, window, cx| {
+                                            let handle = table.focus_handle(cx);
+                                            let account = to_open.clone();
+                                            window.defer(cx, move |window, cx| {
+                                                handle.dispatch_action(
+                                                    &OpenAccount(account),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        })),
+                                )
+                                .into_any_element()
+                        } else {
+                            let expanded = self.is_expanded(entry_ix);
+                            let tag_color = cx.theme().cyan;
+                            let link_color = cx.theme().magenta;
+                            div()
+                                .h_flex()
+                                .items_center()
                                 .gap_1()
                                 .child(
                                     Button::new(("postings", entry_ix))
@@ -720,6 +757,20 @@ impl TableDelegate for JournalDelegate {
                                 .when(!txn.narration().is_empty(), |this| {
                                     this.child(txn.narration().clone())
                                 })
+                                .children(txn.tags().iter().map(|tag| {
+                                    div()
+                                        .font_family(mono.clone())
+                                        .text_xs()
+                                        .text_color(tag_color)
+                                        .child(tag.clone())
+                                }))
+                                .children(txn.links().iter().map(|link| {
+                                    div()
+                                        .font_family(mono.clone())
+                                        .text_xs()
+                                        .text_color(link_color)
+                                        .child(link.clone())
+                                }))
                                 .into_any_element()
                         }
                     }
@@ -746,11 +797,31 @@ impl TableDelegate for JournalDelegate {
             JournalRow::Posting(entry_ix, posting_ix) => {
                 let posting = &self.entries[entry_ix].txn.postings()[posting_ix];
                 match column {
-                    "description" => div()
-                        .pl_6()
-                        .font_family(mono)
-                        .child(posting.account.to_string())
-                        .into_any_element(),
+                    "description" => {
+                        let account: SharedString = posting.account.to_string().into();
+                        let to_open = account.clone();
+                        div()
+                            .h_flex()
+                            .pl_5()
+                            .child(
+                                interactive_button(("posting-account", row_ix), cx)
+                                    .font_family(mono)
+                                    .label(account.clone())
+                                    .accessibility_label(format!("Open account {account}"))
+                                    .on_click(cx.listener(move |table, _, window, cx| {
+                                        let handle = table.focus_handle(cx);
+                                        let account = to_open.clone();
+                                        window.defer(cx, move |window, cx| {
+                                            handle.dispatch_action(
+                                                &OpenAccount(account),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    })),
+                            )
+                            .into_any_element()
+                    }
                     "position" => div()
                         .font_family(mono)
                         .child(position_text(posting))

@@ -21,22 +21,32 @@ actions!(lumi_ui, [SaveEntry]);
 /// The key context of the entry editor; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "EntryEditor";
 
-/// Edits the text of one entry of the ledger, in a dialog.
+/// Edits, deletes, or duplicates one entry of the ledger, in a dialog.
 ///
 /// The text comes from the ledger file through the session's source and
-/// goes back the same way; the ledger is reloaded after a save, so every
-/// report shows the change. Saving is refused when the entry changed on
-/// disk in the meantime, and the editor stays open with the reason.
+/// goes back the same way; the ledger is always reloaded after a write, so
+/// every report shows the change. Replacing or deleting an entry is refused
+/// when the entry changed on disk in the meantime, and the editor stays open
+/// with the reason.
 pub struct EntryEditor {
     session: Entity<LedgerSession>,
     source: Source,
     text: Entity<TextareaState>,
     /// The entry's text as read; `None` until it has arrived.
     original: Option<SharedString>,
-    saving: bool,
+    /// When `true`, saving appends the text as a new entry in `source.file`
+    /// rather than replacing the entry that was read.
+    duplicating: bool,
+    pending: Option<PendingWrite>,
     error: Option<SharedString>,
     _task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingWrite {
+    Saving,
+    Deleting,
 }
 
 impl EntryEditor {
@@ -51,9 +61,14 @@ impl EntryEditor {
         let editor = cx.new(|cx| Self::new(txn.src().clone(), session, window, cx));
         window.open_dialog(cx, {
             let editor = editor.clone();
-            move |dialog, _, _| {
+            move |dialog, _, cx| {
+                let title = if editor.read(cx).is_duplicating() {
+                    "Duplicate entry"
+                } else {
+                    "Edit entry"
+                };
                 dialog
-                    .title("Edit entry")
+                    .title(title)
                     .w(px(720.))
                     // Edits are not lost to a click beside the dialog; Cancel,
                     // the close button and Escape leave it.
@@ -100,21 +115,31 @@ impl EntryEditor {
             source,
             text,
             original: None,
-            saving: false,
+            duplicating: false,
+            pending: None,
             error: None,
             _task,
             _subscriptions,
         }
     }
 
-    /// Where the entry is: `file:line`.
+    /// Where the entry is (`file:line`), or where a duplicate will be added.
     pub fn location(&self) -> String {
-        format!("{}:{}", self.source.file, self.source.start.line)
+        if self.duplicating {
+            format!("New entry in {}", self.source.file)
+        } else {
+            format!("{}:{}", self.source.file, self.source.start.line)
+        }
     }
 
     /// The text as read from the ledger, once it has arrived.
     pub fn original(&self) -> Option<&SharedString> {
         self.original.as_ref()
+    }
+
+    /// Whether the editor is preparing a duplicated copy to append.
+    pub fn is_duplicating(&self) -> bool {
+        self.duplicating
     }
 
     /// Whether the text differs from what was read.
@@ -125,34 +150,89 @@ impl EntryEditor {
     }
 
     pub fn is_saving(&self) -> bool {
-        self.saving
+        self.pending == Some(PendingWrite::Saving)
+    }
+
+    pub fn is_deleting(&self) -> bool {
+        self.pending == Some(PendingWrite::Deleting)
     }
 
     pub fn error(&self) -> Option<&SharedString> {
         self.error.as_ref()
     }
 
-    /// Writes the text to the ledger, then reloads the ledger and closes
-    /// the dialog. Nothing happens while the text is unchanged or a save
-    /// is in flight.
+    fn can_save(&self, cx: &App) -> bool {
+        if self.duplicating {
+            !self.text.read(cx).value().trim().is_empty()
+        } else {
+            self.is_changed(cx)
+        }
+    }
+
+    /// Turns the editor into a new-entry copy dated today, ready to save or
+    /// adjust before saving.
+    pub fn duplicate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.original.is_none() || self.duplicating || self.pending.is_some() {
+            return;
+        }
+        let updated = lumi::edit::with_today(&self.text.read(cx).value());
+        self.text.update(cx, |state, cx| {
+            state.set_value(updated, window, cx);
+            state.focus(window, cx);
+        });
+        self.duplicating = true;
+        self.error = None;
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Writes the text to the ledger — replacing the entry or appending its
+    /// duplicate — then reloads the ledger and closes the dialog.
     pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending.is_some() || !self.can_save(cx) {
+            return;
+        }
+        let text = self.text.read(cx).value().to_string();
+        let ledger = self.session.read(cx).source().clone();
+        let task = if self.duplicating {
+            ledger.append_entry_text(&self.source.file, text, cx)
+        } else {
+            let Some(original) = self.original.clone() else {
+                return;
+            };
+            ledger.replace_entry_text(&self.source, original.to_string(), text, cx)
+        };
+        self.run_write(PendingWrite::Saving, task, window, cx);
+    }
+
+    /// Deletes the entry from its ledger file, reloads the ledger and closes
+    /// the dialog.
+    pub fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.duplicating || self.pending.is_some() {
+            return;
+        }
         let Some(original) = self.original.clone() else {
             return;
         };
-        let text = self.text.read(cx).value();
-        if self.saving || text == original {
-            return;
-        }
-        self.saving = true;
+        let ledger = self.session.read(cx).source().clone();
+        let task = ledger.delete_entry_text(&self.source, original.to_string(), cx);
+        self.run_write(PendingWrite::Deleting, task, window, cx);
+    }
+
+    fn run_write(
+        &mut self,
+        kind: PendingWrite,
+        task: Task<anyhow::Result<()>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending = Some(kind);
         self.error = None;
         cx.notify();
-        let ledger = self.session.read(cx).source().clone();
-        let task =
-            ledger.replace_entry_text(&self.source, original.to_string(), text.to_string(), cx);
         self._task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
-                this.saving = false;
+                this.pending = None;
                 match result {
                     Ok(()) => {
                         this.session.update(cx, |session, cx| session.reload(cx));
@@ -174,7 +254,10 @@ impl EntryEditor {
 impl Render for EntryEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loaded = self.original.is_some();
-        let changed = self.is_changed(cx);
+        let busy = self.pending.is_some();
+        let can_save = self.can_save(cx);
+        let saving = self.is_saving();
+        let deleting = self.is_deleting();
         div()
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::on_save))
@@ -195,7 +278,7 @@ impl Render for EntryEditor {
                             .h(px(320.))
                             .font_family(cx.theme().mono_font_family.clone())
                             .aria_label("Entry text")
-                            .disabled(!loaded),
+                            .disabled(!loaded || busy),
                     )
                     .when(!loaded && self.error.is_none(), |this| {
                         this.child(
@@ -213,24 +296,53 @@ impl Render for EntryEditor {
                 this.child(Alert::error("entry-editor-error", message))
             })
             .child(
-                // Grouped, so that neither button is stretched across the
-                // footer.
-                DialogFooter::new().child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            DialogClose::new()
-                                .child(Button::new("cancel").label("Cancel").outline()),
+                // Left and right groups keep each button to its own width.
+                DialogFooter::new()
+                    .justify_between()
+                    .child(h_flex().gap_2().when(!self.duplicating, |this| {
+                        this.child(
+                            Button::new("duplicate-entry")
+                                .outline()
+                                .label("Duplicate")
+                                .disabled(!loaded || busy)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.duplicate(window, cx)),
+                                ),
                         )
                         .child(
-                            Button::new("save-entry")
-                                .primary()
-                                .label("Save")
-                                .disabled(!changed || self.saving)
-                                .loading(self.saving)
-                                .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
-                        ),
-                ),
+                            Button::new("delete-entry")
+                                .danger()
+                                .outline()
+                                .label("Delete")
+                                .disabled(!loaded || busy)
+                                .loading(deleting)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.delete(window, cx)),
+                                ),
+                        )
+                    }))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                DialogClose::new().child(
+                                    Button::new("cancel")
+                                        .label("Cancel")
+                                        .outline()
+                                        .disabled(busy),
+                                ),
+                            )
+                            .child(
+                                Button::new("save-entry")
+                                    .primary()
+                                    .label("Save")
+                                    .disabled(!can_save || busy)
+                                    .loading(saving)
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.save(window, cx)),
+                                    ),
+                            ),
+                    ),
             )
     }
 }

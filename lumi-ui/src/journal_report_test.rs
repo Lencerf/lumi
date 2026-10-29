@@ -1,8 +1,13 @@
 use std::sync::Arc;
 
-use gpui_kit::{AppContext as _, Entity, TestAppContext};
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{
+    AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
+    px, size,
+};
 use lumi::TxnFlag;
 
+use crate::LumiApp;
 use crate::journal_report::{JournalReport, JournalRow};
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
@@ -221,4 +226,78 @@ fn test_account_journal_carries_running_balance(cx: &mut TestAppContext) {
         assert_eq!(report.read(cx).total(cx), 3);
         assert_eq!(report.read(cx).entries(cx).len(), 3);
     });
+}
+
+#[gpui_kit::test]
+fn test_clicking_account_buttons_in_journal_opens_their_accounts(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // Expand the first transaction and click its first posting's account button.
+    let first_account: gpui_kit::SharedString = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        report.read(cx).entries(cx)[0].txn.postings()[0]
+            .account
+            .to_string()
+            .into()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("postings", 0usize), cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("posting-account", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Account(first_account));
+    });
+
+    // Return to Journal and click the balance assertion's account button.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("lumi-sidebar").click("0-0-2", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = app.read(cx).journal().expect("the journal is shown");
+        let balance_ix = report
+            .read(cx)
+            .entries(cx)
+            .iter()
+            .position(|entry| entry.txn.flag() == TxnFlag::Balance)
+            .unwrap();
+        window.click(("balance-account", balance_ix), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into())));
 }

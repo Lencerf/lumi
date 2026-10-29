@@ -144,6 +144,17 @@ impl LedgerSource for LocalLedger {
             async move { Ok(edit::replace_entry_text(&file, line, &original, &text)?) },
         )
     }
+
+    fn delete_entry_text(&self, src: &Source, original: String, cx: &mut App) -> Task<Result<()>> {
+        let file = src.file.clone();
+        let line = src.start.line;
+        cx.background_spawn(async move { Ok(edit::delete_entry_text(&file, line, &original)?) })
+    }
+
+    fn append_entry_text(&self, file: &str, text: String, cx: &mut App) -> Task<Result<()>> {
+        let file = file.to_string();
+        cx.background_spawn(async move { Ok(edit::append_entry_text(&file, &text)?) })
+    }
 }
 
 fn owned_amounts(

@@ -9,8 +9,9 @@ use gpui_kit::component::table::{
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, Focusable as _, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window,
+    div, px,
 };
 use lumi::web::Position;
 use rust_decimal::Decimal;
@@ -19,6 +20,7 @@ use crate::journal_report::{ActivateRow, OpenAccount};
 use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
 use crate::source::{LedgerSource, Positions};
+use crate::style::interactive_button;
 
 /// The key context of the holdings table; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "HoldingsReport";
@@ -354,14 +356,44 @@ impl TableDelegate for HoldingsDelegate {
         let holding = &self.holdings[row_ix];
         let mono = cx.theme().mono_font_family.clone();
         // Every column is an identifier or a number, so all are monospaced.
-        let cell = div().font_family(mono);
         match self.columns[col_ix].key.as_ref() {
-            "account" => cell.child(holding.account.clone()),
-            "units" => cell.child(holding.units.clone()),
-            "cost" => cell.child(holding.cost.clone()),
-            "acquired" => cell.child(holding.acquired.clone()),
-            "book_value" => cell.child(holding.book_value.clone()),
-            _ => div(),
+            "account" => {
+                let account = holding.account.clone();
+                let to_open = account.clone();
+                div()
+                    .h_flex()
+                    .child(
+                        interactive_button(("holding-account", row_ix), cx)
+                            .font_family(mono)
+                            .label(account.clone())
+                            .accessibility_label(format!("Open account {account}"))
+                            .on_click(cx.listener(move |table, _, window, cx| {
+                                let handle = table.focus_handle(cx);
+                                let account = to_open.clone();
+                                window.defer(cx, move |window, cx| {
+                                    handle.dispatch_action(&OpenAccount(account), window, cx);
+                                });
+                            })),
+                    )
+                    .into_any_element()
+            }
+            "units" => div()
+                .font_family(mono)
+                .child(holding.units.clone())
+                .into_any_element(),
+            "cost" => div()
+                .font_family(mono)
+                .child(holding.cost.clone())
+                .into_any_element(),
+            "acquired" => div()
+                .font_family(mono)
+                .child(holding.acquired.clone())
+                .into_any_element(),
+            "book_value" => div()
+                .font_family(mono)
+                .child(holding.book_value.clone())
+                .into_any_element(),
+            _ => div().into_any_element(),
         }
     }
 

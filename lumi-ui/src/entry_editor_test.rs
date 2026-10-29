@@ -266,3 +266,88 @@ fn test_the_context_menu_and_a_balance_row_offer_editing(cx: &mut TestAppContext
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn test_delete_removes_the_entry_and_reloads_the_ledger(cx: &mut TestAppContext) {
+    let ledger = TempLedger::new("delete");
+    let (handle, app) = open_journal(&ledger, cx);
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        assert_eq!(report.read(cx).total(cx), 9);
+    });
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_ne!(window.find("delete-entry").disabled(), Some(true));
+        window.click("delete-entry", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle, Duration::from_secs(5), |_, cx| {
+        app.read(cx).session().read(cx).revision() == 2
+    })
+    .await;
+    cx.run_until_parked();
+    assert!(!ledger.text().contains("Pay card"));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("delete-entry").is_none());
+    })
+    .unwrap();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        assert_eq!(report.read(cx).total(cx), 8);
+        assert_ne!(report.read(cx).entries(cx)[0].txn.narration(), "Pay card");
+    });
+}
+
+#[gpui_kit::test]
+async fn test_duplicate_dates_the_copy_today_and_appends_on_save(cx: &mut TestAppContext) {
+    let ledger = TempLedger::new("duplicate");
+    let (handle, app) = open_journal(&ledger, cx);
+    let expected = lumi::edit::with_today(PAY_CARD);
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-entry", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("Entry text").value(),
+            Some(expected.as_str())
+        );
+        // Save is enabled right away for the new copy, and Delete is gone.
+        assert_ne!(window.find("save-entry").disabled(), Some(true));
+        assert!(window.try_find("delete-entry").is_none());
+        assert!(window.try_find("duplicate-entry").is_none());
+        window.click("save-entry", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle, Duration::from_secs(5), |_, cx| {
+        app.read(cx).session().read(cx).revision() == 2
+    })
+    .await;
+    cx.run_until_parked();
+    let text = ledger.text();
+    assert!(text.contains(PAY_CARD), "the original entry remains");
+    assert!(text.ends_with(&format!("{expected}\n")), "{text}");
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        assert_eq!(report.read(cx).total(cx), 10);
+    });
+}
