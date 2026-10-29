@@ -247,3 +247,55 @@ fn test_clicking_the_root_file_in_the_sidebar_switches_ledgers(cx: &mut TestAppC
         assert_eq!(report.read(cx).total(cx), 9);
     });
 }
+
+#[gpui_kit::test]
+fn test_go_back_returns_from_account_view_to_the_last_view(cx: &mut TestAppContext) {
+    let (handle, app) = open_app(Some(Path::new(FIXTURE)), Page::Income, cx);
+
+    // Top-level report views do not show a Go back button.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("go-back").is_none());
+        window.click((ElementId::from("account"), "Expenses:Food"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Expenses:Food".into())));
+
+    // Expand the first transaction in Expenses:Food and open its counter-account.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("go-back").is_some());
+        window.click(("postings", 0usize), cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("posting-account", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into())));
+
+    // First Go back returns to Expenses:Food; second returns to Income statement.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("go-back", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Expenses:Food".into())));
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("go-back", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Income));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("go-back").is_none());
+    })
+    .unwrap();
+}
