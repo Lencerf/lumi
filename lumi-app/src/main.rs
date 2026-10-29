@@ -1,30 +1,41 @@
-//! The native lumi application: `lumi-app <ledger.bean> [--page <page>]`.
+//! The native lumi application: `lumi-app [<ledger.bean>] [--page <page>]`.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use gpui_kit::{
     AppContext as _, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptions, px, size,
 };
-use lumi_ui::source::LocalLedger;
-use lumi_ui::{LumiApp, LumiAssets, Page};
+use lumi_ui::{LumiApp, LumiAssets, Page, ledger_name_for_path};
 
-const USAGE: &str = "usage: lumi-app <ledger.bean> [--page <page>]
+const USAGE: &str = "usage: lumi-app [<ledger.bean>] [--page <page>]
 
   --page  the page to open: balance-sheet (default), income, journal,
-          holdings, errors, or account:<name>";
+          holdings, errors, or account:<name>
+  -h, --help  print this help message";
+
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    Run { path: Option<PathBuf>, page: Page },
+    Help,
+}
 
 fn main() -> ExitCode {
-    let Some((path, page)) = parse_args(std::env::args().skip(1)) else {
-        eprintln!("{USAGE}");
-        return ExitCode::FAILURE;
+    let (path, page) = match parse_args(std::env::args().skip(1)) {
+        Ok(CliAction::Run { path, page }) => (path, page),
+        Ok(CliAction::Help) => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Err(()) => {
+            eprintln!("{USAGE}");
+            return ExitCode::FAILURE;
+        }
     };
-    let ledger_name: SharedString = Path::new(&path)
-        .file_name()
-        .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned())
-        .into();
-    let title: SharedString = format!("{ledger_name} — Lumi").into();
+    let title: SharedString = match &path {
+        Some(path) => format!("{} — Lumi", ledger_name_for_path(path)).into(),
+        None => "Lumi".into(),
+    };
 
     gpui_kit::application()
         .with_assets(LumiAssets)
@@ -43,9 +54,8 @@ fn main() -> ExitCode {
                 window_min_size: Some(size(px(640.), px(400.))),
                 ..Default::default()
             };
-            let source = Arc::new(LocalLedger::new(path));
             gpui_kit::open_window(options, cx, move |window, cx| {
-                cx.new(|cx| LumiApp::new(source, ledger_name, page, window, cx))
+                cx.new(|cx| LumiApp::new_local(path.as_deref(), page, window, cx))
             })
             .expect("failed to open the lumi window");
             cx.activate(true);
@@ -53,22 +63,43 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The ledger path and the page to open, or `None` if the arguments are not
-/// `<ledger.bean> [--page <page>]`.
-fn parse_args(args: impl Iterator<Item = String>) -> Option<(String, Page)> {
+/// Parses `[<ledger.bean>] [--page <page>]` or `-h` / `--help`.
+fn parse_args(args: impl Iterator<Item = String>) -> Result<CliAction, ()> {
     let mut path = None;
     let mut page = Page::BalanceSheet;
+    let mut positional_only = false;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
-        if arg == "--page" {
-            page = Page::parse(&args.next()?)?;
-        } else if let Some(name) = arg.strip_prefix("--page=") {
-            page = Page::parse(name)?;
-        } else if path.is_none() {
-            path = Some(arg);
+        if !positional_only {
+            if arg == "--" {
+                positional_only = true;
+                continue;
+            }
+            if arg == "-h" || arg == "--help" {
+                return Ok(CliAction::Help);
+            }
+            if arg == "--page" {
+                let value = args.next().ok_or(())?;
+                page = Page::parse(&value).ok_or(())?;
+                continue;
+            }
+            if let Some(value) = arg.strip_prefix("--page=") {
+                page = Page::parse(value).ok_or(())?;
+                continue;
+            }
+            if arg.starts_with('-') {
+                return Err(());
+            }
+        }
+        if path.is_none() {
+            path = Some(PathBuf::from(arg));
         } else {
-            return None;
+            return Err(());
         }
     }
-    Some((path?, page))
+    Ok(CliAction::Run { path, page })
 }
+
+#[cfg(test)]
+#[path = "main_test.rs"]
+mod tests;

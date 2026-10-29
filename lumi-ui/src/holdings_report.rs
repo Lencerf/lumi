@@ -89,19 +89,22 @@ impl HoldingsReport {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let revision = {
+        let (revision, source) = {
             let session = self.session.read(cx);
             if !session.is_loaded() {
                 return;
             }
-            session.revision()
+            (session.revision(), session.source().clone())
         };
         if self.requested_revision == Some(revision) {
             return;
         }
         self.requested_revision = Some(revision);
-        self.table
-            .update(cx, |table, cx| table.delegate_mut().load(cx));
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            delegate.source = source;
+            delegate.load(cx);
+        });
     }
 
     fn retry(&mut self, cx: &mut Context<Self>) {
