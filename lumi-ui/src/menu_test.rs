@@ -6,7 +6,8 @@ use gpui_kit::{
 };
 
 use crate::app::{
-    CloseWindow, LumiApp, Quit, ShowBalanceSheet, ShowErrors, ShowHoldings, ShowIncome, ShowJournal,
+    CloseWindow, LumiApp, Quit, ShowBalanceSheet, ShowEditor, ShowErrors, ShowHoldings, ShowIncome,
+    ShowJournal,
 };
 use crate::navigation::Page;
 use crate::source::LocalLedger;
@@ -98,6 +99,7 @@ fn test_view_actions_and_close_window_operate_on_the_active_window(cx: &mut Test
         (ShowJournal.boxed_clone(), Page::Journal),
         (ShowHoldings.boxed_clone(), Page::Holdings),
         (ShowErrors.boxed_clone(), Page::Errors),
+        (ShowEditor.boxed_clone(), Page::Editor),
         (ShowBalanceSheet.boxed_clone(), Page::BalanceSheet),
     ] {
         cx.update_window(handle, |_, window, cx| {

@@ -297,9 +297,10 @@ fn test_unindented_posting_line_completes_accounts_with_two_space_indent() {
         })
     );
 
-    // Line 0, ISO dates, flags, and directive keywords never trigger unindented posting completion.
+    // Line 0, blank-line-separated directives, ISO dates, flags, and directive keywords never trigger unindented posting completion.
     for non_posting in [
         "Lia|",
+        "2025-06-01 * \"Pay card\"\n  Assets:Cash  10 USD\n\nLia|",
         "2025-06-01 * \"Pay card\"\n2025-06-02|",
         "2025-06-01 * \"Pay card\"\npoptag|",
         "2025-06-01 * \"Pay card\"\n* |",

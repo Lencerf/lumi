@@ -235,7 +235,7 @@ fn error_rows(mut errors: Vec<lumi::Error>) -> Vec<ErrorRow> {
 
 /// The longest directory prefix (ending in `/`) shared by all `paths`; empty
 /// if there is none.
-fn common_dir<'a>(mut paths: impl Iterator<Item = &'a str>) -> String {
+pub(crate) fn common_dir<'a>(mut paths: impl Iterator<Item = &'a str>) -> String {
     /// `path` up to and including its last `/`.
     fn dir_of(path: &str) -> &str {
         &path[..path.rfind('/').map_or(0, |ix| ix + 1)]

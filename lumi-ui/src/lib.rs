@@ -18,13 +18,14 @@ mod menu;
 mod navigation;
 mod session;
 pub mod source;
+mod source_editor;
 mod style;
 mod trie_report;
 
 pub use app::{
     CloseWindow, GoBack, Hide, HideOthers, LumiApp, Minimize, OpenLedger, PathOpener, Quit,
-    Refresh, ShowAll, ShowBalanceSheet, ShowErrors, ShowHoldings, ShowIncome, ShowJournal,
-    ToggleFullScreen, Zoom, ledger_name_for_path,
+    Refresh, ShowAll, ShowBalanceSheet, ShowEditor, ShowErrors, ShowHoldings, ShowIncome,
+    ShowJournal, ToggleFullScreen, Zoom, ledger_name_for_path,
 };
 pub use assets::ExtraIcons;
 #[cfg(not(target_family = "wasm"))]
@@ -37,6 +38,7 @@ pub use journal_report::{
 };
 pub use navigation::{Page, ReportEvent};
 pub use session::LedgerSession;
+pub use source_editor::{SaveSource, SourceEditor};
 pub use trie_report::TrieReport;
 
 pub use gpui_kit::component::input::Search;
@@ -63,6 +65,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-f", Search, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-f", Search, Some(journal_report::KEY_CONTEXT)),
         KeyBinding::new("cmd-f", Search, Some(holdings_report::KEY_CONTEXT)),
+        KeyBinding::new("cmd-f", Search, Some(source_editor::KEY_CONTEXT)),
         KeyBinding::new("cmd-[", GoBack, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-o", OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-r", Refresh, Some(app::KEY_CONTEXT)),
@@ -71,7 +74,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-3", ShowJournal, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-4", ShowHoldings, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-5", ShowErrors, Some(app::KEY_CONTEXT)),
+        KeyBinding::new("cmd-6", ShowEditor, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-s", SaveEntry, Some(entry_editor::KEY_CONTEXT)),
+        KeyBinding::new("cmd-s", SaveSource, Some(source_editor::KEY_CONTEXT)),
     ]);
 
     #[cfg(not(target_os = "macos"))]
@@ -82,6 +87,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-f", Search, Some(app::KEY_CONTEXT)),
         KeyBinding::new("ctrl-f", Search, Some(journal_report::KEY_CONTEXT)),
         KeyBinding::new("ctrl-f", Search, Some(holdings_report::KEY_CONTEXT)),
+        KeyBinding::new("ctrl-f", Search, Some(source_editor::KEY_CONTEXT)),
         KeyBinding::new("alt-left", GoBack, Some(app::KEY_CONTEXT)),
         KeyBinding::new("ctrl-o", OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new("ctrl-r", Refresh, Some(app::KEY_CONTEXT)),
@@ -90,7 +96,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-3", ShowJournal, Some(app::KEY_CONTEXT)),
         KeyBinding::new("alt-4", ShowHoldings, Some(app::KEY_CONTEXT)),
         KeyBinding::new("alt-5", ShowErrors, Some(app::KEY_CONTEXT)),
+        KeyBinding::new("alt-6", ShowEditor, Some(app::KEY_CONTEXT)),
         KeyBinding::new("ctrl-s", SaveEntry, Some(entry_editor::KEY_CONTEXT)),
+        KeyBinding::new("ctrl-s", SaveSource, Some(source_editor::KEY_CONTEXT)),
     ]);
 
     cx.bind_keys([
@@ -99,6 +107,11 @@ pub fn init(cx: &mut App) {
             "ctrl-space",
             ShowCompletions,
             Some(entry_editor::KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            "ctrl-space",
+            ShowCompletions,
+            Some(source_editor::KEY_CONTEXT),
         ),
         KeyBinding::new("enter", ActivateRow, Some(journal_report::KEY_CONTEXT)),
         KeyBinding::new("enter", ActivateRow, Some(holdings_report::KEY_CONTEXT)),

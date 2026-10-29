@@ -14,7 +14,7 @@ use lumi_ui::{LumiApp, LumiAssets, Page, ledger_name_for_path};
 const USAGE: &str = "usage: lumi-app [<ledger.bean>] [--page <page>]
 
   --page  the page to open: balance-sheet (default), income, journal,
-          holdings, errors, or account:<name>
+          holdings, errors, editor, or account:<name>
   -h, --help  print this help message";
 
 #[derive(Debug, PartialEq, Eq)]

@@ -24,6 +24,7 @@ use crate::journal_report::JournalReport;
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
+use crate::source_editor::SourceEditor;
 use crate::trie_report::TrieReport;
 
 actions!(
@@ -39,6 +40,7 @@ actions!(
         Refresh,
         ShowAll,
         ShowBalanceSheet,
+        ShowEditor,
         ShowErrors,
         ShowHoldings,
         ShowIncome,
@@ -206,6 +208,16 @@ impl LumiApp {
             .ok()
     }
 
+    /// The built-in source editor shown, if the page is [`Page::Editor`].
+    pub fn editor(&self) -> Option<Entity<SourceEditor>> {
+        self.reports
+            .get(&self.page)?
+            .view
+            .clone()
+            .downcast::<SourceEditor>()
+            .ok()
+    }
+
     /// Switches the application to `source`, named `ledger_name`, clearing
     /// cached reports from the previous ledger and loading the new one.
     pub fn open_ledger(
@@ -329,6 +341,13 @@ impl LumiApp {
                     view: view.into(),
                 }
             }
+            Page::Editor => {
+                let view = cx.new(|cx| SourceEditor::new(session, window, cx));
+                Report {
+                    _subscription: None,
+                    view: view.into(),
+                }
+            }
         };
         let view = report.view.clone();
         self.reports.insert(page.clone(), report);
@@ -380,8 +399,10 @@ impl LumiApp {
         let view = self.report(&page, window, cx);
         if let Ok(journal) = view.clone().downcast::<JournalReport>() {
             journal.update(cx, |journal, cx| journal.focus_search(window, cx));
-        } else if let Ok(holdings) = view.downcast::<HoldingsReport>() {
+        } else if let Ok(holdings) = view.clone().downcast::<HoldingsReport>() {
             holdings.update(cx, |holdings, cx| holdings.focus_search(window, cx));
+        } else if let Ok(editor) = view.downcast::<SourceEditor>() {
+            editor.update(cx, |editor, cx| editor.focus_search(window, cx));
         }
     }
 
@@ -655,6 +676,9 @@ impl Render for LumiApp {
             }))
             .on_action(cx.listener(|this, _: &ShowErrors, window, cx| {
                 this.open_page(Page::Errors, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowEditor, window, cx| {
+                this.open_page(Page::Editor, window, cx)
             }))
             .child(self.render_sidebar(cx))
             .child(

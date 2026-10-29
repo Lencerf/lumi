@@ -460,6 +460,26 @@ pub fn completions(ledger: &Ledger) -> Completions {
     }
 }
 
+/// Returns all source file paths loaded by `ledger`, with the root file first
+/// and any included files deduplicated in lexicographical order after it.
+pub fn source_files(ledger: &Ledger) -> Vec<String> {
+    let Some(root) = ledger.files().first() else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::from([root.as_str()]);
+    let mut included: Vec<&str> = ledger
+        .files()
+        .iter()
+        .skip(1)
+        .map(|file| file.as_str())
+        .filter(|path| seen.insert(path))
+        .collect();
+    included.sort_unstable();
+    std::iter::once((**root).clone())
+        .chain(included.into_iter().map(str::to_string))
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "query_test.rs"]
 mod tests;
