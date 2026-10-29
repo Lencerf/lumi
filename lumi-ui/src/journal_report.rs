@@ -2,13 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::menu::PopupMenu;
+use gpui_kit::component::pagination::Pagination;
 use gpui_kit::component::table::{
     Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
 };
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Action, App, AppContext as _, Context, Div, ElementId, Entity, EventEmitter,
@@ -16,7 +17,7 @@ use gpui_kit::{
     Styled as _, Subscription, Task, Window, div, px,
 };
 use lumi::TxnFlag;
-use lumi::web::FilterOptions;
+use lumi::web::{DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
@@ -43,15 +44,15 @@ pub struct ActivateRow;
 /// The key context of a journal; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "JournalReport";
 
-/// How many transactions one request asks for.
-const PAGE_SIZE: usize = 100;
+/// The page sizes the user can choose from.
+pub const PAGE_SIZES: [usize; 3] = [20, 50, 100];
 
 /// The journal of the whole ledger, or of one account and its sub-accounts.
 ///
-/// The table lists transactions newest first (the Date header flips the
-/// order) and fetches further pages as the user scrolls. Each transaction
-/// can show its postings, one row each; a posting row opens its account on
-/// Enter, double click, or from its context menu.
+/// The table shows one page of transactions, newest first (the Date header
+/// flips the order), with pagination below it. Each transaction can show
+/// its postings, one row each; a posting row opens its account on Enter,
+/// double click, or from its context menu.
 pub struct JournalReport {
     page: Page,
     session: Entity<LedgerSession>,
@@ -77,12 +78,15 @@ struct JournalDelegate {
     expanded: HashSet<usize>,
     expand_all: bool,
     old_first: bool,
+    /// The page shown, counted from 1.
+    page: usize,
+    page_size: usize,
     /// How many transactions match, across all pages.
     total: usize,
-    loaded_pages: usize,
     loading: bool,
     failed: Option<SharedString>,
-    /// Counts resets so that a page that arrives for an earlier one is dropped.
+    /// Counts requests so that a page that arrives for an earlier one is
+    /// dropped.
     generation: u64,
     _load_task: Option<Task<()>>,
 }
@@ -116,7 +120,7 @@ impl JournalReport {
         &self.page
     }
 
-    /// The transactions loaded so far, in table order.
+    /// The transactions on the page shown, in table order.
     pub fn entries(&self, cx: &App) -> Vec<JournalEntry> {
         self.table.read(cx).delegate().entries.clone()
     }
@@ -126,12 +130,21 @@ impl JournalReport {
         self.table.read(cx).delegate().total
     }
 
+    /// The page shown, counted from 1.
+    pub fn page_number(&self, cx: &App) -> usize {
+        self.table.read(cx).delegate().page
+    }
+
+    pub fn page_size(&self, cx: &App) -> usize {
+        self.table.read(cx).delegate().page_size
+    }
+
     pub fn is_showing_postings(&self, cx: &App) -> bool {
         self.table.read(cx).delegate().expand_all
     }
 
-    /// Starts the table over for the current ledger revision, unless that
-    /// has already been done.
+    /// Reads the page again for the current ledger revision, unless that has
+    /// already been done.
     fn load(&mut self, cx: &mut Context<Self>) {
         let revision = {
             let session = self.session.read(cx);
@@ -144,10 +157,30 @@ impl JournalReport {
             return;
         }
         self.requested_revision = Some(revision);
+        self.table
+            .update(cx, |table, cx| table.delegate_mut().load_page(cx));
+    }
+
+    fn open_page_number(&mut self, page: usize, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
-            table.delegate_mut().reset();
-            table.delegate_mut().load_next_page(cx);
-            cx.notify();
+            let delegate = table.delegate_mut();
+            if delegate.page != page {
+                delegate.page = page;
+                delegate.load_page(cx);
+            }
+        });
+    }
+
+    fn set_page_size(&mut self, page_size: usize, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if delegate.page_size != page_size {
+                // Keep the first transaction of the page in view.
+                let first_ix = (delegate.page - 1) * delegate.page_size;
+                delegate.page_size = page_size;
+                delegate.page = first_ix / page_size + 1;
+                delegate.load_page(cx);
+            }
         });
     }
 
@@ -232,11 +265,60 @@ impl JournalReport {
     }
 
     fn retry(&mut self, cx: &mut Context<Self>) {
-        self.table.update(cx, |table, cx| {
-            table.delegate_mut().failed = None;
-            table.delegate_mut().load_next_page(cx);
-            cx.notify();
-        });
+        self.table
+            .update(cx, |table, cx| table.delegate_mut().load_page(cx));
+    }
+
+    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (page, page_size, total) = {
+            let delegate = self.table.read(cx).delegate();
+            (delegate.page, delegate.page_size, delegate.total)
+        };
+        let total_pages = total.div_ceil(page_size).max(1);
+        div()
+            .h_flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .px_6()
+            .pb_4()
+            .child(
+                Pagination::new((ElementId::from("journal-pages"), self.page.id()))
+                    .small()
+                    .current_page(page)
+                    .total_pages(total_pages)
+                    .on_click(cx.listener(|this, page, _, cx| this.open_page_number(*page, cx))),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Rows per page"),
+                    )
+                    .child(
+                        ButtonGroup::new((ElementId::from("journal-page-size"), self.page.id()))
+                            .outline()
+                            .compact()
+                            .children(PAGE_SIZES.map(|size| {
+                                Button::new(("page-size", size))
+                                    .xsmall()
+                                    .label(size.to_string())
+                                    .selected(size == page_size)
+                            }))
+                            .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
+                                if let Some(size) =
+                                    selected.first().and_then(|ix| PAGE_SIZES.get(*ix))
+                                {
+                                    this.set_page_size(*size, cx);
+                                }
+                            })),
+                    ),
+            )
     }
 }
 
@@ -244,21 +326,23 @@ impl EventEmitter<ReportEvent> for JournalReport {}
 
 impl Render for JournalReport {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (loaded, total, expand_all, failed) = {
+        let (first, last, total, expand_all, failed) = {
             let delegate = self.table.read(cx).delegate();
+            let first = (delegate.page - 1) * delegate.page_size + 1;
+            let last = (first + delegate.entries.len()).saturating_sub(1);
             (
-                delegate.entries.len(),
+                first,
+                last,
                 delegate.total,
                 delegate.expand_all,
                 delegate.failed.clone(),
             )
         };
-        let summary: SharedString = if total == 1 {
-            "1 transaction".into()
-        } else if loaded < total {
-            format!("{loaded} of {total} transactions").into()
-        } else {
-            format!("{total} transactions").into()
+        let summary: SharedString = match total {
+            0 => "No transactions".into(),
+            1 => "1 transaction".into(),
+            _ if last < first => format!("{total} transactions").into(),
+            _ => format!("{first}–{last} of {total} transactions").into(),
         };
         div()
             .v_flex()
@@ -314,10 +398,11 @@ impl Render for JournalReport {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .p_6()
-                    .pt_3()
+                    .px_6()
+                    .py_3()
                     .child(DataTable::new(&self.table).small().stripe(true)),
             )
+            .child(self.render_footer(cx))
     }
 }
 
@@ -355,8 +440,9 @@ impl JournalDelegate {
             expanded: HashSet::new(),
             expand_all: false,
             old_first: false,
+            page: 1,
+            page_size: DEFAULT_ENTRIES_PER_PAGE,
             total: 0,
-            loaded_pages: 0,
             loading: false,
             failed: None,
             generation: 0,
@@ -364,33 +450,21 @@ impl JournalDelegate {
         }
     }
 
-    /// Forgets every loaded page. The next [`load_next_page`](Self::load_next_page)
-    /// starts from the first page again.
-    fn reset(&mut self) {
-        self.entries.clear();
-        self.rows.clear();
-        self.expanded.clear();
-        self.total = 0;
-        self.loaded_pages = 0;
-        self.loading = false;
+    /// Reads the current page, replacing the entries shown. The previous
+    /// entries stay on screen until the new ones arrive; a page past the end
+    /// (after a reload shrank the journal) falls back to the last page.
+    fn load_page(&mut self, cx: &mut Context<TableState<Self>>) {
+        self.loading = true;
         self.failed = None;
         self.generation += 1;
-        self._load_task = None;
-    }
-
-    fn load_next_page(&mut self, cx: &mut Context<TableState<Self>>) {
-        if self.loading {
-            return;
-        }
-        self.loading = true;
+        let generation = self.generation;
         let options = FilterOptions {
-            entries: Some(PAGE_SIZE),
-            page: Some(self.loaded_pages + 1),
+            entries: Some(self.page_size),
+            page: Some(self.page),
             old_first: Some(self.old_first),
             ..Default::default()
         };
         let task = self.source.journal(self.account.as_deref(), &options, cx);
-        let generation = self.generation;
         self._load_task = Some(cx.spawn(async move |table, cx| {
             let result = task.await;
             table
@@ -402,9 +476,15 @@ impl JournalDelegate {
                     delegate.loading = false;
                     match result {
                         Ok((entries, total)) => {
+                            let last_page = total.div_ceil(delegate.page_size).max(1);
+                            if entries.is_empty() && total > 0 && delegate.page > last_page {
+                                delegate.page = last_page;
+                                delegate.load_page(cx);
+                                return;
+                            }
                             delegate.total = total;
-                            delegate.loaded_pages += 1;
-                            delegate.entries.extend(entries);
+                            delegate.entries = entries;
+                            delegate.expanded.clear();
                             delegate.rebuild_rows();
                         }
                         Err(error) => delegate.failed = Some(format!("{error:#}").into()),
@@ -413,6 +493,7 @@ impl JournalDelegate {
                 })
                 .ok();
         }));
+        cx.notify();
     }
 
     /// Lays the entries out as rows: a transaction, then its postings when
@@ -497,8 +578,8 @@ impl TableDelegate for JournalDelegate {
         let old_first = sort == ColumnSort::Ascending;
         if self.old_first != old_first {
             self.old_first = old_first;
-            self.reset();
-            self.load_next_page(cx);
+            self.page = 1;
+            self.load_page(cx);
         }
     }
 
@@ -690,20 +771,10 @@ impl TableDelegate for JournalDelegate {
             .child(if self.loading { "" } else { "No transactions" })
     }
 
+    /// The table would replace its rows with a skeleton while loading; the
+    /// previous page stays readable instead until the next one arrives.
     fn loading(&self, _: &App) -> bool {
-        self.loading
-    }
-
-    fn has_more(&self, _: &App) -> bool {
-        self.failed.is_none() && self.entries.len() < self.total
-    }
-
-    fn load_more_threshold(&self) -> usize {
-        50
-    }
-
-    fn load_more(&mut self, _: &mut Window, cx: &mut Context<TableState<Self>>) {
-        self.load_next_page(cx);
+        false
     }
 }
 
