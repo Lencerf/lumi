@@ -244,7 +244,8 @@ pub fn journal<'t>(
 }
 
 /// Extracts completion candidates from `ledger` for editing entries: open
-/// accounts, currencies, payees, narrations, and per-payee narrations.
+/// accounts, currencies, payees, narrations, per-payee narrations, tags, and
+/// links.
 pub fn completions(ledger: &Ledger) -> Completions {
     let mut accounts: Vec<String> = ledger
         .accounts()
@@ -271,6 +272,10 @@ pub fn completions(ledger: &Ledger) -> Completions {
     let mut narrations = Vec::new();
     let mut seen_narrations = HashSet::new();
     let mut payee_narrations: HashMap<String, Vec<String>> = HashMap::new();
+    let mut tags = Vec::new();
+    let mut seen_tags = HashSet::new();
+    let mut links = Vec::new();
+    let mut seen_links = HashSet::new();
 
     for txn in ledger.txns().iter().rev() {
         let payee = txn.payee();
@@ -285,6 +290,16 @@ pub fn completions(ledger: &Ledger) -> Completions {
             let list = payee_narrations.entry(payee.clone()).or_default();
             if !list.iter().any(|existing| existing == narration) {
                 list.push(narration.clone());
+            }
+        }
+        for tag in txn.tags() {
+            if !tag.is_empty() && seen_tags.insert(tag.as_str()) {
+                tags.push(tag.clone());
+            }
+        }
+        for link in txn.links() {
+            if !link.is_empty() && seen_links.insert(link.as_str()) {
+                links.push(link.clone());
             }
         }
         for posting in txn.postings() {
@@ -320,6 +335,8 @@ pub fn completions(ledger: &Ledger) -> Completions {
         payees,
         narrations,
         payee_narrations,
+        tags,
+        links,
     }
 }
 

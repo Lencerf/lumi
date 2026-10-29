@@ -70,7 +70,7 @@ pub trait LedgerSource: 'static {
     fn errors(&self, cx: &mut App) -> Task<Result<Vec<lumi::Error>>>;
 
     /// Vocabulary for entry editing auto-completion (open accounts,
-    /// currencies, payees, and narrations).
+    /// currencies, payees, narrations, tags, and links).
     fn completions(&self, cx: &mut App) -> Task<Result<Completions>>;
 
     /// The text of the entry at `src` in its ledger file, as

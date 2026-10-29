@@ -652,3 +652,89 @@ fn test_completion_menu_renders_above_dialog_and_accepts_mouse_clicks(cx: &mut T
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_tag_and_link_completions_insert_and_save(cx: &mut TestAppContext) {
+    let ledger = TempLedger::new("tag-link-completion");
+    let (handle, app) = open_journal(&ledger, cx);
+    let session = cx.read(|cx| app.read(cx).session().clone());
+    let txn = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        report.read(cx).entries(cx)[0].txn.clone()
+    });
+
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            EntryEditor::open(&txn, session, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // Place the caret at the end of the `2025-06-01 * "Pay card"` header and type ` #par`.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let state = editor.read(cx).editor_state().clone();
+        let header_end = PAY_CARD.find('\n').unwrap();
+        state.update(cx, |state, cx| {
+            state.set_selected_range(header_end..header_end, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.input(" #par", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(window.find("completion-menu").visible());
+        assert_eq!(
+            window.within("completion-menu").find(0usize).label(),
+            Some("#paris-2025")
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Now type ` ^fli` to complete `^flight-receipt` right after the tag.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.input(" ^fli", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(window.find("completion-menu").visible());
+        assert_eq!(
+            window.within("completion-menu").find(0usize).label(),
+            Some("^flight-receipt")
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("Entry text").value(),
+            Some(
+                "2025-06-01 * \"Pay card\" #paris-2025 ^flight-receipt\n  Liabilities:CreditCard     80.00 USD\n  Assets:Bank:Checking      -80.00 USD"
+            )
+        );
+        window.click("save-entry", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        ledger
+            .text()
+            .contains("2025-06-01 * \"Pay card\" #paris-2025 ^flight-receipt")
+    );
+}

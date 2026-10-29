@@ -361,6 +361,8 @@ fn test_completions_extracts_open_accounts_currencies_payees_and_narrations() {
     assert_eq!(got.payee_narrations["Airline"], ["Flight to Paris"]);
     assert_eq!(got.payee_narrations["Grocer"], ["Weekly groceries"]);
     assert!(!got.payee_narrations.contains_key(""));
+    assert_eq!(got.tags, ["#paris-2025", "#groceries"]);
+    assert_eq!(got.links, ["^flight-receipt", "^grocery-receipt"]);
 }
 
 #[test]
@@ -375,13 +377,15 @@ fn test_completions_deduplicates_payee_narrations_and_includes_declared_commodit
 2024-01-01 commodity CHF
 2024-01-01 open Assets:Cash USD,GBP
 2024-01-01 open Expenses:Coffee
-2024-01-02 * \"Cafe\" \"Latte\"
+pushtag #coffee-run
+2024-01-02 * \"Cafe\" \"Latte\" #morning ^inv-1
   Expenses:Coffee  5.00 EUR @ 1.10 USD
   Assets:Cash     -5.50 USD
-2024-01-05 * \"Cafe\" \"Espresso\"
+poptag #coffee-run
+2024-01-05 * \"Cafe\" \"Espresso\" #afternoon ^inv-2
   Expenses:Coffee  3.50 USD
   Assets:Cash     -3.50 USD
-2024-01-09 * \"Cafe\" \"Latte\"
+2024-01-09 * \"Cafe\" \"Latte\" #morning ^inv-1
   Expenses:Coffee  5.00 USD
   Assets:Cash     -5.00 USD
 ",
@@ -395,6 +399,8 @@ fn test_completions_deduplicates_payee_narrations_and_includes_declared_commodit
     assert_eq!(got.payees, ["Cafe"]);
     assert_eq!(got.narrations, ["Latte", "Espresso"]);
     assert_eq!(got.payee_narrations["Cafe"], ["Latte", "Espresso"]);
+    assert_eq!(got.tags, ["#morning", "#afternoon", "#coffee-run"]);
+    assert_eq!(got.links, ["^inv-1", "^inv-2"]);
     // Used currencies (USD, EUR from @ price) come before declared-only (CHF, GBP).
     assert_eq!(got.currencies, ["USD", "EUR", "CHF", "GBP"]);
 }
