@@ -13,6 +13,7 @@ use lumi::ErrorLevel;
 
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
+use crate::style::table_card;
 
 /// The errors, warnings and notes the last reload of the ledger reported,
 /// most severe first.
@@ -139,12 +140,14 @@ impl Render for ErrorsReport {
                 )
             })
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .p_6()
-                    .pt_3()
-                    .child(DataTable::new(&self.table).small().stripe(true)),
+                div().flex_1().min_h_0().p_6().pt_3().child(
+                    table_card(cx).size_full().child(
+                        DataTable::new(&self.table)
+                            .small()
+                            .bordered(false)
+                            .stripe(true),
+                    ),
+                ),
             )
     }
 }

@@ -1,6 +1,6 @@
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, Theme};
-use gpui_kit::{App, ElementId};
+use gpui_kit::{App, Div, ElementId, Styled as _, div};
 
 /// Customizes the global GPUI Kit theme tokens for lumi's report tables.
 pub(crate) fn configure_theme(cx: &mut App) {
@@ -9,6 +9,15 @@ pub(crate) fn configure_theme(cx: &mut App) {
         // horizontal divider between them.
         theme.table_row_border = theme.transparent;
     });
+}
+
+/// A sharp-cornered bordered container for report tables.
+pub(crate) fn table_card(cx: &App) -> Div {
+    let theme = cx.theme();
+    div()
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.tokens.table)
 }
 
 /// A compact inline button colored to show that a datum in a table — a date

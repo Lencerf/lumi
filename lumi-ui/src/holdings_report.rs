@@ -20,7 +20,7 @@ use crate::journal_report::{ActivateRow, OpenAccount};
 use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
 use crate::source::{LedgerSource, Positions};
-use crate::style::interactive_button;
+use crate::style::{interactive_button, table_card};
 
 /// The key context of the holdings table; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "HoldingsReport";
@@ -188,12 +188,14 @@ impl Render for HoldingsReport {
                 )
             })
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .p_6()
-                    .pt_3()
-                    .child(DataTable::new(&self.table).small().stripe(true)),
+                div().flex_1().min_h_0().p_6().pt_3().child(
+                    table_card(cx).size_full().child(
+                        DataTable::new(&self.table)
+                            .small()
+                            .bordered(false)
+                            .stripe(true),
+                    ),
+                ),
             )
     }
 }

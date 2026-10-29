@@ -26,7 +26,7 @@ use crate::entry_editor::EntryEditor;
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
-use crate::style::interactive_button;
+use crate::style::{interactive_button, table_card};
 
 /// Opens the journal of an account, from a posting's context menu.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
@@ -410,12 +410,14 @@ impl Render for JournalReport {
                 )
             })
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .px_6()
-                    .py_3()
-                    .child(DataTable::new(&self.table).small().stripe(false)),
+                div().flex_1().min_h_0().px_6().py_3().child(
+                    table_card(cx).size_full().child(
+                        DataTable::new(&self.table)
+                            .small()
+                            .bordered(false)
+                            .stripe(false),
+                    ),
+                ),
             )
             .child(self.render_footer(cx))
     }

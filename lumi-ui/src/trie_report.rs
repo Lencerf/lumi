@@ -14,7 +14,7 @@ use lumi::web::{TrieOptions, TrieTable};
 
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
-use crate::style::interactive_button;
+use crate::style::{interactive_button, table_card};
 
 /// A report made of account hierarchies with their balances, such as the
 /// balance sheet (Assets beside Liabilities and Equity) or the income
@@ -227,7 +227,6 @@ impl TrieReport {
             TrieLoad::Ready(presentation) => {
                 let theme = cx.theme();
                 let mono = theme.mono_font_family.clone();
-                let radius = theme.radius;
                 let border = theme.border;
                 let head_bg = theme.secondary;
                 let head_fg = theme.secondary_foreground;
@@ -237,15 +236,11 @@ impl TrieReport {
                 } else {
                     theme.muted
                 };
-                div()
-                    .rounded(radius)
-                    .border_1()
-                    .border_color(border)
+                table_card(cx)
                     .shadow_sm()
                     .child(
                         Table::new()
                             .small()
-                            .rounded(radius)
                             .accessibility_label(root)
                             .child(
                                 TableHeader::new()
