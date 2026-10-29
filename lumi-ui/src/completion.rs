@@ -86,6 +86,7 @@ pub(crate) enum CompletionTarget {
     Account {
         replace: Range<usize>,
         query: String,
+        indent: bool,
     },
     Currency {
         replace: Range<usize>,
@@ -130,7 +131,11 @@ pub(crate) fn detect_target(text: &Rope, offset: usize, invoked: bool) -> Option
     if code.starts_with([' ', '\t']) {
         detect_indented_target(code, col, line_start, invoked)
     } else {
-        detect_directive_target(code, col, line_start)
+        detect_directive_target(code, col, line_start).or_else(|| {
+            (point.row > 0)
+                .then(|| detect_unindented_posting_target(code, col, line_start, invoked))
+                .flatten()
+        })
     }
 }
 
@@ -249,10 +254,51 @@ fn detect_indented_target(
         return Some(CompletionTarget::Account {
             replace: (line_start + indent_end)..(line_start + first_end),
             query: query.to_string(),
+            indent: false,
         });
     }
 
     detect_currency_after_number(code, col, line_start)
+}
+
+fn detect_unindented_posting_target(
+    code: &str,
+    col: usize,
+    line_start: usize,
+    invoked: bool,
+) -> Option<CompletionTarget> {
+    let first_end = code
+        .find(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '{' | '}'))
+        .unwrap_or(code.len());
+    let token = &code[..first_end];
+
+    if is_iso_date(token)
+        || token.starts_with(['#', '^', '*', '!'])
+        || matches!(
+            token,
+            "option" | "include" | "commodity" | "pushtag" | "poptag" | "plugin"
+        )
+    {
+        return None;
+    }
+
+    if col <= first_end {
+        let query = &code[..col];
+        if query.is_empty() && !invoked {
+            return None;
+        }
+        return Some(CompletionTarget::Account {
+            replace: line_start..(line_start + first_end),
+            query: query.to_string(),
+            indent: true,
+        });
+    }
+
+    if token.contains(':') && token.chars().next().is_some_and(char::is_uppercase) {
+        return detect_currency_after_number(code, col, line_start);
+    }
+
+    None
 }
 
 fn detect_directive_target(code: &str, col: usize, line_start: usize) -> Option<CompletionTarget> {
@@ -278,6 +324,7 @@ fn detect_directive_target(code: &str, col: usize, line_start: usize) -> Option<
                 return Some(CompletionTarget::Account {
                     replace: (line_start + col)..(line_start + col),
                     query: String::new(),
+                    indent: false,
                 });
             };
             if col <= third.end {
@@ -285,6 +332,7 @@ fn detect_directive_target(code: &str, col: usize, line_start: usize) -> Option<
                 return Some(CompletionTarget::Account {
                     replace: (line_start + start)..(line_start + third.end),
                     query: code[start..col].to_string(),
+                    indent: false,
                 });
             }
             match kw {
@@ -293,6 +341,7 @@ fn detect_directive_target(code: &str, col: usize, line_start: usize) -> Option<
                         return Some(CompletionTarget::Account {
                             replace: (line_start + col)..(line_start + col),
                             query: String::new(),
+                            indent: false,
                         });
                     };
                     if col <= fourth.end {
@@ -300,6 +349,7 @@ fn detect_directive_target(code: &str, col: usize, line_start: usize) -> Option<
                         return Some(CompletionTarget::Account {
                             replace: (line_start + start)..(line_start + fourth.end),
                             query: code[start..col].to_string(),
+                            indent: false,
                         });
                     }
                     None
@@ -403,13 +453,22 @@ fn detect_currency_after_number(
 
 fn build_items(data: &Completions, text: &Rope, target: CompletionTarget) -> Vec<CompletionItem> {
     match target {
-        CompletionTarget::Account { replace, query } => rank_candidates(&data.accounts, &query)
+        CompletionTarget::Account {
+            replace,
+            query,
+            indent,
+        } => rank_candidates(&data.accounts, &query)
             .into_iter()
             .take(MAX_COMPLETION_ITEMS)
             .map(|account| {
+                let new_text = if indent {
+                    format!("  {account}")
+                } else {
+                    account.to_string()
+                };
                 make_item(
                     account,
-                    account.to_string(),
+                    new_text,
                     CompletionItemKind::STRUCT,
                     None,
                     &query,
