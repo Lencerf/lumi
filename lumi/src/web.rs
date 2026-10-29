@@ -25,6 +25,7 @@ pub struct FilterOptions {
     pub account: Option<String>,
     pub time: Option<String>,
     pub query: Option<String>,
+    pub flags: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

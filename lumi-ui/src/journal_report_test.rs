@@ -494,3 +494,95 @@ fn test_search_shortcut_focuses_search_box_and_filters_journal_and_account_views
         assert_eq!(report.read(cx).entries(cx)[0].txn.narration(), "Dinner");
     });
 }
+
+#[gpui_kit::test]
+fn test_record_type_selector_toggles_entry_flags_and_resets_all(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // All 9 fixture entries (8 `*` transactions + 1 `balance` assertion) start visible.
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(report.read(cx).total(cx), 9);
+        assert_eq!(report.read(cx).visible_flags(cx).len(), 4);
+    });
+
+    // Clicking `bal` toggles balance assertions off -> 8 cleared transactions remain.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((gpui_kit::ElementId::from("record-type"), "bal"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(report.read(cx).total(cx), 8);
+        assert!(
+            !report
+                .read(cx)
+                .visible_flags(cx)
+                .contains(&TxnFlag::Balance)
+        );
+    });
+
+    // Clicking `*` off and `bal` back on leaves only the 1 balance assertion.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((gpui_kit::ElementId::from("record-type"), "*"), cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((gpui_kit::ElementId::from("record-type"), "bal"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(report.read(cx).total(cx), 1);
+        assert_eq!(report.read(cx).entries(cx)[0].txn.flag(), TxnFlag::Balance);
+    });
+
+    // Clicking "All" re-enables every record type.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(
+            (
+                gpui_kit::ElementId::from("journal-record-types-all"),
+                Page::Journal.id(),
+            ),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(report.read(cx).visible_flags(cx).len(), 4);
+        assert_eq!(report.read(cx).total(cx), 9);
+    });
+}

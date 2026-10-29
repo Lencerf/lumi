@@ -362,6 +362,62 @@ fn test_journal_search_query_matches_date_account_payee_narration_and_currency()
 }
 
 #[test]
+fn test_journal_flag_filter_selects_entry_types() {
+    let path = std::env::temp_dir().join(format!(
+        "lumi-flag-filter-query-test-{}.bean",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        "\
+2024-01-01 open Assets:Cash
+2024-01-01 open Equity:Opening
+2024-01-01 open Expenses:Coffee
+
+2024-01-02 pad Assets:Cash Equity:Opening
+2024-01-03 balance Assets:Cash 100.00 USD
+
+2024-01-04 * \"Cafe\" \"Latte\"
+  Expenses:Coffee   5.00 USD
+  Assets:Cash      -5.00 USD
+
+2024-01-05 ! \"Cafe\" \"Pending muffin\"
+  Expenses:Coffee   4.00 USD
+  Assets:Cash      -4.00 USD
+",
+    )
+    .unwrap();
+    let (ledger, errors) = Ledger::from_file(path.to_str().unwrap());
+    let _ = std::fs::remove_file(&path);
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let with_flags = |flags: &str| FilterOptions {
+        flags: Some(flags.to_string()),
+        ..Default::default()
+    };
+
+    // Default (`flags: None`) returns all 4 records (*, !, bal, pad).
+    assert_eq!(page(&ledger, None, &FilterOptions::default()).1, 4);
+
+    let (rows, total) = page(&ledger, None, &with_flags("*"));
+    assert_eq!(total, 1);
+    assert_eq!(dates(&rows), ["2024-01-04"]);
+
+    let (rows, total) = page(&ledger, None, &with_flags("!"));
+    assert_eq!(total, 1);
+    assert_eq!(dates(&rows), ["2024-01-05"]);
+
+    let (rows, total) = page(&ledger, None, &with_flags("bal,pad"));
+    assert_eq!(total, 2);
+    assert_eq!(dates(&rows), ["2024-01-03", "2024-01-02"]);
+
+    // Empty flag selection returns zero records.
+    let (rows, total) = page(&ledger, None, &with_flags(""));
+    assert_eq!(total, 0);
+    assert!(rows.is_empty());
+}
+
+#[test]
 fn test_completions_extracts_open_accounts_currencies_payees_and_narrations() {
     let ledger = fixture();
     let got = completions(&ledger);

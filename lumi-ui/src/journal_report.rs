@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonGroup};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Search};
 use gpui_kit::component::menu::PopupMenu;
@@ -59,6 +59,16 @@ pub(crate) const KEY_CONTEXT: &str = "JournalReport";
 /// The page sizes the user can choose from.
 pub const PAGE_SIZES: [usize; 3] = [20, 50, 100];
 
+/// Selectable record types in the journal and account views, matching Fava's
+/// entry-type toggle strip (`*` cleared, `!` pending, `bal` balance assertions,
+/// `pad` directives).
+pub const RECORD_TYPES: [(TxnFlag, &str, &str); 4] = [
+    (TxnFlag::Posted, "*", "Cleared transactions (*)"),
+    (TxnFlag::Pending, "!", "Pending transactions (!)"),
+    (TxnFlag::Balance, "bal", "Balance assertions (balance)"),
+    (TxnFlag::Pad, "pad", "Pad directives (pad)"),
+];
+
 /// The journal of the whole ledger, or of one account and its sub-accounts.
 ///
 /// The table shows one page of transactions, newest first (the Date header
@@ -92,6 +102,7 @@ struct JournalDelegate {
     expand_all: bool,
     old_first: bool,
     query: SharedString,
+    visible_flags: HashSet<TxnFlag>,
     /// The page shown, counted from 1.
     page: usize,
     page_size: usize,
@@ -217,6 +228,74 @@ impl JournalReport {
             let query = input.read(cx).value();
             self.apply_search_query(query, cx);
         }
+    }
+
+    pub fn visible_flags(&self, cx: &App) -> HashSet<TxnFlag> {
+        self.table.read(cx).delegate().visible_flags.clone()
+    }
+
+    /// Sets which record flags (`*`, `!`, `bal`, `pad`) are shown and reloads
+    /// the first page of matching entries.
+    pub fn set_visible_flags(
+        &mut self,
+        flags: impl IntoIterator<Item = TxnFlag>,
+        cx: &mut Context<Self>,
+    ) {
+        let next: HashSet<TxnFlag> = flags.into_iter().collect();
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if delegate.visible_flags != next {
+                delegate.visible_flags = next;
+                delegate.page = 1;
+                delegate.load_page(cx);
+            }
+        });
+    }
+
+    fn render_record_type_selector(
+        &self,
+        visible_flags: &HashSet<TxnFlag>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mono = cx.theme().mono_font_family.clone();
+        let filtered = visible_flags.len() < RECORD_TYPES.len();
+        div()
+            .h_flex()
+            .items_center()
+            .gap_1()
+            .flex_shrink_0()
+            .child(
+                ButtonGroup::new((ElementId::from("journal-record-types"), self.page.id()))
+                    .multiple(true)
+                    .outline()
+                    .compact()
+                    .small()
+                    .children(RECORD_TYPES.map(|(flag, label, description)| {
+                        Button::new((ElementId::from("record-type"), label))
+                            .font_family(mono.clone())
+                            .label(label)
+                            .tooltip(description)
+                            .selected(visible_flags.contains(&flag))
+                    }))
+                    .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
+                        let flags = selected
+                            .iter()
+                            .filter_map(|ix| RECORD_TYPES.get(*ix).map(|(flag, _, _)| *flag));
+                        this.set_visible_flags(flags, cx);
+                    })),
+            )
+            .when(filtered, |this| {
+                this.child(
+                    Button::new((ElementId::from("journal-record-types-all"), self.page.id()))
+                        .ghost()
+                        .xsmall()
+                        .label("All")
+                        .tooltip("Show all record types")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_visible_flags(RECORD_TYPES.map(|(flag, _, _)| flag), cx);
+                        })),
+                )
+            })
     }
 
     /// Reads the page again for the current ledger revision, unless that has
@@ -407,7 +486,7 @@ impl EventEmitter<ReportEvent> for JournalReport {}
 
 impl Render for JournalReport {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (first, last, total, expand_all, failed) = {
+        let (first, last, total, expand_all, visible_flags, failed) = {
             let delegate = self.table.read(cx).delegate();
             let first = (delegate.page - 1) * delegate.page_size + 1;
             let last = (first + delegate.entries.len()).saturating_sub(1);
@@ -416,6 +495,7 @@ impl Render for JournalReport {
                 last,
                 delegate.total,
                 delegate.expand_all,
+                delegate.visible_flags.clone(),
                 delegate.failed.clone(),
             )
         };
@@ -451,7 +531,7 @@ impl Render for JournalReport {
                             .flex_1()
                             .min_w_0()
                             .child(
-                                div().w(px(320.)).max_w_full().child(
+                                div().w(px(300.)).max_w_full().child(
                                     Input::new(&self.search_input)
                                         .id((ElementId::from("journal-search"), self.page.id()))
                                         .small()
@@ -463,7 +543,8 @@ impl Render for JournalReport {
                                                 .text_color(cx.theme().muted_foreground),
                                         ),
                                 ),
-                            ),
+                            )
+                            .child(self.render_record_type_selector(&visible_flags, cx)),
                     )
                     .child(
                         div()
@@ -556,6 +637,7 @@ impl JournalDelegate {
             expand_all: false,
             old_first: false,
             query: SharedString::default(),
+            visible_flags: RECORD_TYPES.iter().map(|(flag, _, _)| *flag).collect(),
             page: 1,
             page_size: DEFAULT_ENTRIES_PER_PAGE,
             total: 0,
@@ -575,11 +657,20 @@ impl JournalDelegate {
         self.generation += 1;
         let generation = self.generation;
         let query = (!self.query.trim().is_empty()).then(|| self.query.to_string());
+        let flags = (self.visible_flags.len() < RECORD_TYPES.len()).then(|| {
+            RECORD_TYPES
+                .iter()
+                .filter(|(flag, _, _)| self.visible_flags.contains(flag))
+                .map(|(_, label, _)| *label)
+                .collect::<Vec<_>>()
+                .join(",")
+        });
         let options = FilterOptions {
             entries: Some(self.page_size),
             page: Some(self.page),
             old_first: Some(self.old_first),
             query,
+            flags,
             ..Default::default()
         };
         let task = self.source.journal(self.account.as_deref(), &options, cx);

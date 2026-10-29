@@ -32,7 +32,9 @@ pub use assets::LumiAssets;
 pub use entry_editor::{CancelEntry, EntryEditor, SaveEntry};
 pub use errors_report::ErrorsReport;
 pub use holdings_report::HoldingsReport;
-pub use journal_report::{ActivateRow, EditEntry, JournalReport, OpenAccount, TogglePostings};
+pub use journal_report::{
+    ActivateRow, EditEntry, JournalReport, OpenAccount, RECORD_TYPES, TogglePostings,
+};
 pub use navigation::{Page, ReportEvent};
 pub use session::LedgerSession;
 pub use trie_report::TrieReport;

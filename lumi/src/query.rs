@@ -205,6 +205,27 @@ fn txn_matches_query(txn: &Transaction, terms: &[String]) -> bool {
         .all(|term| txn_matches_term(txn, term, &date_text))
 }
 
+fn parse_flag_token(token: &str) -> Option<TxnFlag> {
+    match token {
+        "*" | "txn" | "posted" | "cleared" => Some(TxnFlag::Posted),
+        "!" | "?" | "pending" => Some(TxnFlag::Pending),
+        "bal" | "balance" => Some(TxnFlag::Balance),
+        "pad" => Some(TxnFlag::Pad),
+        _ => None,
+    }
+}
+
+fn parse_flag_filter(flags: Option<&str>) -> Option<HashSet<TxnFlag>> {
+    let raw = flags?;
+    let set = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| parse_flag_token(&part.to_ascii_lowercase()))
+        .collect();
+    Some(set)
+}
+
 /// Adds the amounts `txn` posts to `account` (and its sub-accounts) to
 /// `running_balance`, and returns those changes by currency. Postings held at
 /// cost and balance assertions do not change the balance.
@@ -250,6 +271,7 @@ pub fn journal<'t>(
         .as_ref()
         .and_then(|time| time.parse::<i32>().ok());
     let terms = query_terms(options.query.as_deref());
+    let allowed_flags = parse_flag_filter(options.flags.as_deref());
     let matches = |txn: &Transaction| {
         account.is_none_or(|account| touches_account(txn, account))
             && options
@@ -257,6 +279,9 @@ pub fn journal<'t>(
                 .as_deref()
                 .is_none_or(|account| touches_account(txn, account))
             && year.is_none_or(|year| txn.date().year() == year)
+            && allowed_flags
+                .as_ref()
+                .is_none_or(|flags| flags.contains(&txn.flag()))
             && txn_matches_query(txn, &terms)
     };
     let txns: Vec<_> = ledger.txns().iter().filter(|txn| matches(txn)).collect();
