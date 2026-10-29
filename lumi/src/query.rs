@@ -11,8 +11,8 @@ use chrono::Datelike;
 use rust_decimal::Decimal;
 
 use crate::web::{
-    DEFAULT_ENTRIES_PER_PAGE, FilterOptions, JournalItem, Position, TrieNode, TrieOptions,
-    TrieTable, TrieTableRow,
+    Completions, DEFAULT_ENTRIES_PER_PAGE, FilterOptions, JournalItem, Position, TrieNode,
+    TrieOptions, TrieTable, TrieTableRow,
 };
 use crate::{BalanceSheet, Ledger, Transaction, TxnFlag};
 
@@ -241,6 +241,86 @@ pub fn journal<'t>(
         items.reverse();
     }
     (items, total_number)
+}
+
+/// Extracts completion candidates from `ledger` for editing entries: open
+/// accounts, currencies, payees, narrations, and per-payee narrations.
+pub fn completions(ledger: &Ledger) -> Completions {
+    let mut accounts: Vec<String> = ledger
+        .accounts()
+        .iter()
+        .filter(|(_, info)| info.close().is_none())
+        .map(|(account, _)| account.as_ref().clone())
+        .collect();
+    accounts.sort_unstable();
+
+    let mut currencies = Vec::new();
+    let mut seen_currencies = HashSet::new();
+    let mut push_currency = |currency: &str| {
+        if !currency.is_empty() && seen_currencies.insert(currency.to_string()) {
+            currencies.push(currency.to_string());
+        }
+    };
+
+    if let Some((operating, _)) = ledger.options().get("operating_currency") {
+        push_currency(operating);
+    }
+
+    let mut payees = Vec::new();
+    let mut seen_payees = HashSet::new();
+    let mut narrations = Vec::new();
+    let mut seen_narrations = HashSet::new();
+    let mut payee_narrations: HashMap<String, Vec<String>> = HashMap::new();
+
+    for txn in ledger.txns().iter().rev() {
+        let payee = txn.payee();
+        let narration = txn.narration();
+        if !payee.is_empty() && seen_payees.insert(payee.as_str()) {
+            payees.push(payee.clone());
+        }
+        if !narration.is_empty() && seen_narrations.insert(narration.as_str()) {
+            narrations.push(narration.clone());
+        }
+        if !payee.is_empty() && !narration.is_empty() {
+            let list = payee_narrations.entry(payee.clone()).or_default();
+            if !list.iter().any(|existing| existing == narration) {
+                list.push(narration.clone());
+            }
+        }
+        for posting in txn.postings() {
+            push_currency(&posting.amount.currency);
+            if let Some(cost) = &posting.cost {
+                push_currency(&cost.amount.currency);
+            }
+            if let Some(price) = &posting.price {
+                push_currency(&price.currency);
+            }
+        }
+    }
+
+    let mut declared_currencies: Vec<&str> = ledger
+        .commodities()
+        .keys()
+        .map(String::as_str)
+        .chain(
+            ledger
+                .accounts()
+                .values()
+                .flat_map(|info| info.currencies().iter().map(String::as_str)),
+        )
+        .collect();
+    declared_currencies.sort_unstable();
+    for currency in declared_currencies {
+        push_currency(currency);
+    }
+
+    Completions {
+        accounts,
+        currencies,
+        payees,
+        narrations,
+        payee_narrations,
+    }
 }
 
 #[cfg(test)]

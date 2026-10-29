@@ -67,3 +67,22 @@ pub struct JournalItem<C: Hash + Eq, T> {
 pub struct RefreshTime {
     pub timestamp: i64,
 }
+
+/// Vocabulary extracted from a [`Ledger`](crate::Ledger) for entry editing
+/// auto-completion.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Completions {
+    /// Open accounts in lexicographical order.
+    pub accounts: Vec<String>,
+    /// Distinct currencies across options, postings, account declarations, and
+    /// commodity directives, with recently used currencies first.
+    pub currencies: Vec<String>,
+    /// Distinct non-empty payees, most recently used first.
+    pub payees: Vec<String>,
+    /// Distinct non-empty narrations, most recently used first.
+    pub narrations: Vec<String>,
+    /// Distinct non-empty narrations previously used with each payee, most
+    /// recently used first.
+    pub payee_narrations: HashMap<String, Vec<String>>,
+}
