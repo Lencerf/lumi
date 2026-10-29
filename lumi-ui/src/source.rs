@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use gpui_kit::{App, Task};
-use lumi::Transaction;
 use lumi::web::{FilterOptions, JournalItem, Position, TrieOptions, TrieTable};
+use lumi::{Source, Transaction};
 
 #[cfg(not(target_family = "wasm"))]
 mod local;
@@ -67,4 +67,21 @@ pub trait LedgerSource: 'static {
 
     /// The errors the last reload reported.
     fn errors(&self, cx: &mut App) -> Task<Result<Vec<lumi::Error>>>;
+
+    /// The text of the entry at `src` in its ledger file, as
+    /// [`lumi::edit::entry_text`] reads it: the line the entry starts on and
+    /// the indented lines after it, without the final line break.
+    fn entry_text(&self, src: &Source, cx: &mut App) -> Task<Result<String>>;
+
+    /// Replaces the text of the entry at `src` with `text`. `original` is
+    /// what [`entry_text`](Self::entry_text) returned; if the entry's text
+    /// has changed since, nothing is written and the task fails. The ledger
+    /// is not reloaded.
+    fn replace_entry_text(
+        &self,
+        src: &Source,
+        original: String,
+        text: String,
+        cx: &mut App,
+    ) -> Task<Result<()>>;
 }

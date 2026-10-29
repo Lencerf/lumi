@@ -8,6 +8,7 @@
 
 mod app;
 mod assets;
+mod entry_editor;
 mod errors_report;
 mod holdings_report;
 mod journal_report;
@@ -20,9 +21,10 @@ pub use app::{LumiApp, Refresh};
 pub use assets::ExtraIcons;
 #[cfg(not(target_family = "wasm"))]
 pub use assets::LumiAssets;
+pub use entry_editor::{EntryEditor, SaveEntry};
 pub use errors_report::ErrorsReport;
 pub use holdings_report::HoldingsReport;
-pub use journal_report::{ActivateRow, JournalReport, OpenAccount, TogglePostings};
+pub use journal_report::{ActivateRow, EditEntry, JournalReport, OpenAccount, TogglePostings};
 pub use navigation::{Page, ReportEvent};
 pub use session::LedgerSession;
 pub use trie_report::TrieReport;
@@ -34,11 +36,12 @@ use gpui_kit::{App, KeyBinding};
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
     #[cfg(target_os = "macos")]
-    let refresh = "cmd-r";
+    let (refresh, save) = ("cmd-r", "cmd-s");
     #[cfg(not(target_os = "macos"))]
-    let refresh = "ctrl-r";
+    let (refresh, save) = ("ctrl-r", "ctrl-s");
     cx.bind_keys([
         KeyBinding::new(refresh, Refresh, Some(app::KEY_CONTEXT)),
+        KeyBinding::new(save, SaveEntry, Some(entry_editor::KEY_CONTEXT)),
         KeyBinding::new("enter", ActivateRow, Some(journal_report::KEY_CONTEXT)),
         KeyBinding::new("enter", ActivateRow, Some(holdings_report::KEY_CONTEXT)),
     ]);

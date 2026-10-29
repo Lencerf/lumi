@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use anyhow::{Result, anyhow};
 use gpui_kit::{App, AppContext as _, Task};
 use lumi::web::{FilterOptions, JournalItem, TrieOptions, TrieTable, TrieTableRow};
-use lumi::{Ledger, query};
+use lumi::{Ledger, Source, edit, query};
 
 use crate::source::{JournalPage, LedgerSource, Positions};
 
@@ -123,6 +123,26 @@ impl LedgerSource for LocalLedger {
 
     fn errors(&self, cx: &mut App) -> Task<Result<Vec<lumi::Error>>> {
         self.query(cx, |loaded| loaded.errors.clone())
+    }
+
+    fn entry_text(&self, src: &Source, cx: &mut App) -> Task<Result<String>> {
+        let file = src.file.clone();
+        let line = src.start.line;
+        cx.background_spawn(async move { Ok(edit::entry_text(&file, line)?) })
+    }
+
+    fn replace_entry_text(
+        &self,
+        src: &Source,
+        original: String,
+        text: String,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        let file = src.file.clone();
+        let line = src.start.line;
+        cx.background_spawn(
+            async move { Ok(edit::replace_entry_text(&file, line, &original, &text)?) },
+        )
     }
 }
 

@@ -86,6 +86,16 @@ impl LumiApp {
         &self.session
     }
 
+    /// The journal shown, if the page is one.
+    pub fn journal(&self) -> Option<Entity<JournalReport>> {
+        self.reports
+            .get(&self.page)?
+            .view
+            .clone()
+            .downcast::<JournalReport>()
+            .ok()
+    }
+
     /// The view for `page`, created on first use.
     fn report(&mut self, page: &Page, window: &mut Window, cx: &mut Context<Self>) -> AnyView {
         if let Some(report) = self.reports.get(page) {

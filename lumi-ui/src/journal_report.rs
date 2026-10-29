@@ -12,7 +12,7 @@ use gpui_kit::component::table::{
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, App, AppContext as _, Context, Div, ElementId, Entity, EventEmitter,
+    Action, App, AppContext as _, Context, Div, ElementId, Entity, EventEmitter, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
     Styled as _, Subscription, Task, Window, div, px,
 };
@@ -21,6 +21,7 @@ use lumi::web::{DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+use crate::entry_editor::EntryEditor;
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
@@ -34,6 +35,12 @@ pub struct OpenAccount(pub SharedString);
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = lumi_ui, no_json)]
 pub struct TogglePostings(pub usize);
+
+/// Opens the editor on the transaction at the given entry index, from its
+/// date or its context menu.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = lumi_ui, no_json)]
+pub struct EditEntry(pub usize);
 
 /// Activates the selected row: toggles a transaction's postings, or opens a
 /// posting's account. Bound to Enter.
@@ -253,6 +260,11 @@ impl JournalReport {
         self.toggle_postings(action.0, cx);
     }
 
+    fn on_edit_entry(&mut self, action: &EditEntry, window: &mut Window, cx: &mut Context<Self>) {
+        let txn = self.table.read(cx).delegate().entries[action.0].txn.clone();
+        EntryEditor::open(&txn, self.session.clone(), window, cx);
+    }
+
     fn on_table_event(
         &mut self,
         _: Entity<TableState<JournalDelegate>>,
@@ -352,6 +364,7 @@ impl Render for JournalReport {
             .on_action(cx.listener(Self::activate_selected_row))
             .on_action(cx.listener(Self::on_open_account))
             .on_action(cx.listener(Self::on_toggle_postings))
+            .on_action(cx.listener(Self::on_edit_entry))
             .child(
                 div()
                     .h_flex()
@@ -412,7 +425,8 @@ impl JournalDelegate {
         // notation (`10 VTI {250.00 USD, 2024-03-01} @ 1.20 EUR`), so the
         // running balance of an account page stays in view.
         let mut columns = vec![
-            Column::new("date", "Date").width(px(104.)).sortable(),
+            // Room for the date as a small button.
+            Column::new("date", "Date").width(px(120.)).sortable(),
             Column::new("flag", "Flag").width(px(48.)).text_center(),
             Column::new("description", "Description").width(px(if account.is_some() {
                 280.
@@ -605,9 +619,11 @@ impl TableDelegate for JournalDelegate {
         _: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
         match self.rows.get(row_ix) {
-            Some(&JournalRow::Transaction(entry_ix))
-                if self.entries[entry_ix].txn.flag() != TxnFlag::Balance =>
-            {
+            Some(&JournalRow::Transaction(entry_ix)) => {
+                let menu = menu.menu("Edit entry", Box::new(EditEntry(entry_ix)));
+                if self.entries[entry_ix].txn.flag() == TxnFlag::Balance {
+                    return menu;
+                }
                 let label = if self.is_expanded(entry_ix) {
                     "Hide postings"
                 } else {
@@ -639,9 +655,23 @@ impl TableDelegate for JournalDelegate {
                 let entry = &self.entries[entry_ix];
                 let txn = &entry.txn;
                 match column {
-                    "date" => div()
+                    // The date opens the editor on the transaction.
+                    "date" => Button::new(("edit", entry_ix))
+                        .ghost()
+                        .small()
+                        .compact()
                         .font_family(mono)
-                        .child(txn.date().to_string())
+                        .label(txn.date().to_string())
+                        .accessibility_label(format!("Edit the entry of {}", txn.date()))
+                        .on_click(cx.listener(move |table, _, window, cx| {
+                            // Along the table's path, whatever has focus, so
+                            // the journal above the table receives it; after
+                            // this update of the table, which it reads.
+                            let handle = table.focus_handle(cx);
+                            window.defer(cx, move |window, cx| {
+                                handle.dispatch_action(&EditEntry(entry_ix), window, cx);
+                            });
+                        }))
                         .into_any_element(),
                     "flag" => div()
                         .font_family(mono)
