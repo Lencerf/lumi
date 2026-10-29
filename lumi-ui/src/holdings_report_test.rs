@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::table::TableDelegate as _;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
-    px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Entity, FontWeight, Styled as _, TestAppContext,
+    WindowBounds, WindowOptions, px, size,
 };
 use lumi::web::Position;
 use rust_decimal::Decimal;
@@ -165,5 +167,56 @@ fn test_clicking_holding_account_button_opens_its_account(cx: &mut TestAppContex
             app.read(cx).page(),
             &Page::Account("Assets:Investments:Brokerage".into())
         );
+    });
+}
+
+#[gpui_kit::test]
+fn test_holdings_rows_alternate_background_and_header_uses_medium_weight(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let session = cx.new(|cx| {
+        let mut session = LedgerSession::new(Arc::new(LocalLedger::new(FIXTURE)));
+        session.reload(cx);
+        session
+    });
+    let (report, window) =
+        cx.add_window_view(|window, cx| HoldingsReport::new(session.clone(), window, cx));
+    window.run_until_parked();
+
+    window.update(|window, cx| {
+        let table = report.read(cx).table.clone();
+        let even_bg = Some(cx.theme().table.into());
+        let odd_bg = Some(cx.theme().muted.into());
+
+        let header_weight = table.update(cx, |state, cx| {
+            state
+                .delegate_mut()
+                .render_header(window, cx)
+                .style()
+                .text
+                .font_weight
+        });
+        assert_eq!(header_weight, Some(FontWeight::MEDIUM));
+
+        for row_ix in 0..4 {
+            let bg = table.update(cx, |state, cx| {
+                state
+                    .delegate_mut()
+                    .render_tr(row_ix, window, cx)
+                    .style()
+                    .background
+                    .clone()
+            });
+            let expected = if row_ix % 2 == 0 { &even_bg } else { &odd_bg };
+            assert_eq!(&bg, expected);
+        }
+        let filler_bg = table.update(cx, |state, cx| {
+            state
+                .delegate_mut()
+                .render_tr(4, window, cx)
+                .style()
+                .background
+                .clone()
+        });
+        assert_eq!(filler_bg, None);
     });
 }

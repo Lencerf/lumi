@@ -26,7 +26,7 @@ use crate::entry_editor::EntryEditor;
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
-use crate::style::{interactive_button, table_card};
+use crate::style::{interactive_button, table_card, table_header, table_row_bg};
 
 /// Opens the journal of an account, from a posting's context menu.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
@@ -591,16 +591,6 @@ fn flag_color(flag: TxnFlag, cx: &App) -> Hsla {
     }
 }
 
-/// Alternates background by transaction index so expanded posting sub-rows
-/// share the exact background color of their parent transaction row.
-fn entry_row_bg(entry_ix: usize, cx: &App) -> Hsla {
-    if entry_ix.is_multiple_of(2) {
-        cx.theme().table
-    } else {
-        cx.theme().table_even
-    }
-}
-
 impl TableDelegate for JournalDelegate {
     fn columns_count(&self, _: &App) -> usize {
         self.columns.len()
@@ -612,6 +602,14 @@ impl TableDelegate for JournalDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         self.columns[col_ix].clone()
+    }
+
+    fn render_header(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        table_header()
     }
 
     fn perform_sort(
@@ -638,11 +636,13 @@ impl TableDelegate for JournalDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
+        // Alternates background by transaction index so expanded posting
+        // sub-rows share the background color of their parent transaction row.
         let row = div().id(("row", row_ix));
         match self.rows.get(row_ix).copied() {
-            Some(JournalRow::Transaction(entry_ix)) => row.bg(entry_row_bg(entry_ix, cx)),
+            Some(JournalRow::Transaction(entry_ix)) => row.bg(table_row_bg(entry_ix, cx)),
             Some(JournalRow::Posting(entry_ix, _)) => row
-                .bg(entry_row_bg(entry_ix, cx))
+                .bg(table_row_bg(entry_ix, cx))
                 .text_color(cx.theme().muted_foreground),
             None => row,
         }

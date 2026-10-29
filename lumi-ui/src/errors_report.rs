@@ -6,14 +6,15 @@ use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Subscription, Task, Window, div, px,
+    App, AppContext as _, Context, Div, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, Stateful, Styled as _, Subscription, Task, Window,
+    div, px,
 };
 use lumi::ErrorLevel;
 
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
-use crate::style::table_card;
+use crate::style::{table_card, table_header, table_row_bg};
 
 /// The errors, warnings and notes the last reload of the ledger reported,
 /// most severe first.
@@ -145,7 +146,7 @@ impl Render for ErrorsReport {
                         DataTable::new(&self.table)
                             .small()
                             .bordered(false)
-                            .stripe(true),
+                            .stripe(false),
                     ),
                 ),
             )
@@ -262,6 +263,28 @@ impl TableDelegate for ErrorsDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         self.columns[col_ix].clone()
+    }
+
+    fn render_header(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        table_header()
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let row = div().id(("row", row_ix));
+        if row_ix < self.errors.len() {
+            row.bg(table_row_bg(row_ix, cx))
+        } else {
+            row
+        }
     }
 
     fn render_td(

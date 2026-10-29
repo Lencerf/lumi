@@ -9,9 +9,9 @@ use gpui_kit::component::table::{
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, Focusable as _, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window,
-    div, px,
+    App, AppContext as _, Context, Div, Entity, EventEmitter, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
+    Styled as _, Subscription, Task, Window, div, px,
 };
 use lumi::web::Position;
 use rust_decimal::Decimal;
@@ -20,7 +20,7 @@ use crate::journal_report::{ActivateRow, OpenAccount};
 use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
 use crate::source::{LedgerSource, Positions};
-use crate::style::{interactive_button, table_card};
+use crate::style::{interactive_button, table_card, table_header, table_row_bg};
 
 /// The key context of the holdings table; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "HoldingsReport";
@@ -193,7 +193,7 @@ impl Render for HoldingsReport {
                         DataTable::new(&self.table)
                             .small()
                             .bordered(false)
-                            .stripe(true),
+                            .stripe(false),
                     ),
                 ),
             )
@@ -317,6 +317,28 @@ impl TableDelegate for HoldingsDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         self.columns[col_ix].clone()
+    }
+
+    fn render_header(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        table_header()
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let row = div().id(("row", row_ix));
+        if row_ix < self.holdings.len() {
+            row.bg(table_row_bg(row_ix, cx))
+        } else {
+            row
+        }
     }
 
     fn perform_sort(

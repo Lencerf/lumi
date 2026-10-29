@@ -14,7 +14,7 @@ use lumi::web::{TrieOptions, TrieTable};
 
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
-use crate::style::{interactive_button, table_card};
+use crate::style::{interactive_button, table_card, table_row_bg};
 
 /// A report made of account hierarchies with their balances, such as the
 /// balance sheet (Assets beside Liabilities and Equity) or the income
@@ -228,46 +228,27 @@ impl TrieReport {
                 let theme = cx.theme();
                 let mono = theme.mono_font_family.clone();
                 let border = theme.border;
-                let head_bg = theme.secondary;
-                let head_fg = theme.secondary_foreground;
-                let even_bg = theme.table;
-                let odd_bg = if theme.is_dark() {
-                    theme.muted.opacity(0.45)
-                } else {
-                    theme.muted
-                };
                 table_card(cx)
-                    .shadow_sm()
                     .child(
                         Table::new()
                             .small()
                             .accessibility_label(root)
                             .child(
-                                TableHeader::new()
-                                    .bg(head_bg)
-                                    .text_color(head_fg)
-                                    .font_medium()
-                                    .child(
-                                        TableRow::new()
-                                            .child(TableHead::new().min_w_40().child("Account"))
-                                            .children(presentation.currencies.iter().map(
-                                                |currency| {
-                                                    TableHead::new()
-                                                        .w_24()
-                                                        .text_right()
-                                                        .child(currency.clone())
-                                                },
-                                            )),
-                                    ),
+                                TableHeader::new().font_medium().child(
+                                    TableRow::new()
+                                        .child(TableHead::new().min_w_40().child("Account"))
+                                        .children(presentation.currencies.iter().map(|currency| {
+                                            TableHead::new()
+                                                .w_24()
+                                                .text_right()
+                                                .child(currency.clone())
+                                        })),
+                                ),
                             )
                             .child(TableBody::new().border_t_1().border_color(border).children(
                                 presentation.rows.iter().enumerate().map(|(row_ix, row)| {
                                     let account = row.account.clone();
-                                    let row_bg = if row_ix.is_multiple_of(2) {
-                                        even_bg
-                                    } else {
-                                        odd_bg
-                                    };
+                                    let row_bg = table_row_bg(row_ix, cx);
                                     TableRow::new()
                                         .bg(row_bg)
                                         .child(
