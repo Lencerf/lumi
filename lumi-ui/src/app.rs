@@ -25,7 +25,27 @@ use crate::session::LedgerSession;
 use crate::source::LedgerSource;
 use crate::trie_report::TrieReport;
 
-actions!(lumi_ui, [GoBack, OpenLedger, Refresh]);
+actions!(
+    lumi_ui,
+    [
+        CloseWindow,
+        GoBack,
+        Hide,
+        HideOthers,
+        Minimize,
+        OpenLedger,
+        Quit,
+        Refresh,
+        ShowAll,
+        ShowBalanceSheet,
+        ShowErrors,
+        ShowHoldings,
+        ShowIncome,
+        ShowJournal,
+        ToggleFullScreen,
+        Zoom,
+    ]
+);
 
 /// The key context of the application view; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "LumiApp";
@@ -157,6 +177,10 @@ impl LumiApp {
         self.ledger_name.as_ref()
     }
 
+    pub fn ledger_path(&self) -> Option<&SharedString> {
+        self.ledger_path.as_ref()
+    }
+
     pub fn session(&self) -> &Entity<LedgerSession> {
         &self.session
     }
@@ -188,6 +212,7 @@ impl LumiApp {
         let Some(opener) = self.path_opener.clone() else {
             return;
         };
+        cx.add_recent_document(path);
         let source = opener(path);
         let name = ledger_name_for_path(path);
         let full_path: SharedString = path.to_string_lossy().into_owned().into();
@@ -587,6 +612,17 @@ impl Render for LumiApp {
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::on_open_ledger))
             .on_action(cx.listener(Self::refresh))
+            .on_action(cx.listener(|this, _: &ShowBalanceSheet, _, cx| {
+                this.open_page(Page::BalanceSheet, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowIncome, _, cx| this.open_page(Page::Income, cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowJournal, _, cx| this.open_page(Page::Journal, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowHoldings, _, cx| this.open_page(Page::Holdings, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ShowErrors, _, cx| this.open_page(Page::Errors, cx)))
             .child(self.render_sidebar(cx))
             .child(
                 div()
