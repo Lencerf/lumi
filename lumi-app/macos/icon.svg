@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E3A8A"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Apple HIG 824x824 icon tile inside 1024x1024 canvas -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="104" y="104" width="816" height="816" rx="181" fill="none" stroke="#60A5FA" stroke-opacity="0.22" stroke-width="8"/>
+
+  <!-- Subtle shadow behind paper ledger card -->
+  <rect x="236" y="232" width="552" height="584" fill="#020617" fill-opacity="0.42"/>
+
+  <!-- Sharp-cornered paper ledger card -->
+  <rect x="236" y="216" width="552" height="584" fill="#FFFFFF"/>
+
+  <!-- Deeper grey header row -->
+  <rect x="236" y="216" width="552" height="108" fill="#E2E8F0"/>
+  <rect x="284" y="254" width="196" height="32" rx="16" fill="#1E293B"/>
+  <rect x="616" y="254" width="124" height="32" rx="16" fill="url(#accent)"/>
+
+  <!-- Alternating ledger rows -->
+  <rect x="236" y="324" width="552" height="118" fill="#FFFFFF"/>
+  <rect x="284" y="369" width="232" height="28" rx="14" fill="#334155"/>
+  <rect x="608" y="369" width="132" height="28" rx="14" fill="#0EA5E9"/>
+
+  <rect x="236" y="442" width="552" height="118" fill="#F1F5F9"/>
+  <rect x="284" y="487" width="184" height="28" rx="14" fill="#334155"/>
+  <rect x="632" y="487" width="108" height="28" rx="14" fill="#10B981"/>
+
+  <rect x="236" y="560" width="552" height="118" fill="#FFFFFF"/>
+  <rect x="284" y="605" width="256" height="28" rx="14" fill="#334155"/>
+  <rect x="596" y="605" width="144" height="28" rx="14" fill="#2563EB"/>
+
+  <rect x="236" y="678" width="552" height="122" fill="#F1F5F9"/>
+  <rect x="284" y="725" width="160" height="28" rx="14" fill="#0F172A"/>
+  <rect x="580" y="725" width="160" height="28" rx="14" fill="#0F172A"/>
+</svg>
