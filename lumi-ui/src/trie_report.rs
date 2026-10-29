@@ -225,54 +225,91 @@ impl TrieReport {
                 )
                 .into_any_element(),
             TrieLoad::Ready(presentation) => {
-                let mono = cx.theme().mono_font_family.clone();
-                Table::new()
-                    .small()
-                    .accessibility_label(root)
+                let theme = cx.theme();
+                let mono = theme.mono_font_family.clone();
+                let radius = theme.radius;
+                let border = theme.border;
+                let head_bg = theme.secondary;
+                let head_fg = theme.secondary_foreground;
+                let even_bg = theme.table;
+                let odd_bg = if theme.is_dark() {
+                    theme.muted.opacity(0.45)
+                } else {
+                    theme.muted
+                };
+                div()
+                    .rounded(radius)
+                    .border_1()
+                    .border_color(border)
+                    .shadow_sm()
                     .child(
-                        TableHeader::new().child(
-                            TableRow::new()
-                                .child(TableHead::new().min_w_40().child("Account"))
-                                .children(presentation.currencies.iter().map(|currency| {
-                                    TableHead::new().w_24().text_right().child(currency.clone())
-                                })),
-                        ),
-                    )
-                    .child(
-                        TableBody::new().children(presentation.rows.iter().map(|row| {
-                            let account = row.account.clone();
-                            TableRow::new()
-                                .child(
-                                    TableCell::new().child(
-                                        div().pl(rems(row.level as f32 * 1.25)).child(
-                                            // Opens the account's journal. Small,
-                                            // like the table, so the name is set
-                                            // like the numbers beside it.
-                                            interactive_button(
-                                                (ElementId::from("account"), row.account.clone()),
-                                                cx,
-                                            )
-                                            .font_family(mono.clone())
-                                            .when(row.level == 0, |this| this.font_semibold())
-                                            .label(row.name.clone())
-                                            .accessibility_label(row.account.clone())
-                                            .on_click(
-                                                cx.listener(move |this, _, _, cx| {
-                                                    this.open_account(account.clone(), cx)
-                                                }),
-                                            ),
-                                        ),
+                        Table::new()
+                            .small()
+                            .rounded(radius)
+                            .accessibility_label(root)
+                            .child(
+                                TableHeader::new()
+                                    .bg(head_bg)
+                                    .text_color(head_fg)
+                                    .font_medium()
+                                    .child(
+                                        TableRow::new()
+                                            .child(TableHead::new().min_w_40().child("Account"))
+                                            .children(presentation.currencies.iter().map(
+                                                |currency| {
+                                                    TableHead::new()
+                                                        .w_24()
+                                                        .text_right()
+                                                        .child(currency.clone())
+                                                },
+                                            )),
                                     ),
-                                )
-                                .children(row.numbers.iter().map(|number| {
-                                    TableCell::new()
-                                        .w_24()
-                                        .text_right()
-                                        .font_family(mono.clone())
-                                        .when(row.level == 0, |this| this.font_semibold())
-                                        .child(number.clone())
-                                }))
-                        })),
+                            )
+                            .child(TableBody::new().children(
+                                presentation.rows.iter().enumerate().map(|(row_ix, row)| {
+                                    let account = row.account.clone();
+                                    let row_bg = if row_ix.is_multiple_of(2) {
+                                        even_bg
+                                    } else {
+                                        odd_bg
+                                    };
+                                    TableRow::new()
+                                        .bg(row_bg)
+                                        .child(
+                                            TableCell::new().child(
+                                                div().pl(rems(row.level as f32 * 1.25)).child(
+                                                    // Opens the account's journal. Small,
+                                                    // like the table, so the name is set
+                                                    // like the numbers beside it.
+                                                    interactive_button(
+                                                        (
+                                                            ElementId::from("account"),
+                                                            row.account.clone(),
+                                                        ),
+                                                        cx,
+                                                    )
+                                                    .font_family(mono.clone())
+                                                    .when(row.level == 0, |this| {
+                                                        this.font_semibold()
+                                                    })
+                                                    .label(row.name.clone())
+                                                    .accessibility_label(row.account.clone())
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.open_account(account.clone(), cx)
+                                                    })),
+                                                ),
+                                            ),
+                                        )
+                                        .children(row.numbers.iter().map(|number| {
+                                            TableCell::new()
+                                                .w_24()
+                                                .text_right()
+                                                .font_family(mono.clone())
+                                                .when(row.level == 0, |this| this.font_semibold())
+                                                .child(number.clone())
+                                        }))
+                                }),
+                            )),
                     )
                     .into_any_element()
             }
