@@ -2,19 +2,20 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::pagination::Pagination;
 use gpui_kit::component::table::{
     Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
 };
-use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, Size, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Action, App, AppContext as _, Context, Div, ElementId, Entity, EventEmitter, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
-    Styled as _, Subscription, Task, Window, div, px,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    TestSupportExt as _, Window, div, px,
 };
 use lumi::TxnFlag;
 use lumi::web::{DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
@@ -198,8 +199,9 @@ impl JournalReport {
     fn set_show_postings(&mut self, show: bool, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            if delegate.expand_all != show {
+            if delegate.expand_all != show || (!show && !delegate.expanded.is_empty()) {
                 delegate.expand_all = show;
+                delegate.expanded.clear();
                 delegate.rebuild_rows();
                 cx.notify();
             }
@@ -208,11 +210,7 @@ impl JournalReport {
 
     fn toggle_postings(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
-            let delegate = table.delegate_mut();
-            if !delegate.expanded.remove(&entry_ix) {
-                delegate.expanded.insert(entry_ix);
-            }
-            delegate.rebuild_rows();
+            table.delegate_mut().toggle_entry(entry_ix);
             cx.notify();
         });
     }
@@ -417,7 +415,7 @@ impl Render for JournalReport {
                     .min_h_0()
                     .px_6()
                     .py_3()
-                    .child(DataTable::new(&self.table).small().stripe(true)),
+                    .child(DataTable::new(&self.table).small().stripe(false)),
             )
             .child(self.render_footer(cx))
     }
@@ -532,6 +530,18 @@ impl JournalDelegate {
     fn is_expanded(&self, entry_ix: usize) -> bool {
         self.expand_all || self.expanded.contains(&entry_ix)
     }
+
+    fn toggle_entry(&mut self, entry_ix: usize) {
+        if self.expand_all {
+            self.expand_all = false;
+            self.expanded = (0..self.entries.len())
+                .filter(|&ix| ix != entry_ix && self.entries[ix].txn.flag() != TxnFlag::Balance)
+                .collect();
+        } else if !self.expanded.remove(&entry_ix) {
+            self.expanded.insert(entry_ix);
+        }
+        self.rebuild_rows();
+    }
 }
 
 /// Non-zero amounts as `number currency`, joined by commas, by currency.
@@ -570,12 +580,22 @@ fn flag_text(flag: TxnFlag) -> &'static str {
     }
 }
 
-fn flag_color(flag: TxnFlag, cx: &App) -> gpui_kit::Hsla {
+fn flag_color(flag: TxnFlag, cx: &App) -> Hsla {
     match flag {
         TxnFlag::Posted => cx.theme().muted_foreground,
         TxnFlag::Pending => cx.theme().yellow,
         TxnFlag::Pad => cx.theme().cyan,
         TxnFlag::Balance => cx.theme().green,
+    }
+}
+
+/// Alternates background by transaction index so expanded posting sub-rows
+/// share the exact background color of their parent transaction row.
+fn entry_row_bg(entry_ix: usize, cx: &App) -> Hsla {
+    if entry_ix.is_multiple_of(2) {
+        cx.theme().table
+    } else {
+        cx.theme().table_even
     }
 }
 
@@ -616,11 +636,13 @@ impl TableDelegate for JournalDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        // The table also asks for the striped filler rows past the last row.
         let row = div().id(("row", row_ix));
-        match self.rows.get(row_ix) {
-            Some(JournalRow::Posting(..)) => row.text_color(cx.theme().muted_foreground),
-            _ => row,
+        match self.rows.get(row_ix).copied() {
+            Some(JournalRow::Transaction(entry_ix)) => row.bg(entry_row_bg(entry_ix, cx)),
+            Some(JournalRow::Posting(entry_ix, _)) => row
+                .bg(entry_row_bg(entry_ix, cx))
+                .text_color(cx.theme().muted_foreground),
+            None => row,
         }
     }
 
@@ -726,34 +748,30 @@ impl TableDelegate for JournalDelegate {
                             let expanded = self.is_expanded(entry_ix);
                             let tag_color = cx.theme().cyan;
                             let link_color = cx.theme().magenta;
+                            let cell_pad = Size::Small.table_cell_padding().left;
                             div()
+                                .id(("postings", entry_ix))
+                                .test_support()
+                                .role(Role::Button)
+                                .aria_label(if expanded {
+                                    "Hide postings"
+                                } else {
+                                    "Show postings"
+                                })
+                                .absolute()
+                                .inset_0()
+                                .px(cell_pad)
                                 .h_flex()
                                 .items_center()
                                 .gap_1()
-                                .child(
-                                    Button::new(("postings", entry_ix))
-                                        .ghost()
-                                        .xsmall()
-                                        .compact()
-                                        .icon(if expanded {
-                                            gpui_kit::component::IconName::ChevronDown
-                                        } else {
-                                            gpui_kit::component::IconName::ChevronRight
-                                        })
-                                        .accessibility_label(if expanded {
-                                            "Hide postings"
-                                        } else {
-                                            "Show postings"
-                                        })
-                                        .on_click(cx.listener(move |table, _, _, cx| {
-                                            let delegate = table.delegate_mut();
-                                            if !delegate.expanded.remove(&entry_ix) {
-                                                delegate.expanded.insert(entry_ix);
-                                            }
-                                            delegate.rebuild_rows();
-                                            cx.notify();
-                                        })),
-                                )
+                                .overflow_hidden()
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |table, _, _, cx| {
+                                    cx.stop_propagation();
+                                    table.clear_selection(cx);
+                                    table.delegate_mut().toggle_entry(entry_ix);
+                                    cx.notify();
+                                }))
                                 .when(!txn.payee().is_empty(), |this| {
                                     this.child(div().font_semibold().child(txn.payee().clone()))
                                 })
