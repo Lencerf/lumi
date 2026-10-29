@@ -353,12 +353,14 @@ impl TableDelegate for HoldingsDelegate {
     ) -> impl IntoElement {
         let holding = &self.holdings[row_ix];
         let mono = cx.theme().mono_font_family.clone();
+        // Every column is an identifier or a number, so all are monospaced.
+        let cell = div().font_family(mono);
         match self.columns[col_ix].key.as_ref() {
-            "account" => div().child(holding.account.clone()),
-            "units" => div().font_family(mono).child(holding.units.clone()),
-            "cost" => div().font_family(mono).child(holding.cost.clone()),
-            "acquired" => div().font_family(mono).child(holding.acquired.clone()),
-            "book_value" => div().font_family(mono).child(holding.book_value.clone()),
+            "account" => cell.child(holding.account.clone()),
+            "units" => cell.child(holding.units.clone()),
+            "cost" => cell.child(holding.cost.clone()),
+            "acquired" => cell.child(holding.acquired.clone()),
+            "book_value" => cell.child(holding.book_value.clone()),
             _ => div(),
         }
     }
