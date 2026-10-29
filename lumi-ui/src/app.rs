@@ -16,6 +16,7 @@ use gpui_kit::{
     SharedString, Styled as _, Subscription, Task, Window, actions, div,
 };
 
+use crate::entry_editor::EntryEditorLayer;
 use crate::errors_report::ErrorsReport;
 use crate::holdings_report::HoldingsReport;
 use crate::journal_report::JournalReport;
@@ -73,6 +74,7 @@ pub struct LumiApp {
     /// returning to one does not query the ledger again; cleared when
     /// switching to another root file.
     reports: HashMap<Page, Report>,
+    editor_layer: Entity<EntryEditorLayer>,
     focus_handle: FocusHandle,
     _open_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -104,6 +106,7 @@ impl LumiApp {
     /// one from the sidebar header or empty state.
     pub fn empty(page: Page, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let session = cx.new(|_| LedgerSession::empty());
+        let editor_layer = EntryEditorLayer::register(window, cx);
         let _subscriptions = vec![cx.observe(&session, |_, _, cx| cx.notify())];
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
@@ -116,6 +119,7 @@ impl LumiApp {
             page,
             back_stack: Vec::new(),
             reports: HashMap::new(),
+            editor_layer,
             focus_handle,
             _open_task: None,
             _subscriptions,
@@ -205,6 +209,8 @@ impl LumiApp {
         self.open_error = None;
         self.back_stack.clear();
         self.reports.clear();
+        self.editor_layer
+            .update(cx, |layer, cx| layer.close(window, cx));
         // When switching ledgers, an account page belonged to the previous
         // ledger's chart of accounts.
         if had_source && self.page.account().is_some() {
@@ -570,6 +576,7 @@ impl Render for LumiApp {
             self.render_empty_ledger(cx).into_any_element()
         };
         div()
+            .relative()
             .h_flex()
             .items_stretch()
             .size_full()
@@ -604,6 +611,7 @@ impl Render for LumiApp {
                     })
                     .child(div().flex_1().min_h_0().child(content)),
             )
+            .child(self.editor_layer.clone())
     }
 }
 
