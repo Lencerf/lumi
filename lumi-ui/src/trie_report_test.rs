@@ -225,6 +225,10 @@ async fn test_app_navigates_and_refreshes_through_the_ui(cx: &mut TestAppContext
         .unwrap();
         cx.run_until_parked();
         cx.read(|cx| assert_eq!(app.read(cx).page(), &page));
+        // Render the page with its data loaded; this also builds the
+        // accessibility tree, which rejects duplicate element identities.
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
     }
     cx.update_window(handle, |_, window, cx| {
         window.within("lumi-sidebar").click("0-0-0", cx);

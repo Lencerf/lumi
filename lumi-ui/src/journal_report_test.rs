@@ -133,6 +133,73 @@ fn test_activating_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn test_journal_pages(cx: &mut TestAppContext) {
+    let (session, report) = open_journal(Page::Journal, cx);
+    let dates = |report: &JournalReport, cx: &gpui_kit::App| -> Vec<String> {
+        report
+            .entries(cx)
+            .iter()
+            .map(|entry| entry.txn.date().to_string())
+            .collect()
+    };
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.page_number(cx), 1);
+        assert_eq!(report.page_size(cx), lumi::web::DEFAULT_ENTRIES_PER_PAGE);
+        assert_eq!(report.entries(cx).len(), 9);
+    });
+
+    // Four per page: 9 transactions make three pages, newest first.
+    report.update(cx, |report, cx| report.set_page_size(4, cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.page_number(cx), 1);
+        assert_eq!(
+            dates(report, cx),
+            ["2025-06-01", "2025-05-20", "2024-04-01", "2024-03-15"]
+        );
+    });
+    report.update(cx, |report, cx| report.open_page_number(3, cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.page_number(cx), 3);
+        assert_eq!(dates(report, cx), ["2024-01-01"]);
+        assert_eq!(report.total(cx), 9);
+    });
+
+    // Growing the page keeps the first shown transaction on the page.
+    report.update(cx, |report, cx| report.set_page_size(20, cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.page_number(cx), 1);
+        assert_eq!(report.entries(cx).len(), 9);
+    });
+
+    // A page past the end falls back to the last page.
+    report.update(cx, |report, cx| report.open_page_number(7, cx));
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(report.read(cx).page_number(cx), 1));
+
+    // A reload reads the current page again rather than starting over.
+    report.update(cx, |report, cx| report.set_page_size(4, cx));
+    report.update(cx, |report, cx| report.open_page_number(2, cx));
+    cx.run_until_parked();
+    session.update(cx, |session, cx| session.reload(cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.page_number(cx), 2);
+        assert_eq!(
+            dates(report, cx),
+            ["2024-03-01", "2024-02-10", "2024-02-03", "2024-01-15"]
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn test_account_journal_carries_running_balance(cx: &mut TestAppContext) {
     let (session, report) = open_journal(Page::Account("Assets:Cash".into()), cx);
     cx.read(|cx| {
@@ -152,6 +219,6 @@ fn test_account_journal_carries_running_balance(cx: &mut TestAppContext) {
     cx.read(|cx| {
         assert_eq!(session.read(cx).revision(), 2);
         assert_eq!(report.read(cx).total(cx), 3);
-        assert_eq!(report.read(cx).table.read(cx).delegate().loaded_pages, 1);
+        assert_eq!(report.read(cx).entries(cx).len(), 3);
     });
 }
