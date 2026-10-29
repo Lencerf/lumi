@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::table::TableDelegate as _;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
-    px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Entity, Styled as _, TestAppContext, WindowBounds,
+    WindowOptions, point, px, size,
 };
 use lumi::TxnFlag;
 
@@ -300,4 +302,99 @@ fn test_clicking_account_buttons_in_journal_opens_their_accounts(cx: &mut TestAp
     .unwrap();
     cx.run_until_parked();
     cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into())));
+}
+
+#[gpui_kit::test]
+fn test_description_cell_toggles_postings_and_sub_rows_match_parent_background(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // The clickable description target spans the entire Description cell, so a
+    // click near its right edge (past the narration text) expands and collapses
+    // the transaction's sub-rows.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let bounds = window.find(("postings", 0usize)).bounds();
+        assert_eq!(bounds.size.width, px(380.));
+        window.click_at(("postings", 0usize), point(px(340.), px(10.)), cx);
+        window.click_at(("postings", 1usize), point(px(340.), px(10.)), cx);
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        let table = report.read(cx).table.clone();
+        let even_bg = Some(cx.theme().table.into());
+        let odd_bg = Some(cx.theme().table_even.into());
+        {
+            let delegate = table.read(cx).delegate();
+            // Rows 0..=2 belong to transaction 0; rows 3..=5 belong to transaction 1.
+            assert_eq!(delegate.rows[0], JournalRow::Transaction(0));
+            assert_eq!(delegate.rows[1], JournalRow::Posting(0, 0));
+            assert_eq!(delegate.rows[2], JournalRow::Posting(0, 1));
+            assert_eq!(delegate.rows[3], JournalRow::Transaction(1));
+            assert_eq!(delegate.rows[4], JournalRow::Posting(1, 0));
+            assert_eq!(delegate.rows[5], JournalRow::Posting(1, 1));
+        }
+        for row_ix in 0..=2 {
+            let bg = table.update(cx, |state, cx| {
+                state
+                    .delegate_mut()
+                    .render_tr(row_ix, window, cx)
+                    .style()
+                    .background
+                    .clone()
+            });
+            assert_eq!(bg, even_bg);
+        }
+        for row_ix in 3..=5 {
+            let bg = table.update(cx, |state, cx| {
+                state
+                    .delegate_mut()
+                    .render_tr(row_ix, window, cx)
+                    .style()
+                    .background
+                    .clone()
+            });
+            assert_eq!(bg, odd_bg);
+        }
+
+        // Clicking the description cell again collapses its sub-rows.
+        window.render_frame(cx);
+        window.click_at(("postings", 0usize), point(px(340.), px(10.)), cx);
+    })
+    .unwrap();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        assert_eq!(
+            report.read(cx).table.read(cx).delegate().rows[1],
+            JournalRow::Transaction(1)
+        );
+    });
 }
