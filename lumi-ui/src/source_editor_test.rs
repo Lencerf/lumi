@@ -381,3 +381,154 @@ async fn test_source_editor_supports_highlighting_autocomplete_and_save_reloads_
         );
     });
 }
+
+#[gpui_kit::test]
+fn test_clicking_location_in_entry_editor_jumps_to_file_and_line_in_source_editor(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("jump-to-line");
+    fs::write(
+        &ledger.expenses_path,
+        "2025-01-10 * \"Blue Bottle\" \"Latte\" #coffee\n  Expenses:Food:Coffee   6.50 USD\n  Assets:Cash           -6.50 USD\n\n2025-01-20 * \"Tartine\" \"Croissant\"\n  Expenses:Food:Coffee   5.25 USD\n  Assets:Cash           -5.25 USD\n",
+    )
+    .unwrap();
+    fs::write(
+        &ledger.main_path,
+        "option \"title\" \"Multi-file ledger\"\noption \"operating_currency\" \"USD\"\n\ninclude \"accounts.bean\"\ninclude \"2025/expenses.bean\"\n\n2025-01-05 balance Assets:Cash 0 USD\n",
+    )
+    .unwrap();
+
+    // Start on Journal so `Page::Editor` has not been created yet.
+    cx.update(crate::init);
+    let root = ledger.main_str();
+    let (handle, app) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(root)),
+                        "main.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // Newest entry (row 0) is `"Croissant"` at `2025/expenses.bean:5`.
+    let expected_expenses_loc = format!("Open {}:5 in editor", ledger.expenses_str());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("open-in-editor").label(),
+            Some(expected_expenses_loc.as_str())
+        );
+        window.click("open-in-editor", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Dialog closes, app switches to Editor, selects `2025/expenses.bean`, and
+    // places the cursor on line 5 with focus in the editor.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("open-in-editor").is_none());
+        assert!(window.try_find_by_label("Entry text").is_none());
+        assert_eq!(
+            window.find("source-file-select").value(),
+            Some("2025/expenses.bean")
+        );
+        assert_eq!(window.find_by_label("Source text").focused(), Some(true));
+    })
+    .unwrap();
+    cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Editor);
+        let editor = app.read(cx).editor().expect("editor page is open");
+        assert_eq!(
+            editor.read(cx).selected_file().map(|s| s.as_ref()),
+            Some(ledger.expenses_str().as_str())
+        );
+        assert_eq!(editor.read(cx).cursor_line(cx), 5);
+    });
+
+    // Return to Journal while `SourceEditor` is already cached, open the
+    // oldest entry (`main.bean:7`), verify Duplicate hides the link, then jump
+    // from a fresh Edit Entry dialog to `main.bean` line 7.
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(ShowJournal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let expected_main_loc = format!("Open {}:7 in editor", ledger.main_str());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 2usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("open-in-editor").label(),
+            Some(expected_main_loc.as_str())
+        );
+        window.click("duplicate-entry", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("open-in-editor").is_none());
+        window.click("cancel", cx);
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 2usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-in-editor", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("source-file-select").value(), Some("main.bean"));
+        assert_eq!(window.find_by_label("Source text").focused(), Some(true));
+    })
+    .unwrap();
+    cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Editor);
+        let editor = app.read(cx).editor().expect("editor page is open");
+        assert_eq!(
+            editor.read(cx).selected_file().map(|s| s.as_ref()),
+            Some(ledger.main_str().as_str())
+        );
+        assert_eq!(editor.read(cx).cursor_line(cx), 7);
+    });
+}
