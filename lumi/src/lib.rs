@@ -4,6 +4,7 @@
 //! ledger files.
 #![doc(html_root_url = "https://docs.rs/lumi/0.1.0")]
 
+pub mod edit;
 mod ledger;
 mod options;
 pub mod parse;
