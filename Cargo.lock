@@ -4747,6 +4747,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
+ "lsp-types",
  "lumi",
  "rust_decimal",
  "serde",

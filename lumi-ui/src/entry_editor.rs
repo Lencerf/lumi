@@ -1,7 +1,10 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::input::{Editor, EditorState, Enter, Escape, InputEvent};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, StyledExt as _, WindowExt as _, h_flex,
@@ -14,8 +17,9 @@ use gpui_kit::{
 };
 use lumi::{Source, Transaction};
 
-use crate::highlight;
+use crate::completion::BeancountCompletionProvider;
 use crate::session::LedgerSession;
+use crate::{completion, highlight};
 
 actions!(lumi_ui, [SaveEntry]);
 
@@ -38,6 +42,9 @@ pub struct EntryEditor {
     /// When `true`, saving appends the text as a new entry in `source.file`
     /// rather than replacing the entry that was read.
     duplicating: bool,
+    /// Recorded before action dispatch on each keystroke so `Escape` dismisses
+    /// only an open completion menu instead of also cancelling the dialog.
+    dismissing_overlay: Rc<Cell<bool>>,
     pending: Option<PendingWrite>,
     error: Option<SharedString>,
     _task: Option<Task<()>>,
@@ -86,24 +93,47 @@ impl EntryEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let provider = BeancountCompletionProvider::new();
+        let provider_for_state = provider.clone();
         let text = cx.new(|cx| {
             let mut state = EditorState::new(window, cx).language(highlight::LANGUAGE);
             state.set_soft_wrap(false, window, cx);
             state.set_line_number(false, window, cx);
             state.set_folding(false, window, cx);
             state.set_highlighter_factory(highlight::highlighter_factory(), cx);
+            let lsp = state.lsp_mut();
+            lsp.completion_provider = Some(provider_for_state);
+            lsp.completion_menu.max_width = px(480.);
+            lsp.set_completion_highlighter(completion::highlighter());
             state
         });
-        let _subscriptions = vec![cx.subscribe(&text, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })];
+        let dismissing_overlay = Rc::new(Cell::new(false));
+        let _subscriptions = vec![
+            cx.subscribe(&text, |_, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            cx.intercept_keystrokes({
+                let text = text.downgrade();
+                let dismissing_overlay = dismissing_overlay.clone();
+                move |_, _, cx| {
+                    let open = text
+                        .read_with(cx, |state, _| state.completion_menu_state().open)
+                        .unwrap_or(false);
+                    dismissing_overlay.set(open);
+                }
+            }),
+        ];
         let ledger = session.read(cx).source().clone();
-        let task = ledger.entry_text(&source, cx);
+        let entry_task = ledger.entry_text(&source, cx);
+        let completions_task = ledger.completions(cx);
         let _task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
+            let (result, completions) = (entry_task.await, completions_task.await);
             this.update_in(cx, |this, window, cx| {
+                if let Ok(completions) = completions {
+                    provider.set_completions(completions);
+                }
                 match result {
                     Ok(text) => {
                         this.text.update(cx, |state, cx| {
@@ -124,6 +154,7 @@ impl EntryEditor {
             text,
             original: None,
             duplicating: false,
+            dismissing_overlay,
             pending: None,
             error: None,
             _task,
@@ -262,6 +293,14 @@ impl EntryEditor {
     fn on_save(&mut self, _: &SaveEntry, window: &mut Window, cx: &mut Context<Self>) {
         self.save(window, cx);
     }
+
+    fn on_editor_escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.dismissing_overlay.replace(false) {
+            cx.propagate();
+        }
+    }
+
+    fn on_editor_enter(&mut self, _: &Enter, _: &mut Window, _: &mut Context<Self>) {}
 }
 
 impl Render for EntryEditor {
@@ -274,6 +313,8 @@ impl Render for EntryEditor {
         div()
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::on_save))
+            .on_action(cx.listener(Self::on_editor_escape))
+            .on_action(cx.listener(Self::on_editor_enter))
             .v_flex()
             .gap_3()
             .child(

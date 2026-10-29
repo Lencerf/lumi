@@ -8,6 +8,7 @@
 
 mod app;
 mod assets;
+mod completion;
 mod entry_editor;
 mod errors_report;
 mod highlight;
@@ -31,6 +32,7 @@ pub use navigation::{Page, ReportEvent};
 pub use session::LedgerSession;
 pub use trie_report::TrieReport;
 
+use gpui_kit::component::input::ShowCompletions;
 use gpui_kit::{App, KeyBinding};
 
 /// Initializes GPUI Kit and registers the key bindings of the lumi views.
@@ -47,6 +49,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(open, OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new(refresh, Refresh, Some(app::KEY_CONTEXT)),
         KeyBinding::new(save, SaveEntry, Some(entry_editor::KEY_CONTEXT)),
+        KeyBinding::new(
+            "ctrl-space",
+            ShowCompletions,
+            Some(entry_editor::KEY_CONTEXT),
+        ),
         KeyBinding::new("enter", ActivateRow, Some(journal_report::KEY_CONTEXT)),
         KeyBinding::new("enter", ActivateRow, Some(holdings_report::KEY_CONTEXT)),
     ]);

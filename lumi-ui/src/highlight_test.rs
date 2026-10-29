@@ -59,7 +59,10 @@ fn assert_contiguous_coverage(range: &Range<usize>, runs: &[(Range<usize>, Highl
     for (ix, (run, _)) in runs.iter().enumerate() {
         assert!(run.start < run.end, "empty run at {ix}: {run:?}");
         if let Some((next, _)) = runs.get(ix + 1) {
-            assert_eq!(run.end, next.start, "gap or overlap between {run:?} and {next:?}");
+            assert_eq!(
+                run.end, next.start,
+                "gap or overlap between {run:?} and {next:?}"
+            );
         }
     }
 }
