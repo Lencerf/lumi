@@ -6,8 +6,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::sidebar::{
-    Sidebar, SidebarCollapsible, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
-    SidebarToggleButton,
+    Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -71,7 +70,6 @@ pub struct LumiApp {
     /// returning to one does not query the ledger again; cleared when
     /// switching to another root file.
     reports: HashMap<Page, Report>,
-    sidebar_collapsed: bool,
     focus_handle: FocusHandle,
     _open_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -114,7 +112,6 @@ impl LumiApp {
             open_error: None,
             page,
             reports: HashMap::new(),
-            sidebar_collapsed: false,
             focus_handle,
             _open_task: None,
             _subscriptions,
@@ -313,13 +310,7 @@ impl LumiApp {
         self.session.update(cx, |session, cx| session.reload(cx));
     }
 
-    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_collapsed = !self.sidebar_collapsed;
-        cx.notify();
-    }
-
     fn render_sidebar_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let collapsed = self.sidebar_collapsed;
         let can_open = self.path_opener.is_some();
         let file_label: SharedString = self
             .ledger_name
@@ -339,22 +330,20 @@ impl LumiApp {
         if !can_open {
             return SidebarHeader::new()
                 .child(badge)
-                .when(!collapsed, |this| {
-                    this.child(
-                        div()
-                            .v_flex()
-                            .flex_1()
-                            .overflow_hidden()
-                            .child(div().font_semibold().child("Lumi"))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .truncate()
-                                    .child(file_label),
-                            ),
-                    )
-                })
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .overflow_hidden()
+                        .child(div().font_semibold().child("Lumi"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate()
+                                .child(file_label),
+                        ),
+                )
                 .into_any_element();
         }
 
@@ -370,7 +359,7 @@ impl LumiApp {
             .ghost()
             .w_full()
             .h_auto()
-            .map(|this| if collapsed { this.p_0() } else { this.p_2() })
+            .p_2()
             .accessibility_label(aria_label)
             .tooltip_with_action(tooltip, &OpenLedger, Some(KEY_CONTEXT))
             .on_click(cx.listener(|this, _, window, cx| this.prompt_open_ledger(window, cx)))
@@ -381,50 +370,45 @@ impl LumiApp {
                     .items_center()
                     .gap_2()
                     .child(badge)
-                    .when(!collapsed, |this| {
-                        this.child(
-                            div()
-                                .v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .items_start()
-                                .overflow_hidden()
-                                .child(
-                                    div()
-                                        .font_semibold()
-                                        .text_color(cx.theme().sidebar_foreground)
-                                        .child("Lumi"),
-                                )
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .text_xs()
-                                        .text_left()
-                                        .text_color(cx.theme().blue)
-                                        .when(self.ledger_name.is_some(), |this| {
-                                            this.font_family(cx.theme().mono_font_family.clone())
-                                        })
-                                        .truncate()
-                                        .child(file_label),
-                                ),
-                        )
-                        .child(
-                            Icon::new(IconName::FolderOpen)
-                                .size_4()
-                                .flex_shrink_0()
-                                .text_color(cx.theme().blue),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .items_start()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .font_semibold()
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .child("Lumi"),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_xs()
+                                    .text_left()
+                                    .text_color(cx.theme().blue)
+                                    .when(self.ledger_name.is_some(), |this| {
+                                        this.font_family(cx.theme().mono_font_family.clone())
+                                    })
+                                    .truncate()
+                                    .child(file_label),
+                            ),
+                    )
+                    .child(
+                        Icon::new(IconName::FolderOpen)
+                            .size_4()
+                            .flex_shrink_0()
+                            .text_color(cx.theme().blue),
+                    ),
             )
             .into_any_element()
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let collapsed = self.sidebar_collapsed;
         Sidebar::new("lumi-sidebar")
-            .collapsible(SidebarCollapsible::Icon)
-            .collapsed(collapsed)
-            .w_64()
+            .w_48()
             .header(self.render_sidebar_header(cx))
             .child(
                 SidebarGroup::new("Reports").child(SidebarMenu::new().children(
@@ -457,27 +441,16 @@ impl LumiApp {
             .border_color(cx.theme().border)
             .child(
                 div()
-                    .h_flex()
-                    .items_center()
-                    .gap_3()
+                    .text_lg()
+                    .font_semibold()
                     .min_w_0()
-                    .child(
-                        SidebarToggleButton::new()
-                            .collapsed(self.sidebar_collapsed)
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
-                    )
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_semibold()
-                            .truncate()
-                            // An account name is an identifier, set in the
-                            // monospace face wherever it appears.
-                            .when(self.page.account().is_some(), |this| {
-                                this.font_family(cx.theme().mono_font_family.clone())
-                            })
-                            .child(self.page.title()),
-                    ),
+                    .truncate()
+                    // An account name is an identifier, set in the
+                    // monospace face wherever it appears.
+                    .when(self.page.account().is_some(), |this| {
+                        this.font_family(cx.theme().mono_font_family.clone())
+                    })
+                    .child(self.page.title()),
             )
             .child(
                 Button::new("refresh")
