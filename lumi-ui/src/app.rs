@@ -17,7 +17,7 @@ use gpui_kit::{
     SharedString, Styled as _, Subscription, Task, Window, actions, div,
 };
 
-use crate::entry_editor::EntryEditorLayer;
+use crate::entry_editor::{EntryEditorLayer, OpenSource};
 use crate::errors_report::ErrorsReport;
 use crate::holdings_report::HoldingsReport;
 use crate::journal_report::JournalReport;
@@ -130,7 +130,10 @@ impl LumiApp {
     pub fn empty(page: Page, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let session = cx.new(|_| LedgerSession::empty());
         let editor_layer = EntryEditorLayer::register(window, cx);
-        let _subscriptions = vec![cx.observe(&session, |_, _, cx| cx.notify())];
+        let _subscriptions = vec![
+            cx.observe(&session, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&editor_layer, window, Self::on_open_source),
+        ];
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         Self {
@@ -371,6 +374,24 @@ impl LumiApp {
                     cx.notify();
                 }
             }
+        }
+    }
+
+    fn on_open_source(
+        &mut self,
+        _: &Entity<EntryEditorLayer>,
+        event: &OpenSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_page(Page::Editor, window, cx);
+        if let Ok(editor) = self
+            .report(&Page::Editor, window, cx)
+            .downcast::<SourceEditor>()
+        {
+            editor.update(cx, |editor, cx| {
+                editor.open_location(event.file.clone(), event.line, window, cx)
+            });
         }
     }
 

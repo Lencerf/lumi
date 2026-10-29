@@ -13,7 +13,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Context, Empty, Entity, EntityId, Global,
+    AnyWindowHandle, App, AppContext as _, Context, Empty, Entity, EntityId, EventEmitter, Global,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     Subscription, Task, WeakEntity, WeakFocusHandle, Window, actions, div, px,
 };
@@ -21,9 +21,17 @@ use lumi::{Source, Transaction};
 
 use crate::completion::BeancountCompletionProvider;
 use crate::session::LedgerSession;
+use crate::style::interactive_button;
 use crate::{completion, highlight};
 
 actions!(lumi_ui, [CancelEntry, SaveEntry]);
+
+/// Request from [`EntryEditor`] to open `file` at 1-based `line` in [`crate::SourceEditor`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OpenSource {
+    pub(crate) file: SharedString,
+    pub(crate) line: usize,
+}
 
 /// The key context of the entry editor; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "EntryEditor";
@@ -69,7 +77,7 @@ impl Global for EntryEditorRegistry {}
 struct ActiveEditor {
     editor: Entity<EntryEditor>,
     previous_focus: Option<WeakFocusHandle>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 /// Modal layer mounted inside [`crate::LumiApp`] in the base draw pass so that
@@ -78,6 +86,8 @@ struct ActiveEditor {
 pub(crate) struct EntryEditorLayer {
     active: Option<ActiveEditor>,
 }
+
+impl EventEmitter<OpenSource> for EntryEditorLayer {}
 
 impl EntryEditorLayer {
     pub(crate) fn is_open(&self) -> bool {
@@ -110,11 +120,19 @@ impl EntryEditorLayer {
                 .take()
                 .and_then(|prev| prev.previous_focus)
                 .or(previous_focus);
-            let subscription = cx.observe(&editor, |_, _, cx| cx.notify());
+            let subscriptions = [
+                cx.observe(&editor, |_, _, cx| cx.notify()),
+                cx.subscribe(&editor, |this, _, event: &OpenSource, cx| {
+                    let event = event.clone();
+                    this.active = None;
+                    cx.notify();
+                    cx.emit(event);
+                }),
+            ];
             this.active = Some(ActiveEditor {
                 editor,
                 previous_focus,
-                _subscription: subscription,
+                _subscriptions: subscriptions,
             });
             cx.notify();
         });
@@ -444,6 +462,18 @@ impl EntryEditor {
         EntryEditorLayer::close_editor(cx.entity().entity_id(), window, cx);
     }
 
+    /// Closes the dialog and asks the application to open `source.file` in the
+    /// built-in editor with the cursor at `source.start.line`.
+    pub fn open_in_editor(&mut self, cx: &mut Context<Self>) {
+        if self.duplicating || self.pending.is_some() {
+            return;
+        }
+        cx.emit(OpenSource {
+            file: self.source.file.as_str().into(),
+            line: self.source.start.line,
+        });
+    }
+
     fn on_save(&mut self, _: &SaveEntry, window: &mut Window, cx: &mut Context<Self>) {
         self.save(window, cx);
     }
@@ -461,6 +491,8 @@ impl EntryEditor {
     fn on_editor_enter(&mut self, _: &Enter, _: &mut Window, _: &mut Context<Self>) {}
 }
 
+impl EventEmitter<OpenSource> for EntryEditor {}
+
 impl Render for EntryEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loaded = self.original.is_some();
@@ -476,13 +508,27 @@ impl Render for EntryEditor {
             .on_action(cx.listener(Self::on_editor_enter))
             .v_flex()
             .gap_3()
-            .child(
+            .child(if self.duplicating {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .font_family(cx.theme().mono_font_family.clone())
-                    .child(self.location()),
-            )
+                    .child(self.location())
+                    .into_any_element()
+            } else {
+                let location = self.location();
+                h_flex()
+                    .child(
+                        interactive_button("open-in-editor", cx)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .label(location.clone())
+                            .accessibility_label(format!("Open {location} in editor"))
+                            .tooltip("Open in editor")
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_in_editor(cx))),
+                    )
+                    .into_any_element()
+            })
             .child(
                 div()
                     .relative()

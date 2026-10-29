@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Editor, EditorState, InputEvent, Search};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent, Position, RopeExt as _, Search};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
@@ -79,6 +79,8 @@ pub struct SourceEditor {
     original: Option<SharedString>,
     /// Unsaved buffers for non-active files when switching files in the dropdown.
     drafts: HashMap<SharedString, Draft>,
+    /// 1-based line number to place the cursor on once `selected_file` loads.
+    pending_line: Option<usize>,
     loading_file: bool,
     saving: bool,
     error: Option<SharedString>,
@@ -134,6 +136,7 @@ impl SourceEditor {
             selected_file: None,
             original: None,
             drafts: HashMap::new(),
+            pending_line: None,
             loading_file: false,
             saving: false,
             error: None,
@@ -161,6 +164,11 @@ impl SourceEditor {
     /// The current editor buffer contents.
     pub fn value(&self, cx: &App) -> SharedString {
         self.text.read(cx).value()
+    }
+
+    /// The 1-based line number of the active cursor in the editor.
+    pub fn cursor_line(&self, cx: &App) -> usize {
+        self.text.read(cx).cursor_position().line as usize + 1
     }
 
     /// Whether the active file has unsaved modifications.
@@ -202,6 +210,35 @@ impl SourceEditor {
         if !self.files.contains(&path) {
             return;
         }
+        self.pending_line = None;
+        self.file_select.update(cx, |select, cx| {
+            select.set_selected_value(&path, window, cx)
+        });
+        self.switch_to_file(path, true, window, cx);
+    }
+
+    /// Selects `path` in the source editor and moves the cursor to the start of
+    /// 1-based `line`, scrolling that line into view once the file is loaded.
+    pub fn open_location(
+        &mut self,
+        path: impl Into<SharedString>,
+        line: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path: SharedString = path.into();
+        if self.files.is_empty() {
+            // The initial `source.files()` query is still in flight; record the
+            // target file and line so `on_session_changed` selects and jumps to
+            // it as soon as the file list and text arrive.
+            self.selected_file = Some(path);
+            self.pending_line = Some(line);
+            return;
+        }
+        if !self.files.contains(&path) {
+            return;
+        }
+        self.pending_line = Some(line);
         self.file_select.update(cx, |select, cx| {
             select.set_selected_value(&path, window, cx)
         });
@@ -218,6 +255,7 @@ impl SourceEditor {
         let SelectEvent::Confirm(Some(path)) = event else {
             return;
         };
+        self.pending_line = None;
         self.switch_to_file(path.clone(), true, window, cx);
     }
 
@@ -229,8 +267,12 @@ impl SourceEditor {
         cx: &mut Context<Self>,
     ) {
         if self.selected_file.as_ref() == Some(&path) {
-            if focus_editor {
-                self.text.update(cx, |state, cx| state.focus(window, cx));
+            if !self.loading_file {
+                if let Some(line) = self.pending_line.take() {
+                    move_cursor_to_line(&self.text, line, window, cx);
+                } else if focus_editor {
+                    self.text.update(cx, |state, cx| state.focus(window, cx));
+                }
             }
             return;
         }
@@ -259,12 +301,13 @@ impl SourceEditor {
             self._file_task = None;
             self.loading_file = false;
             self.original = Some(draft.original);
-            self.text.update(cx, |state, cx| {
-                state.set_value(draft.text, window, cx);
-                if focus_editor {
-                    state.focus(window, cx);
-                }
-            });
+            self.text
+                .update(cx, |state, cx| state.set_value(draft.text, window, cx));
+            if let Some(line) = self.pending_line.take() {
+                move_cursor_to_line(&self.text, line, window, cx);
+            } else if focus_editor {
+                self.text.update(cx, |state, cx| state.focus(window, cx));
+            }
             cx.notify();
             return;
         }
@@ -302,12 +345,15 @@ impl SourceEditor {
                     Ok(raw_files) => {
                         let items = build_file_items(&raw_files);
                         this.files = items.iter().map(|item| item.path.clone()).collect();
-                        let target = this
-                            .selected_file
+                        let requested = this.selected_file.clone();
+                        let target = requested
                             .as_ref()
                             .filter(|selected| this.files.contains(selected))
                             .cloned()
                             .or_else(|| this.files.first().cloned());
+                        if target != requested {
+                            this.pending_line = None;
+                        }
                         let selected_ix = target
                             .as_ref()
                             .and_then(|t| this.files.iter().position(|f| f == t))
@@ -329,6 +375,7 @@ impl SourceEditor {
                         } else {
                             this.selected_file = None;
                             this.original = None;
+                            this.pending_line = None;
                         }
                     }
                     Err(error) => this.error = Some(format!("{error:#}").into()),
@@ -364,12 +411,11 @@ impl SourceEditor {
                             && this.text.read(cx).value().as_ref() == content.as_str();
                         this.original = Some(content.clone().into());
                         if !already_matches {
-                            this.text.update(cx, |state, cx| {
-                                state.set_value(content, window, cx);
-                                if focus_editor {
-                                    state.focus(window, cx);
-                                }
-                            });
+                            this.text
+                                .update(cx, |state, cx| state.set_value(content, window, cx));
+                        }
+                        if let Some(line) = this.pending_line.take() {
+                            move_cursor_to_line(&this.text, line, window, cx);
                         } else if focus_editor {
                             this.text.update(cx, |state, cx| state.focus(window, cx));
                         }
@@ -594,3 +640,27 @@ impl Render for SourceEditor {
 #[cfg(test)]
 #[path = "source_editor_test.rs"]
 mod tests;
+
+fn move_cursor_to_line(text: &Entity<EditorState>, line: usize, window: &mut Window, cx: &mut App) {
+    let target_line = line.saturating_sub(1) as u32;
+    let applied = text.update(cx, |state, cx| {
+        let last_line = state.text().lines_len().saturating_sub(1) as u32;
+        let pos = Position::new(target_line.min(last_line), 0);
+        state.set_cursor_position(pos, window, cx);
+        pos
+    });
+    // `scroll_to` inside `set_cursor_position` requires a completed layout pass
+    // (`last_layout` / `last_bounds`) for the current buffer. Re-applying once
+    // on the next frame guarantees the viewport scrolls to `applied` even when
+    // `Page::Editor` or the target file is painted for the first time.
+    let weak = text.downgrade();
+    window.on_next_frame(move |window, cx| {
+        if let Some(text) = weak.upgrade() {
+            text.update(cx, |state, cx| {
+                if state.cursor_position() == applied {
+                    state.set_cursor_position(applied, window, cx);
+                }
+            });
+        }
+    });
+}
