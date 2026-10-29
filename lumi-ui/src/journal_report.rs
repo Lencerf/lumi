@@ -20,8 +20,8 @@ use gpui_kit::{
     Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     TestSupportExt as _, Window, div, px,
 };
-use lumi::TxnFlag;
 use lumi::web::{DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
+use lumi::{Source, TxnFlag};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
@@ -46,6 +46,12 @@ pub struct TogglePostings(pub usize);
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = lumi_ui, no_json)]
 pub struct EditEntry(pub usize);
+
+/// Clears active filters, jumps to the unfiltered page containing the
+/// transaction at the given entry index, and selects its row.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = lumi_ui, no_json)]
+pub struct ShowInContext(pub usize);
 
 /// Activates the selected row: toggles a transaction's postings, or opens a
 /// posting's account. Bound to Enter.
@@ -413,6 +419,45 @@ impl JournalReport {
         EntryEditor::open(&txn, self.session.clone(), window, cx);
     }
 
+    /// Clears the search query and record-type filter, navigates to the page
+    /// containing `entry_ix`, and selects its row in the table.
+    pub fn show_in_context(
+        &mut self,
+        entry_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = self
+            .table
+            .read(cx)
+            .delegate()
+            .entries
+            .get(entry_ix)
+            .map(|entry| entry.txn.src().clone())
+        else {
+            return;
+        };
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            delegate.query = SharedString::default();
+            delegate.visible_flags = RECORD_TYPES.iter().map(|(flag, _, _)| *flag).collect();
+            delegate.load_context_page(target, cx);
+        });
+        self.search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        let table_focus = self.table.read(cx).focus_handle(cx);
+        table_focus.focus(window, cx);
+    }
+
+    fn on_show_in_context(
+        &mut self,
+        action: &ShowInContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_in_context(action.0, window, cx);
+    }
+
     fn on_table_event(
         &mut self,
         _: Entity<TableState<JournalDelegate>>,
@@ -514,6 +559,7 @@ impl Render for JournalReport {
             .on_action(cx.listener(Self::on_open_account))
             .on_action(cx.listener(Self::on_toggle_postings))
             .on_action(cx.listener(Self::on_edit_entry))
+            .on_action(cx.listener(Self::on_show_in_context))
             .on_action(cx.listener(|this, _: &Search, window, cx| this.focus_search(window, cx)))
             .child(
                 div()
@@ -705,6 +751,94 @@ impl JournalDelegate {
         cx.notify();
     }
 
+    /// Resolves the unfiltered page containing `target`, loads that page, and
+    /// selects + scrolls to `target`'s row once its entries arrive.
+    fn load_context_page(&mut self, target: Source, cx: &mut Context<TableState<Self>>) {
+        self.loading = true;
+        self.failed = None;
+        self.generation += 1;
+        let generation = self.generation;
+        let base_options = FilterOptions {
+            entries: Some(self.page_size),
+            old_first: Some(self.old_first),
+            ..Default::default()
+        };
+        let page_task =
+            self.source
+                .journal_page_of(self.account.as_deref(), &base_options, &target, cx);
+        self._load_task = Some(cx.spawn(async move |table, cx| {
+            let page = match page_task.await {
+                Ok(page) => page.unwrap_or(1),
+                Err(error) => {
+                    table
+                        .update(cx, |table, cx| {
+                            let delegate = table.delegate_mut();
+                            if delegate.generation != generation {
+                                return;
+                            }
+                            delegate.loading = false;
+                            delegate.failed = Some(format!("{error:#}").into());
+                            cx.notify();
+                        })
+                        .ok();
+                    return;
+                }
+            };
+            let Some(journal_task) = table
+                .update(cx, |table, cx| {
+                    let delegate = table.delegate_mut();
+                    if delegate.generation != generation {
+                        return None;
+                    }
+                    delegate.page = page;
+                    let options = FilterOptions {
+                        entries: Some(delegate.page_size),
+                        page: Some(page),
+                        old_first: Some(delegate.old_first),
+                        ..Default::default()
+                    };
+                    Some(
+                        delegate
+                            .source
+                            .journal(delegate.account.as_deref(), &options, cx),
+                    )
+                })
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
+            let result = journal_task.await;
+            table
+                .update(cx, |table, cx| {
+                    let delegate = table.delegate_mut();
+                    if delegate.generation != generation {
+                        return;
+                    }
+                    delegate.loading = false;
+                    match result {
+                        Ok((entries, total)) => {
+                            delegate.total = total;
+                            delegate.entries = entries;
+                            delegate.expanded.clear();
+                            delegate.rebuild_rows();
+                            if let Some(row_ix) = delegate.rows.iter().position(|row| {
+                                matches!(row, JournalRow::Transaction(ix)
+                                    if delegate.entries[*ix].txn.src() == &target)
+                            }) {
+                                table.set_selected_row(row_ix, cx);
+                                table.scroll_to_row(row_ix, cx);
+                            }
+                        }
+                        Err(error) => delegate.failed = Some(format!("{error:#}").into()),
+                    }
+                    cx.notify();
+                })
+                .ok();
+        }));
+        cx.notify();
+    }
+
     /// Lays the entries out as rows: a transaction, then its postings when
     /// they are shown. A balance assertion has nothing to expand.
     fn rebuild_rows(&mut self) {
@@ -849,21 +983,24 @@ impl TableDelegate for JournalDelegate {
         match self.rows.get(row_ix) {
             Some(&JournalRow::Transaction(entry_ix)) => {
                 let menu = menu.menu("Edit entry", Box::new(EditEntry(entry_ix)));
-                if self.entries[entry_ix].txn.flag() == TxnFlag::Balance {
-                    return menu;
-                }
-                let label = if self.is_expanded(entry_ix) {
-                    "Hide postings"
+                let menu = if self.entries[entry_ix].txn.flag() == TxnFlag::Balance {
+                    menu
                 } else {
-                    "Show postings"
+                    let label = if self.is_expanded(entry_ix) {
+                        "Hide postings"
+                    } else {
+                        "Show postings"
+                    };
+                    menu.menu(label, Box::new(TogglePostings(entry_ix)))
                 };
-                menu.menu(label, Box::new(TogglePostings(entry_ix)))
+                menu.menu("Show in context", Box::new(ShowInContext(entry_ix)))
             }
             Some(&JournalRow::Posting(entry_ix, posting_ix)) => {
                 let account = self.entries[entry_ix].txn.postings()[posting_ix]
                     .account
                     .to_string();
                 menu.menu("Open account", Box::new(OpenAccount(account.into())))
+                    .menu("Show in context", Box::new(ShowInContext(entry_ix)))
             }
             _ => menu,
         }

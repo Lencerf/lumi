@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rust_decimal::Decimal;
 
 use crate::Ledger;
-use crate::query::{completions, journal, positions, trie, trie_table};
+use crate::query::{completions, journal, journal_page_of, positions, trie, trie_table};
 use crate::web::{FilterOptions, TrieOptions};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/query_test.bean");
@@ -504,4 +504,54 @@ poptag #coffee-run
     assert_eq!(got.links, ["^inv-1", "^inv-2"]);
     // Used currencies (USD, EUR from @ price) come before declared-only (CHF, GBP).
     assert_eq!(got.currencies, ["USD", "EUR", "CHF", "GBP"]);
+}
+
+#[test]
+fn test_journal_page_of_locates_entry_in_both_sort_orders_and_account_scope() {
+    let ledger = fixture();
+    let newest = FilterOptions {
+        entries: Some(2),
+        old_first: Some(false),
+        ..Default::default()
+    };
+    let oldest = FilterOptions {
+        entries: Some(2),
+        old_first: Some(true),
+        ..Default::default()
+    };
+
+    // Every transaction in the 9-entry fixture resolves to the exact page whose
+    // returned slice contains it, in both newest-first and oldest-first order.
+    for txn in ledger.txns() {
+        for opts in [&newest, &oldest] {
+            let page_num = journal_page_of(&ledger, None, opts, txn.src())
+                .expect("fixture transaction must be found");
+            let mut page_opts = opts.clone();
+            page_opts.page = Some(page_num);
+            let (items, _) = journal(&ledger, None, &page_opts);
+            assert!(
+                items.iter().any(|item| item.txn.src() == txn.src()),
+                "entry at {} missing from resolved page {page_num}",
+                txn.src()
+            );
+        }
+    }
+
+    // Scoped to `Assets:Cash` (3 entries: 2024-01-01, 2024-02-10, 2024-03-15),
+    // with 2 per page newest-first: Opening balances (2024-01-01) is on page 2,
+    // while an unrelated entry (`Buy shares`) returns None.
+    let opening = &ledger.txns()[0];
+    assert_eq!(
+        journal_page_of(&ledger, Some("Assets:Cash"), &newest, opening.src()),
+        Some(2)
+    );
+    let buy_vti = ledger
+        .txns()
+        .iter()
+        .find(|txn| txn.narration() == "Buy shares")
+        .unwrap();
+    assert_eq!(
+        journal_page_of(&ledger, Some("Assets:Cash"), &newest, buy_vti.src()),
+        None
+    );
 }

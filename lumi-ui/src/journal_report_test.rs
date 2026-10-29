@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::table::TableDelegate as _;
-use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, Styled as _, TestAppContext, WindowBounds,
     WindowOptions, point, px, size,
@@ -584,5 +584,135 @@ fn test_record_type_selector_toggles_entry_flags_and_resets_all(cx: &mut TestApp
         let report = app.read(cx).journal().expect("journal is shown");
         assert_eq!(report.read(cx).visible_flags(cx).len(), 4);
         assert_eq!(report.read(cx).total(cx), 9);
+    });
+}
+
+#[gpui_kit::test]
+fn test_show_in_context_clears_filters_and_locates_entry_page(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // Two rows per page splits the 9-entry fixture into 5 pages (newest first:
+    // page 1 has 2025-06-01 & 2025-05-20; page 2 has 2024-04-01 & 2024-03-15;
+    // page 5 has 2024-01-01 "Opening balances").
+    let report = cx.read(|cx| app.read(cx).journal().expect("journal is shown"));
+    report.update(cx, |report, cx| report.set_page_size(2, cx));
+    cx.run_until_parked();
+
+    // Filter out balance assertions AND search for "Opening balances" so only
+    // 1 entry is shown on page 1.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((gpui_kit::ElementId::from("record-type"), "bal"), cx);
+        report.update(cx, |report, cx| {
+            report.set_search_query("opening balances", window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.total(cx), 1);
+        assert_eq!(report.page_number(cx), 1);
+        assert_eq!(report.entries(cx)[0].txn.narration(), "Opening balances");
+    });
+
+    // Right-click the description of the record and choose "Show in context".
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("postings", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let mut menu = window.within("popup-menu");
+        assert!(menu.try_find_by_label("Edit entry").is_some());
+        assert!(menu.try_find_by_label("Show postings").is_some());
+        let item_id = menu
+            .find_by_label("Show in context")
+            .path()
+            .last()
+            .unwrap()
+            .clone();
+        menu.click(item_id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Search and record-type filters are cleared, all 9 entries are back, and
+    // the table jumps to page 5 with "Opening balances" selected.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find_by_label("Search entries").value(), Some(""));
+    })
+    .unwrap();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.search_query(cx), "");
+        assert_eq!(report.visible_flags(cx).len(), 4);
+        assert_eq!(report.total(cx), 9);
+        assert_eq!(report.page_number(cx), 5);
+        assert_eq!(report.entries(cx)[0].txn.narration(), "Opening balances");
+        assert_eq!(report.table.read(cx).selected_row(), Some(0));
+    });
+
+    // Also verify on a balance assertion: isolate `bal`, right-click its
+    // description, and "Show in context" lands on page 2 with row 1 selected.
+    report.update(cx, |report, cx| {
+        report.set_visible_flags([TxnFlag::Balance], cx);
+    });
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("balance-account", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let mut menu = window.within("popup-menu");
+        assert!(menu.try_find_by_label("Edit entry").is_some());
+        let item_id = menu
+            .find_by_label("Show in context")
+            .path()
+            .last()
+            .unwrap()
+            .clone();
+        menu.click(item_id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.visible_flags(cx).len(), 4);
+        assert_eq!(report.total(cx), 9);
+        assert_eq!(report.page_number(cx), 2);
+        assert_eq!(report.entries(cx)[1].txn.flag(), TxnFlag::Balance);
+        assert_eq!(report.table.read(cx).selected_row(), Some(1));
     });
 }

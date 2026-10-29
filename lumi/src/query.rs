@@ -14,7 +14,7 @@ use crate::web::{
     Completions, DEFAULT_ENTRIES_PER_PAGE, FilterOptions, JournalItem, Position, TrieNode,
     TrieOptions, TrieTable, TrieTableRow,
 };
-use crate::{BalanceSheet, Ledger, Transaction, TxnFlag};
+use crate::{BalanceSheet, Ledger, Source, Transaction, TxnFlag};
 
 /// Flattens a balance sheet into the list of positions held by each account.
 ///
@@ -253,6 +253,35 @@ fn update_balance<'t>(
 /// transactions matching the query across all pages.
 pub type JournalPage<'t> = (Vec<JournalItem<&'t str, &'t Transaction>>, usize);
 
+fn matching_txns<'t>(
+    ledger: &'t Ledger,
+    account: Option<&str>,
+    options: &FilterOptions,
+) -> Vec<&'t Transaction> {
+    let year = options
+        .time
+        .as_ref()
+        .and_then(|time| time.parse::<i32>().ok());
+    let terms = query_terms(options.query.as_deref());
+    let allowed_flags = parse_flag_filter(options.flags.as_deref());
+    ledger
+        .txns()
+        .iter()
+        .filter(|txn| {
+            account.is_none_or(|account| touches_account(txn, account))
+                && options
+                    .account
+                    .as_deref()
+                    .is_none_or(|account| touches_account(txn, account))
+                && year.is_none_or(|year| txn.date().year() == year)
+                && allowed_flags
+                    .as_ref()
+                    .is_none_or(|flags| flags.contains(&txn.flag()))
+                && txn_matches_query(txn, &terms)
+        })
+        .collect()
+}
+
 /// Returns one page of the journal and the total number of matching
 /// transactions.
 ///
@@ -266,25 +295,7 @@ pub fn journal<'t>(
     account: Option<&str>,
     options: &FilterOptions,
 ) -> JournalPage<'t> {
-    let year = options
-        .time
-        .as_ref()
-        .and_then(|time| time.parse::<i32>().ok());
-    let terms = query_terms(options.query.as_deref());
-    let allowed_flags = parse_flag_filter(options.flags.as_deref());
-    let matches = |txn: &Transaction| {
-        account.is_none_or(|account| touches_account(txn, account))
-            && options
-                .account
-                .as_deref()
-                .is_none_or(|account| touches_account(txn, account))
-            && year.is_none_or(|year| txn.date().year() == year)
-            && allowed_flags
-                .as_ref()
-                .is_none_or(|flags| flags.contains(&txn.flag()))
-            && txn_matches_query(txn, &terms)
-    };
-    let txns: Vec<_> = ledger.txns().iter().filter(|txn| matches(txn)).collect();
+    let txns = matching_txns(ledger, account, options);
     let total_number = txns.len();
     let page = std::cmp::max(options.page.unwrap_or(1), 1);
     let entries = std::cmp::max(options.entries.unwrap_or(DEFAULT_ENTRIES_PER_PAGE), 1);
@@ -334,6 +345,22 @@ pub fn journal<'t>(
         items.reverse();
     }
     (items, total_number)
+}
+
+/// Returns the 1-based page number on which the entry at `target` appears in
+/// [`journal`], ignoring `options.page`.
+pub fn journal_page_of(
+    ledger: &Ledger,
+    account: Option<&str>,
+    options: &FilterOptions,
+    target: &Source,
+) -> Option<usize> {
+    let txns = matching_txns(ledger, account, options);
+    let pos = txns.iter().position(|txn| txn.src() == target)?;
+    let entries = std::cmp::max(options.entries.unwrap_or(DEFAULT_ENTRIES_PER_PAGE), 1);
+    let old_first = options.old_first.unwrap_or(false);
+    let display_ix = if old_first { pos } else { txns.len() - 1 - pos };
+    Some(display_ix / entries + 1)
 }
 
 /// Extracts completion candidates from `ledger` for editing entries: open
