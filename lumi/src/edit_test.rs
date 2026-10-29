@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use chrono::NaiveDate;
 
 use crate::edit::{
-    EditError, append_entry_text, delete_entry_text, entry_text, replace_entry_text, with_date,
+    EditError, append_entry_text, delete_entry_text, entry_text, file_text, replace_entry_text,
+    replace_file_text, with_date,
 };
 use crate::{Ledger, TxnFlag};
 
@@ -270,4 +271,30 @@ fn test_with_date_replaces_only_a_leading_iso_date() {
         "; comment without date\n2024-01-01 * \"No\""
     );
     assert_eq!(with_date("2024-01-01extra", date), "2024-01-01extra");
+}
+
+#[test]
+fn test_file_text_and_replace_file_text_preserve_line_endings_and_detect_external_changes() {
+    let crlf = TempFile::new(
+        "full-file-crlf",
+        "2024-01-01 open Assets:Cash\r\n2024-01-01 open Equity:Opening-Balances\r\n",
+    );
+    let loaded = file_text(crlf.path()).unwrap();
+    assert_eq!(
+        loaded,
+        "2024-01-01 open Assets:Cash\n2024-01-01 open Equity:Opening-Balances\n"
+    );
+
+    let updated = format!("{loaded}\n2024-01-02 balance Assets:Cash 0 USD\n");
+    replace_file_text(crlf.path(), &loaded, &updated).unwrap();
+    assert_eq!(
+        crlf.text(),
+        "2024-01-01 open Assets:Cash\r\n2024-01-01 open Equity:Opening-Balances\r\n\r\n2024-01-02 balance Assets:Cash 0 USD\r\n"
+    );
+
+    // Saving with a stale `original` refuses to overwrite external edits.
+    assert!(matches!(
+        replace_file_text(crlf.path(), &loaded, "stale overwrite\n"),
+        Err(EditError::FileChanged { .. })
+    ));
 }

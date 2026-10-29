@@ -144,6 +144,26 @@ impl LedgerSource for LocalLedger {
         self.query(cx, |loaded| query::completions(&loaded.ledger))
     }
 
+    fn files(&self, cx: &mut App) -> Task<Result<Vec<String>>> {
+        self.query(cx, |loaded| query::source_files(&loaded.ledger))
+    }
+
+    fn file_text(&self, path: &str, cx: &mut App) -> Task<Result<String>> {
+        let path = path.to_string();
+        cx.background_spawn(async move { Ok(edit::file_text(&path)?) })
+    }
+
+    fn replace_file_text(
+        &self,
+        path: &str,
+        original: String,
+        text: String,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        let path = path.to_string();
+        cx.background_spawn(async move { Ok(edit::replace_file_text(&path, &original, &text)?) })
+    }
+
     fn entry_text(&self, src: &Source, cx: &mut App) -> Task<Result<String>> {
         let file = src.file.clone();
         let line = src.start.line;

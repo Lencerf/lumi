@@ -142,7 +142,9 @@ pub(crate) fn detect_target(text: &Rope, offset: usize, invoked: bool) -> Option
         detect_indented_target(code, col, line_start, invoked)
     } else {
         detect_directive_target(code, col, line_start).or_else(|| {
-            (point.row > 0)
+            let follows_entry_line =
+                point.row > 0 && !text.slice_line(point.row - 1).to_string().trim().is_empty();
+            follows_entry_line
                 .then(|| detect_unindented_posting_target(code, col, line_start, invoked))
                 .flatten()
         })

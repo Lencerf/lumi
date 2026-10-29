@@ -83,6 +83,26 @@ pub trait LedgerSource: 'static {
     /// currencies, payees, narrations, tags, and links).
     fn completions(&self, cx: &mut App) -> Task<Result<Completions>>;
 
+    /// All source files belonging to the ledger, with the root file first and
+    /// included files after it.
+    fn files(&self, cx: &mut App) -> Task<Result<Vec<String>>>;
+
+    /// The full text of the ledger source file at `path`, with line breaks
+    /// normalized to `\n`.
+    fn file_text(&self, path: &str, cx: &mut App) -> Task<Result<String>>;
+
+    /// Replaces the full text of the ledger source file at `path` with `text`.
+    /// `original` is what [`file_text`](Self::file_text) returned; if the file
+    /// changed on disk since, nothing is written and the task fails. The
+    /// ledger is not reloaded.
+    fn replace_file_text(
+        &self,
+        path: &str,
+        original: String,
+        text: String,
+        cx: &mut App,
+    ) -> Task<Result<()>>;
+
     /// The text of the entry at `src` in its ledger file, as
     /// [`lumi::edit::entry_text`] reads it: the line the entry starts on and
     /// the indented lines after it, without the final line break.

@@ -21,6 +21,9 @@ pub enum EditError {
     /// The entry's text in the file is not the text that was edited: the
     /// file changed since it was read. Nothing was written.
     Changed { path: String, line: usize },
+    /// The file's text on disk is not the text that was read into the editor.
+    /// Nothing was written.
+    FileChanged { path: String },
 }
 
 impl fmt::Display for EditError {
@@ -34,6 +37,10 @@ impl fmt::Display for EditError {
                 f,
                 "The entry at {path}:{line} changed since it was read. Reload the ledger and edit it again."
             ),
+            EditError::FileChanged { path } => write!(
+                f,
+                "The file {path} changed on disk since it was read. Reload the ledger and edit it again."
+            ),
         }
     }
 }
@@ -45,6 +52,42 @@ impl std::error::Error for EditError {
             _ => None,
         }
     }
+}
+
+/// The full text of the ledger source file at `path`, with `\r\n` line breaks
+/// normalized to `\n` for editing.
+pub fn file_text(path: &str) -> Result<String, EditError> {
+    let raw = fs::read_to_string(path).map_err(|error| EditError::Io {
+        path: path.to_string(),
+        error,
+    })?;
+    Ok(raw.replace("\r\n", "\n"))
+}
+
+/// Replaces the full text of the ledger source file at `path` with
+/// `replacement`.
+///
+/// `original` must be the text [`file_text`] returned. If the file on disk has
+/// changed since, nothing is written and [`EditError::FileChanged`] is
+/// returned. Existing `\r\n` line breaks in the file are preserved.
+pub fn replace_file_text(path: &str, original: &str, replacement: &str) -> Result<(), EditError> {
+    let file = read(path)?;
+    let current = file.text.replace("\r\n", "\n");
+    if current != original {
+        return Err(EditError::FileChanged {
+            path: path.to_string(),
+        });
+    }
+    let normalized = replacement.replace("\r\n", "\n");
+    let out = if file.newline == "\r\n" {
+        normalized.replace('\n', "\r\n")
+    } else {
+        normalized
+    };
+    fs::write(path, out).map_err(|error| EditError::Io {
+        path: path.to_string(),
+        error,
+    })
 }
 
 /// The text of the entry starting on `line` (counted from 1) of the file at

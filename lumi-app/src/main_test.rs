@@ -31,6 +31,13 @@ fn test_parse_args_allows_starting_without_a_root_file() {
             page: Page::Errors,
         })
     );
+    assert_eq!(
+        parse(&["--page=editor"]),
+        Ok(CliAction::Run {
+            path: None,
+            page: Page::Editor,
+        })
+    );
 }
 
 #[test]

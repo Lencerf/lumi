@@ -3,7 +3,8 @@ use gpui_kit::{AnyWindowHandle, App, Menu, MenuItem, OsAction, SystemMenuType};
 
 use crate::app::{
     CloseWindow, GoBack, Hide, HideOthers, Minimize, OpenLedger, Quit, Refresh, ShowAll,
-    ShowBalanceSheet, ShowErrors, ShowHoldings, ShowIncome, ShowJournal, ToggleFullScreen, Zoom,
+    ShowBalanceSheet, ShowEditor, ShowErrors, ShowHoldings, ShowIncome, ShowJournal,
+    ToggleFullScreen, Zoom,
 };
 
 fn target_window(cx: &App) -> Option<AnyWindowHandle> {
@@ -82,6 +83,7 @@ fn app_menus() -> [Menu; 5] {
             MenuItem::action("Journal", ShowJournal),
             MenuItem::action("Holdings", ShowHoldings),
             MenuItem::action("Errors", ShowErrors),
+            MenuItem::action("Editor", ShowEditor),
             MenuItem::separator(),
             MenuItem::action("Back", GoBack),
             MenuItem::separator(),

@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use rust_decimal::Decimal;
 
 use crate::Ledger;
-use crate::query::{completions, journal, journal_page_of, positions, trie, trie_table};
+use crate::query::{
+    completions, journal, journal_page_of, positions, source_files, trie, trie_table,
+};
 use crate::web::{FilterOptions, TrieOptions};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/query_test.bean");
@@ -553,5 +555,45 @@ fn test_journal_page_of_locates_entry_in_both_sort_orders_and_account_scope() {
     assert_eq!(
         journal_page_of(&ledger, Some("Assets:Cash"), &newest, buy_vti.src()),
         None
+    );
+}
+
+#[test]
+fn test_source_files_keeps_root_first_and_lists_included_files() {
+    let dir = std::env::temp_dir().join(format!(
+        "lumi-source-files-query-test-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main_path = dir.join("z_main.bean");
+    let accounts_path = dir.join("accounts.bean");
+    let shared_path = dir.join("shared.bean");
+    let txns_path = dir.join("2025.bean");
+    std::fs::write(&accounts_path, "2024-01-01 open Assets:Cash\n").unwrap();
+    std::fs::write(&shared_path, "; shared notes\n").unwrap();
+    std::fs::write(
+        &txns_path,
+        "include \"shared.bean\"\n2025-01-01 balance Assets:Cash 0 USD\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &main_path,
+        "include \"accounts.bean\"\ninclude \"2025.bean\"\ninclude \"shared.bean\"\n",
+    )
+    .unwrap();
+
+    let (ledger, errors) = Ledger::from_file(main_path.to_str().unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(errors.is_empty(), "{errors:?}");
+
+    assert_eq!(
+        source_files(&ledger),
+        [
+            main_path.to_str().unwrap(),
+            txns_path.to_str().unwrap(),
+            accounts_path.to_str().unwrap(),
+            shared_path.to_str().unwrap(),
+        ]
     );
 }

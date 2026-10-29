@@ -10,6 +10,7 @@ pub enum Page {
     Journal,
     Holdings,
     Errors,
+    Editor,
     /// The journal of the named account and its sub-accounts.
     Account(SharedString),
 }
@@ -23,13 +24,14 @@ pub enum ReportEvent {
 
 impl Page {
     /// The destinations listed in the sidebar, in order.
-    pub fn sidebar() -> [Page; 5] {
+    pub fn sidebar() -> [Page; 6] {
         [
             Page::BalanceSheet,
             Page::Income,
             Page::Journal,
             Page::Holdings,
             Page::Errors,
+            Page::Editor,
         ]
     }
 
@@ -41,6 +43,7 @@ impl Page {
             Page::Journal => "Journal".into(),
             Page::Holdings => "Holdings".into(),
             Page::Errors => "Errors".into(),
+            Page::Editor => "Editor".into(),
             Page::Account(account) => account.clone(),
         }
     }
@@ -52,6 +55,7 @@ impl Page {
             Page::Journal | Page::Account(_) => IconName::ScrollText,
             Page::Holdings => IconName::Wallet,
             Page::Errors => IconName::TriangleAlert,
+            Page::Editor => IconName::SquarePen,
         }
     }
 
@@ -83,6 +87,7 @@ impl Page {
             Page::Journal => "journal".into(),
             Page::Holdings => "holdings".into(),
             Page::Errors => "errors".into(),
+            Page::Editor => "editor".into(),
             Page::Account(account) => format!("account-{account}").into(),
         }
     }
