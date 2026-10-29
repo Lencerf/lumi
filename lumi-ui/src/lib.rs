@@ -39,6 +39,7 @@ use gpui_kit::{App, KeyBinding};
 /// Call it once, before opening a window.
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
+    style::configure_theme(cx);
     highlight::register_language(cx);
     #[cfg(target_os = "macos")]
     let (back, open, refresh, save) = ("cmd-[", "cmd-o", "cmd-r", "cmd-s");
