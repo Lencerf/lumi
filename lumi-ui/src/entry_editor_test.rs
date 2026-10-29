@@ -376,3 +376,122 @@ fn test_entry_editor_configures_beancount_code_editor(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_account_and_currency_completions_insert_and_escape_keeps_dialog_open(
+    cx: &mut TestAppContext,
+) {
+    let ledger = TempLedger::new("acct-curr-complete");
+    let (handle, app) = open_journal(&ledger, cx);
+    let session = cx.read(|cx| app.read(cx).session().clone());
+    let txn = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        report.read(cx).entries(cx)[0].txn.clone()
+    });
+
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            EntryEditor::open(&txn, session, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // Move to the end of the entry, add a new indented posting line, and type
+    // a colon-segment abbreviation for Expenses:Food:Groceries.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let state = editor.read(cx).editor_state().clone();
+        state.update(cx, |state, cx| {
+            state.set_value("2025-06-01 * \"Test\"\n  ", window, cx);
+            let end = state.text().len();
+            state.set_selected_range(end..end, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.input("e:f:g", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Render the completion popup and confirm the selected account with Enter.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            editor
+                .read(cx)
+                .editor_state()
+                .read(cx)
+                .completion_menu_state()
+                .open
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Type an amount and space to open currency completion, select EUR (2nd),
+    // then also verify Escape on an open menu closes only the menu, not the dialog.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("Entry text").value(),
+            Some("2025-06-01 * \"Test\"\n  Expenses:Food:Groceries")
+        );
+        window.input("  12.50 ", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            editor
+                .read(cx)
+                .editor_state()
+                .read(cx)
+                .completion_menu_state()
+                .open
+        );
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // The completion menu closed, while the EntryEditor dialog remained open.
+        assert!(
+            !editor
+                .read(cx)
+                .editor_state()
+                .read(cx)
+                .completion_menu_state()
+                .open
+        );
+        assert!(window.try_find("save-entry").is_some());
+
+        // Type `E` to reopen currency completion filtered to EUR and confirm.
+        window.input("E", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("Entry text").value(),
+            Some("2025-06-01 * \"Test\"\n  Expenses:Food:Groceries  12.50 EUR")
+        );
+        // With no completion menu open, Escape closes the dialog as usual.
+        window.press("escape", cx);
+        assert!(window.try_find_by_label("Entry text").is_none());
+    })
+    .unwrap();
+}
