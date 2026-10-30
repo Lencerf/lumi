@@ -6,6 +6,7 @@
 //! entry point, an asset source, and a source for the ledger, then opens one
 //! window with [`LumiApp`].
 
+mod align;
 mod app;
 mod assets;
 mod completion;

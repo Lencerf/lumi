@@ -490,7 +490,7 @@ fn test_account_and_currency_completions_insert_and_escape_keeps_dialog_open(
         window.render_frame(cx);
         assert_eq!(
             window.find_by_label("Entry text").value(),
-            Some("2025-06-01 * \"Test\"\n  Expenses:Food:Groceries  12.50 EUR")
+            Some("2025-06-01 * \"Test\"\n  Expenses:Food:Groceries                      12.50 EUR")
         );
         // With no completion menu open, Escape closes the dialog as usual.
         window.press("escape", cx);

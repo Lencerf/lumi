@@ -875,3 +875,296 @@ fn test_source_editor_cmd_f_typing_sequential_chars_does_not_select_or_overwrite
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_source_editor_auto_aligns_posting_numbers_handles_long_accounts_and_undo(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("auto-align-default");
+    fs::write(
+        &ledger.accounts_path,
+        "\
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Expenses:Food:Coffee USD
+2024-01-01 open Liabilities:WellsFargo:Bilt USD
+",
+    )
+    .unwrap();
+    let (handle, app) = open_editor(&ledger, cx);
+    let editor = cx.read(|cx| app.read(cx).editor().unwrap().clone());
+    let state = cx.read(|cx| editor.read(cx).editor_state().clone());
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        state.update(cx, |state, cx| {
+            state.set_value("2025-02-01 * \"Cafe\"\n", window, cx);
+            let end = state.text().len();
+            state.set_selected_range(end..end, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+
+    // Type the user's exact posting character-by-character so every intermediate
+    // keystroke (`-`, `-2`, `-2.`, `-2.36`, ` USD`) exercises live alignment.
+    for ch in "    Liabilities:WellsFargo:Bilt -2.36 USD".chars() {
+        let s = ch.to_string();
+        cx.update_window(handle, |_, window, cx| {
+            window.input(&s, cx);
+        })
+        .unwrap();
+    }
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        assert_eq!(
+            editor.read(cx).value(cx).as_ref(),
+            "2025-02-01 * \"Cafe\"\n    Liabilities:WellsFargo:Bilt                -2.36 USD"
+        );
+        let line = editor
+            .read(cx)
+            .value(cx)
+            .lines()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        assert_eq!(line.find('.').unwrap() + 1, 50);
+    });
+
+    // Editing the account name on an already-aligned posting re-aligns `.` at
+    // column 50 while keeping the caret inside the account and opening completions.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        state.update(cx, |state, cx| {
+            let text = state.value();
+            let after_account = text.find("Liabilities:WellsFargo:Bilt").unwrap()
+                + "Liabilities:WellsFargo:Bilt".len();
+            state.set_selected_range(after_account..after_account, cx);
+            state.focus(window, cx);
+        });
+        window.press("backspace", cx);
+        window.press("backspace", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        let doc = editor.read(cx).value(cx).to_string();
+        let line = doc.lines().nth(1).unwrap();
+        assert_eq!(
+            line,
+            "    Liabilities:WellsFargo:Bi                  -2.36 USD"
+        );
+        assert_eq!(line.find('.').unwrap() + 1, 50);
+    });
+
+    // Typing `l` back into `Liabilities:WellsFargo:Bi` keeps `.` at column 50
+    // AND presents account completion items.
+    cx.update_window(handle, |_, window, cx| {
+        window.input("l", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let st = state.read(cx);
+        let doc = st.value().to_string();
+        let line = doc.lines().nth(1).unwrap();
+        assert_eq!(
+            line,
+            "    Liabilities:WellsFargo:Bil                 -2.36 USD"
+        );
+        assert_eq!(line.find('.').unwrap() + 1, 50);
+        assert!(st.completion_menu_state().open);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        let doc = editor.read(cx).value(cx).to_string();
+        let line = doc.lines().nth(1).unwrap();
+        assert_eq!(
+            line,
+            "    Liabilities:WellsFargo:Bilt                -2.36 USD"
+        );
+        assert_eq!(line.find('.').unwrap() + 1, 50);
+    });
+
+    // When an account name is too long for column 50, at least 1 space is kept,
+    // and Undo steps back without being immediately re-aligned.
+    #[cfg(target_os = "macos")]
+    let undo_shortcut = "cmd-z";
+    #[cfg(not(target_os = "macos"))]
+    let undo_shortcut = "ctrl-z";
+
+    cx.update_window(handle, |_, window, cx| {
+        state.update(cx, |state, cx| {
+            state.set_value("2025-02-01 * \"Long\"\n", window, cx);
+            let end = state.text().len();
+            state.set_selected_range(end..end, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.input(
+            "    Liabilities:WellsFargo:VeryLongSubAccountName:CreditCard     -2.36 USD",
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            editor.read(cx).value(cx).as_ref(),
+            "2025-02-01 * \"Long\"\n    Liabilities:WellsFargo:VeryLongSubAccountName:CreditCard -2.36 USD"
+        );
+        window.press(undo_shortcut, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        assert_eq!(
+            editor.read(cx).value(cx).as_ref(),
+            "2025-02-01 * \"Long\"\n    Liabilities:WellsFargo:VeryLongSubAccountName:CreditCard     -2.36 USD"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn test_lumi_option_decimal_point_column_customizes_source_and_entry_editors(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("custom-decimal-col");
+    fs::write(
+        &ledger.main_path,
+        "\
+option \"title\" \"Custom column ledger\"
+option \"operating_currency\" \"USD\"
+1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"60\"
+
+include \"accounts.bean\"
+include \"2025/expenses.bean\"
+",
+    )
+    .unwrap();
+
+    let (handle, app) = open_editor(&ledger, cx);
+    let editor = cx.read(|cx| app.read(cx).editor().unwrap().clone());
+    let state = cx.read(|cx| editor.read(cx).editor_state().clone());
+
+    cx.read(|cx| {
+        assert_eq!(app.read(cx).session().read(cx).error_count(), 0);
+    });
+
+    // Switch to `2025/expenses.bean` (an included file that does not itself
+    // repeat the option) and verify it inherits column 60 from the ledger.
+    let expenses_path = ledger.expenses_str();
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |ed, cx| ed.select_file(&expenses_path, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        state.update(cx, |state, cx| {
+            let end = state.text().len();
+            state.set_selected_range(end..end, cx);
+            state.focus(window, cx);
+        });
+        window.input("    Liabilities:WellsFargo:Bilt -2.36 USD", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        let doc = editor.read(cx).value(cx).to_string();
+        let last_line = doc.lines().last().unwrap();
+        assert_eq!(last_line.find('.').unwrap() + 1, 60);
+    });
+
+    // Switch back to `main.bean` and edit `"60"` -> `"45"` live without saving;
+    // typing a posting in `main.bean` immediately uses the unsaved column 45.
+    let main_path = ledger.main_str();
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |ed, cx| ed.select_file(&main_path, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        state.update(cx, |state, cx| {
+            let updated = state.value().replace("\"60\"", "\"45\"");
+            state.set_value(format!("{updated}\n2025-02-02 * \"Test\"\n"), window, cx);
+            let end = state.text().len();
+            state.set_selected_range(end..end, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.input("    Liabilities:WellsFargo:Bilt -2.36 USD", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        let doc = editor.read(cx).value(cx).to_string();
+        let last_line = doc.lines().last().unwrap();
+        assert_eq!(last_line.find('.').unwrap() + 1, 45);
+    });
+
+    // EntryEditor also honors the ledger's `decimal-point-column` (`60`).
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(ShowJournal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("end", cx);
+        // Move to end of the entry and append a new posting line.
+        let val = window
+            .find_by_label("Entry text")
+            .value()
+            .unwrap()
+            .to_string();
+        assert!(val.contains("2025-01-10"));
+    })
+    .unwrap();
+
+    // Type a new posting in EntryEditor via focused keystrokes at EOF.
+    cx.update_window(handle, |_, window, cx| {
+        #[cfg(target_os = "macos")]
+        window.press("cmd-down", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-end", cx);
+        window.input("\n    Liabilities:WellsFargo:Bilt -2.36 USD", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let val = window
+            .find_by_label("Entry text")
+            .value()
+            .unwrap()
+            .to_string();
+        let last_line = val.lines().last().unwrap();
+        assert_eq!(last_line.find('.').unwrap() + 1, 60);
+    })
+    .unwrap();
+}

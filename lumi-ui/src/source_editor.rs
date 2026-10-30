@@ -20,6 +20,7 @@ use gpui_kit::{
     actions, div, point, px,
 };
 
+use crate::align::PostingAligner;
 use crate::completion::BeancountCompletionProvider;
 use crate::errors_report::common_dir;
 use crate::input_guard::EditDragGuard;
@@ -78,6 +79,7 @@ pub struct SourceEditor {
     file_select: Entity<SelectState<SearchableVec<SourceFileItem>>>,
     text: Entity<EditorState>,
     drag_guard: EditDragGuard,
+    aligner: PostingAligner,
     search_input: Entity<InputState>,
     search_drag_guard: EditDragGuard,
     search_open: bool,
@@ -132,6 +134,7 @@ impl SourceEditor {
             state
         });
         let drag_guard = EditDragGuard::new(&text);
+        let aligner = PostingAligner::new(&text, true, cx);
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in file…"));
         let search_drag_guard = EditDragGuard::new(&search_input);
         let file_select =
@@ -141,9 +144,11 @@ impl SourceEditor {
                 this.on_session_changed(window, cx)
             }),
             cx.subscribe_in(&file_select, window, Self::on_select_event),
-            cx.subscribe(&text, |this, _, event, cx| {
+            cx.subscribe_in(&text, window, |this, _, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.drag_guard.cancel();
+                    this.aligner
+                        .on_change(&this.text, &this.provider, window, cx);
                     cx.notify();
                 }
             }),
@@ -160,6 +165,7 @@ impl SourceEditor {
             file_select,
             text,
             drag_guard,
+            aligner,
             search_input,
             search_drag_guard,
             search_open: false,
@@ -875,6 +881,8 @@ impl Render for SourceEditor {
                                 .flex_1()
                                 .min_h_0()
                                 .capture_action(self.drag_guard.paste_capture())
+                                .capture_action(self.aligner.undo_capture())
+                                .capture_action(self.aligner.redo_capture())
                                 .child(self.drag_guard.element())
                                 .child(
                                     Editor::new(&self.text)
