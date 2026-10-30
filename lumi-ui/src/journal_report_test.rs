@@ -524,11 +524,92 @@ fn test_record_type_selector_toggles_entry_flags_and_resets_all(cx: &mut TestApp
     });
     cx.run_until_parked();
 
-    // All 9 fixture entries (8 `*` transactions + 1 `balance` assertion) start visible.
+    // All 9 fixture entries (8 `*` transactions + 1 `balance` assertion) start
+    // visible, and "None" is shown alongside the full selector.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find((
+                    gpui_kit::ElementId::from("journal-record-types-none"),
+                    Page::Journal.id(),
+                ))
+                .is_some()
+        );
+        assert!(
+            window
+                .try_find((
+                    gpui_kit::ElementId::from("journal-record-types-all"),
+                    Page::Journal.id(),
+                ))
+                .is_none()
+        );
+    })
+    .unwrap();
     cx.read(|cx| {
         let report = app.read(cx).journal().expect("journal is shown");
         assert_eq!(report.read(cx).total(cx), 9);
         assert_eq!(report.read(cx).visible_flags(cx).len(), 4);
+    });
+
+    // Clicking "None" clears every flag at once and swaps "None" for "All",
+    // letting the user then pick a single flag (`bal`).
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(
+            (
+                gpui_kit::ElementId::from("journal-record-types-none"),
+                Page::Journal.id(),
+            ),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find((
+                    gpui_kit::ElementId::from("journal-record-types-all"),
+                    Page::Journal.id(),
+                ))
+                .is_some()
+        );
+        assert!(
+            window
+                .try_find((
+                    gpui_kit::ElementId::from("journal-record-types-none"),
+                    Page::Journal.id(),
+                ))
+                .is_none()
+        );
+    })
+    .unwrap();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert!(report.read(cx).visible_flags(cx).is_empty());
+        assert_eq!(report.read(cx).total(cx), 0);
+        assert!(report.read(cx).entries(cx).is_empty());
+    });
+
+    // Clicking "All" restores all 4 flags and swaps back to "None".
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(
+            (
+                gpui_kit::ElementId::from("journal-record-types-all"),
+                Page::Journal.id(),
+            ),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(report.read(cx).visible_flags(cx).len(), 4);
+        assert_eq!(report.read(cx).total(cx), 9);
     });
 
     // Clicking `bal` toggles balance assertions off -> 8 cleared transactions remain.

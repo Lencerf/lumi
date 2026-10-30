@@ -290,17 +290,24 @@ impl JournalReport {
                         this.set_visible_flags(flags, cx);
                     })),
             )
-            .when(filtered, |this| {
-                this.child(
-                    Button::new((ElementId::from("journal-record-types-all"), self.page.id()))
-                        .ghost()
-                        .xsmall()
-                        .label("All")
-                        .tooltip("Show all record types")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_visible_flags(RECORD_TYPES.map(|(flag, _, _)| flag), cx);
-                        })),
-                )
+            .child(if filtered {
+                Button::new((ElementId::from("journal-record-types-all"), self.page.id()))
+                    .ghost()
+                    .xsmall()
+                    .label("All")
+                    .tooltip("Show all record types")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_visible_flags(RECORD_TYPES.map(|(flag, _, _)| flag), cx);
+                    }))
+            } else {
+                Button::new((ElementId::from("journal-record-types-none"), self.page.id()))
+                    .ghost()
+                    .xsmall()
+                    .label("None")
+                    .tooltip("Hide all record types")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_visible_flags([], cx);
+                    }))
             })
     }
 
