@@ -3,15 +3,19 @@ use std::rc::Rc;
 
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Editor, EditorState, InputEvent, Position, RopeExt as _, Search};
+use gpui_kit::component::input::{
+    Editor, EditorState, Enter, Escape, Input, InputEvent, InputState, Position, RopeExt as _,
+    Search,
+};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, StyledExt as _, h_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Selectable as _, Sizable as _,
+    StyledExt as _, h_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window,
     actions, div, point, px,
 };
@@ -74,6 +78,10 @@ pub struct SourceEditor {
     file_select: Entity<SelectState<SearchableVec<SourceFileItem>>>,
     text: Entity<EditorState>,
     drag_guard: EditDragGuard,
+    search_input: Entity<InputState>,
+    search_drag_guard: EditDragGuard,
+    search_open: bool,
+    search_case_insensitive: bool,
     provider: Rc<BeancountCompletionProvider>,
     files: Vec<SharedString>,
     selected_file: Option<SharedString>,
@@ -102,10 +110,16 @@ impl SourceEditor {
     ) -> Self {
         let provider = BeancountCompletionProvider::new();
         let provider_for_state = provider.clone();
+        // Pass `.searchable(false)` (`EditorState::new` enables `searchable` by
+        // default) so `gpui-component`'s built-in `SearchPanel` overlay—which
+        // re-selects the query when `anchor_offset` transitions from `None` to
+        // `Some(...)` on the first typed character—never mounts; `SourceEditor`
+        // renders its own search bar and drives `EditorState`'s search session
+        // directly.
         let text = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language(highlight::LANGUAGE)
-                .searchable(true);
+                .searchable(false);
             state.set_soft_wrap(false, window, cx);
             state.set_line_number(true, window, cx);
             state.set_folding(false, window, cx);
@@ -118,6 +132,8 @@ impl SourceEditor {
             state
         });
         let drag_guard = EditDragGuard::new(&text);
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in file…"));
+        let search_drag_guard = EditDragGuard::new(&search_input);
         let file_select =
             cx.new(|cx| SelectState::new(SearchableVec::new(Vec::new()), None, window, cx));
         let _subscriptions = vec![
@@ -131,12 +147,23 @@ impl SourceEditor {
                     cx.notify();
                 }
             }),
+            cx.subscribe(&search_input, |this, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.search_drag_guard.cancel();
+                    this.sync_search_query(true, cx);
+                    cx.notify();
+                }
+            }),
         ];
         let mut this = Self {
             session,
             file_select,
             text,
             drag_guard,
+            search_input,
+            search_drag_guard,
+            search_open: false,
+            search_case_insensitive: true,
             provider,
             files: Vec::new(),
             selected_file: None,
@@ -192,17 +219,102 @@ impl SourceEditor {
         self.error.as_ref()
     }
 
+    pub fn is_search_open(&self) -> bool {
+        self.search_open
+    }
+
+    pub fn is_search_focused(&self, window: &Window, cx: &App) -> bool {
+        self.search_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    }
+
+    pub fn search_query(&self, cx: &App) -> SharedString {
+        self.search_input.read(cx).value()
+    }
+
     #[cfg(test)]
     pub(crate) fn editor_state(&self) -> &Entity<EditorState> {
         &self.text
     }
 
-    /// Focuses the code editor and opens its in-file search bar.
+    #[cfg(test)]
+    pub(crate) fn search_input_state(&self) -> &Entity<InputState> {
+        &self.search_input
+    }
+
+    /// Opens the in-file search bar, focuses its input, and selects any
+    /// existing or editor-selected query text.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.text.update(cx, |state, cx| {
-            state.focus(window, cx);
-            state.open_search(false, cx);
+        self.search_open = true;
+        self.search_drag_guard.cancel();
+        let selected = self.text.read(cx).selected_value();
+        let seed = (!selected.is_empty() && !selected.contains('\n') && !selected.contains('\r'))
+            .then_some(selected);
+        self.search_input.update(cx, |input, cx| {
+            if let Some(seed) = seed {
+                input.set_value(seed, window, cx);
+            }
+            input.focus(window, cx);
+            input.select_all(window, cx);
         });
+        self.sync_search_query(true, cx);
+        cx.notify();
+    }
+
+    fn sync_search_query(&mut self, reveal_match: bool, cx: &mut Context<Self>) {
+        let query = self.search_input.read(cx).value();
+        let case_insensitive = self.search_case_insensitive;
+        self.text.update(cx, |state, cx| {
+            state.set_search_query(query.to_string(), case_insensitive, cx);
+            if reveal_match {
+                let matcher = &state.search_session().matcher;
+                if let Some(ix) = matcher.current()
+                    && let Some(range) = matcher.matched_ranges().get(ix).cloned()
+                {
+                    let match_row = state.text().offset_to_position(range.start).line as usize;
+                    let in_view = state
+                        .visible_row_range()
+                        .is_none_or(|visible| visible.contains(&match_row));
+                    if !in_view {
+                        scroll_line_to_top(state, match_row as u32, cx);
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn next_search_match(&mut self, cx: &mut Context<Self>) {
+        self.text.update(cx, |state, cx| {
+            state.next_search_match(cx);
+        });
+        cx.notify();
+    }
+
+    pub fn previous_search_match(&mut self, cx: &mut Context<Self>) {
+        self.text.update(cx, |state, cx| {
+            state.previous_search_match(cx);
+        });
+        cx.notify();
+    }
+
+    fn toggle_search_case_sensitive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_case_insensitive = !self.search_case_insensitive;
+        self.sync_search_query(true, cx);
+        self.search_input
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    pub fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_open = false;
+        self.search_drag_guard.cancel();
+        self.text.update(cx, |state, cx| {
+            state.close_search(cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
     }
 
     /// Selects the source file at `path` and loads its text into the editor.
@@ -309,6 +421,9 @@ impl SourceEditor {
             self.original = Some(draft.original);
             self.text
                 .update(cx, |state, cx| state.set_value(draft.text, window, cx));
+            if self.search_open {
+                self.sync_search_query(false, cx);
+            }
             if let Some(line) = self.pending_line.take() {
                 move_cursor_to_line(&self.text, line, window, cx);
             } else if focus_editor {
@@ -419,6 +534,9 @@ impl SourceEditor {
                         if !already_matches {
                             this.text
                                 .update(cx, |state, cx| state.set_value(content, window, cx));
+                            if this.search_open {
+                                this.sync_search_query(false, cx);
+                            }
                         }
                         if let Some(line) = this.pending_line.take() {
                             move_cursor_to_line(&this.text, line, window, cx);
@@ -451,6 +569,9 @@ impl SourceEditor {
             state.set_value(original, window, cx);
             state.focus(window, cx);
         });
+        if self.search_open {
+            self.sync_search_query(false, cx);
+        }
         cx.notify();
     }
 
@@ -523,6 +644,13 @@ impl Render for SourceEditor {
         let has_files = !self.files.is_empty();
         let selected_path = self.selected_file.clone();
         let error = self.error.clone();
+        let search_open = self.search_open;
+        let case_sensitive = !self.search_case_insensitive;
+        let has_query = !self.search_input.read(cx).value().is_empty();
+        let (has_matches, match_label): (bool, SharedString) = {
+            let matcher = &self.text.read(cx).search_session().matcher;
+            (!matcher.is_empty(), matcher.label().into())
+        };
 
         div()
             .v_flex()
@@ -531,6 +659,11 @@ impl Render for SourceEditor {
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(|this, _: &Search, window, cx| this.focus_search(window, cx)))
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                if this.search_open {
+                    this.close_search(window, cx);
+                }
+            }))
             .child(
                 h_flex()
                     .items_center()
@@ -618,28 +751,150 @@ impl Render for SourceEditor {
             .child(
                 div().flex_1().min_h_0().p_6().pt_3().child(
                     table_card(cx)
+                        .v_flex()
                         .relative()
                         .size_full()
-                        .capture_action(self.drag_guard.paste_capture())
-                        .child(self.drag_guard.element())
-                        .child(
-                            Editor::new(&self.text)
-                                .size_full()
-                                .bordered(false)
-                                .aria_label("Source text")
-                                .disabled(!loaded || saving),
-                        )
-                        .when(!loaded && self.error.is_none(), |this| {
+                        .min_h_0()
+                        .when(search_open, |this| {
                             this.child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .flex()
+                                h_flex()
+                                    .id("source-editor-search-bar")
                                     .items_center()
-                                    .justify_center()
-                                    .child(Spinner::new()),
+                                    .justify_between()
+                                    .gap_2()
+                                    .px_3()
+                                    .py_1p5()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().tokens.popover)
+                                    .on_action(cx.listener(|this, action: &Enter, _, cx| {
+                                        if action.shift {
+                                            this.previous_search_match(cx);
+                                        } else {
+                                            this.next_search_match(cx);
+                                        }
+                                    }))
+                                    .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                                        this.close_search(window, cx);
+                                    }))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(
+                                                div()
+                                                    .relative()
+                                                    .w(px(320.))
+                                                    .max_w_full()
+                                                    .capture_action(
+                                                        self.search_drag_guard.paste_capture(),
+                                                    )
+                                                    .child(self.search_drag_guard.element())
+                                                    .child(
+                                                        Input::new(&self.search_input)
+                                                            .id("source-editor-search")
+                                                            .small()
+                                                            .cleanable(true)
+                                                            .aria_label("Find in file")
+                                                            .prefix(
+                                                                Icon::new(IconName::Search)
+                                                                    .small()
+                                                                    .text_color(
+                                                                        cx.theme().muted_foreground,
+                                                                    ),
+                                                            )
+                                                            .suffix(
+                                                                Button::new("source-search-case")
+                                                                    .xsmall()
+                                                                    .compact()
+                                                                    .ghost()
+                                                                    .icon(IconName::CaseSensitive)
+                                                                    .selected(case_sensitive)
+                                                                    .tooltip("Match case")
+                                                                    .on_click(cx.listener(
+                                                                        |this, _, window, cx| {
+                                                                            this.toggle_search_case_sensitive(window, cx);
+                                                                        },
+                                                                    )),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                Button::new("source-search-prev")
+                                                    .xsmall()
+                                                    .ghost()
+                                                    .icon(IconName::ChevronLeft)
+                                                    .tooltip("Previous match (Shift+Enter)")
+                                                    .disabled(!has_matches)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.previous_search_match(cx);
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("source-search-next")
+                                                    .xsmall()
+                                                    .ghost()
+                                                    .icon(IconName::ChevronRight)
+                                                    .tooltip("Next match (Enter)")
+                                                    .disabled(!has_matches)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.next_search_match(cx);
+                                                    })),
+                                            )
+                                            .when(has_query, |this| {
+                                                this.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .min_w(px(48.))
+                                                        .text_color(if has_matches {
+                                                            cx.theme().foreground
+                                                        } else {
+                                                            cx.theme().muted_foreground
+                                                        })
+                                                        .child(match_label),
+                                                )
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("source-search-close")
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(IconName::Close)
+                                            .tooltip("Close search (Escape)")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.close_search(window, cx);
+                                            })),
+                                    ),
                             )
-                        }),
+                        })
+                        .child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_h_0()
+                                .capture_action(self.drag_guard.paste_capture())
+                                .child(self.drag_guard.element())
+                                .child(
+                                    Editor::new(&self.text)
+                                        .size_full()
+                                        .bordered(false)
+                                        .aria_label("Source text")
+                                        .disabled(!loaded || saving),
+                                )
+                                .when(!loaded && self.error.is_none(), |this| {
+                                    this.child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(Spinner::new()),
+                                    )
+                                }),
+                        ),
                 ),
             )
     }

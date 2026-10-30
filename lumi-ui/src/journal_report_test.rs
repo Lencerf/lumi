@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::table::TableDelegate as _;
-use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
+use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, Styled as _, TestAppContext, WindowBounds,
-    WindowOptions, point, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Entity, Modifiers, MouseButton, MouseDownEvent,
+    PlatformInput, Styled as _, TestAppContext, WindowBounds, WindowOptions, point, px, size,
 };
 use lumi::TxnFlag;
 
@@ -972,5 +972,89 @@ fn test_focused_record_highlighted_and_kept_in_view_across_filters(cx: &mut Test
         assert_eq!(report.total(cx), 5);
         assert_eq!(report.page_number(cx), 3);
         assert_eq!(report.entries(cx)[0].txn.narration(), "Opening balances");
+    });
+}
+
+#[gpui_kit::test]
+fn test_journal_cmd_f_typing_sequential_chars_does_not_select_or_overwrite_first_char(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    let find_shortcut = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = app.read(cx).journal().expect("journal is shown");
+        let search_input = report.read(cx).search_input_state().clone();
+
+        // Simulate an un-ended macOS trackpad click inside the search input before Cmd+F.
+        let origin = search_input.read(cx).text_bounds().expect("search bounds");
+        let click_pos = point(origin.origin.x + px(4.), origin.origin.y + px(8.));
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: click_pos,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+
+        window.press(find_shortcut, cx);
+        window.render_frame(cx);
+        assert!(report.read(cx).is_search_focused(window, cx));
+        assert_eq!(search_input.read(cx).selected_range(), 0..0);
+
+        window.input("b", cx);
+        window.render_frame(cx);
+        window.pointer_move(click_pos, Some(MouseButton::Left), cx);
+        assert_eq!(search_input.read(cx).value(), "b");
+        assert_eq!(search_input.read(cx).selected_range(), 1..1);
+
+        window.input("r", cx);
+        window.render_frame(cx);
+        window.pointer_up(click_pos, MouseButton::Left, cx);
+        assert_eq!(search_input.read(cx).value(), "br");
+        assert_eq!(search_input.read(cx).selected_range(), 2..2);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(report.read(cx).search_query(cx), "br");
+        assert_eq!(report.read(cx).total(cx), 1);
+        assert_eq!(report.read(cx).entries(cx)[0].txn.payee(), "Broker");
     });
 }

@@ -115,6 +115,11 @@ impl HoldingsReport {
             .is_focused(window)
     }
 
+    #[cfg(test)]
+    pub(crate) fn search_input_state(&self) -> &Entity<InputState> {
+        &self.search_input
+    }
+
     /// Focuses the search box and selects any existing query text.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_drag_guard.cancel();

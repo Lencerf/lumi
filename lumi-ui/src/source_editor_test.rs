@@ -725,3 +725,153 @@ fn test_source_editor_paste_shorter_text_does_not_keep_n_chars_selected_on_stale
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_source_editor_cmd_f_typing_sequential_chars_does_not_select_or_overwrite_first_char(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("cmd-f-typing");
+    let (handle, app) = open_editor(&ledger, cx);
+    let editor = cx.read(|cx| app.read(cx).editor().expect("editor page is open"));
+
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.select_file(ledger.expenses_str(), window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let find_shortcut = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+
+    // Open search with no selection in the editor, then type `"u"`, `"s"`, `"d"`
+    // across separate window updates + frames (matching real OS event delivery)
+    // so any render-time re-selection (the bug in gpui-component's built-in
+    // SearchPanel) or stale macOS drag would overwrite the 1st character on the
+    // 2nd keystroke.
+    let (state, search_input) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let state = editor.read(cx).editor_state().clone();
+            let search_input = editor.read(cx).search_input_state().clone();
+            state.update(cx, |state, cx| {
+                state.set_selected_range(0..0, cx);
+                state.focus(window, cx);
+            });
+            window.render_frame(cx);
+
+            window.press(find_shortcut, cx);
+            window.render_frame(cx);
+            assert!(editor.read(cx).is_search_open());
+            assert!(editor.read(cx).is_search_focused(window, cx));
+            assert_eq!(search_input.read(cx).value(), "");
+            assert_eq!(search_input.read(cx).selected_range(), 0..0);
+            (state, search_input)
+        })
+        .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.input("u", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(search_input.read(cx).value(), "u");
+        assert_eq!(search_input.read(cx).selected_range(), 1..1);
+
+        let left_edge = search_input.update(cx, |input, cx| {
+            let text_bounds = input.text_bounds().expect("search text bounds");
+            let char_bounds = input
+                .bounds_for_range(0..1, text_bounds, window, cx)
+                .expect("first char bounds");
+            point(
+                char_bounds.origin.x,
+                char_bounds.origin.y + char_bounds.size.height * 0.5,
+            )
+        });
+        window.pointer_move(left_edge, Some(MouseButton::Left), cx);
+        assert_eq!(search_input.read(cx).selected_range(), 1..1);
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.input("s", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(search_input.read(cx).value(), "us");
+        assert_eq!(search_input.read(cx).selected_range(), 2..2);
+        window.input("d", cx);
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(editor.read(cx).search_query(cx), "usd");
+        let matcher = &state.read(cx).search_session().matcher;
+        assert_eq!(matcher.len(), 2);
+        assert_eq!(matcher.label(), "1/2");
+
+        // Enter / Shift+Enter cycle forward and backward through matches.
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert_eq!(state.read(cx).search_session().matcher.label(), "2/2");
+
+        window.press("shift-enter", cx);
+        window.render_frame(cx);
+        assert_eq!(state.read(cx).search_session().matcher.label(), "1/2");
+
+        // Enabling case-sensitive matching causes lowercase `"usd"` not to match `"USD"`.
+        window.click("source-search-case", cx);
+        window.render_frame(cx);
+        assert_eq!(state.read(cx).search_session().matcher.len(), 0);
+        window.click("source-search-case", cx);
+        window.render_frame(cx);
+        assert_eq!(state.read(cx).search_session().matcher.len(), 2);
+
+        // Escape closes the search bar and returns focus to the source editor.
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(!editor.read(cx).is_search_open());
+        assert!(!state.read(cx).search_session().is_active());
+        assert_eq!(window.find_by_label("Source text").focused(), Some(true));
+
+        // Pressing Cmd+F / Ctrl+F with single-line text selected (`"Bottle"` at 19..25)
+        // seeds and selects `"Bottle"`, and typing `"L"` then `"a"` replaces `"Bottle"`
+        // with `"La"` (never `"a"`).
+        state.update(cx, |state, cx| {
+            state.set_selected_range(19..25, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.press(find_shortcut, cx);
+        window.render_frame(cx);
+        assert_eq!(search_input.read(cx).value(), "Bottle");
+        assert_eq!(search_input.read(cx).selected_range(), 0..6);
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.input("L", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(search_input.read(cx).value(), "L");
+        assert_eq!(search_input.read(cx).selected_range(), 1..1);
+        window.input("a", cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(search_input.read(cx).value(), "La");
+        assert_eq!(search_input.read(cx).selected_range(), 2..2);
+        assert_eq!(state.read(cx).search_session().matcher.len(), 1);
+    })
+    .unwrap();
+}
