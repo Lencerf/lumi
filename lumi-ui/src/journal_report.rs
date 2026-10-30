@@ -29,7 +29,9 @@ use crate::entry_editor::EntryEditor;
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
-use crate::style::{interactive_button, table_card, table_header, table_row_bg};
+use crate::style::{
+    interactive_button, table_card, table_focused_row_bg, table_header, table_row_bg,
+};
 
 /// Opens the journal of an account, from a posting's context menu.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
@@ -109,6 +111,8 @@ struct JournalDelegate {
     old_first: bool,
     query: SharedString,
     visible_flags: HashSet<TxnFlag>,
+    /// The last record the user clicked or right-clicked in this table.
+    focused_entry: Option<Source>,
     /// The page shown, counted from 1.
     page: usize,
     page_size: usize,
@@ -185,6 +189,11 @@ impl JournalReport {
         self.table.read(cx).delegate().query.clone()
     }
 
+    /// The source location of the last record clicked or right-clicked by the user.
+    pub fn focused_entry(&self, cx: &App) -> Option<Source> {
+        self.table.read(cx).delegate().focused_entry.clone()
+    }
+
     pub fn is_search_focused(&self, window: &Window, cx: &App) -> bool {
         self.search_input
             .read(cx)
@@ -218,8 +227,7 @@ impl JournalReport {
             let delegate = table.delegate_mut();
             if delegate.query != query {
                 delegate.query = query;
-                delegate.page = 1;
-                delegate.load_page(cx);
+                delegate.load_filtered_page(cx);
             }
         });
     }
@@ -241,7 +249,7 @@ impl JournalReport {
     }
 
     /// Sets which record flags (`*`, `!`, `bal`, `pad`) are shown and reloads
-    /// the first page of matching entries.
+    /// the matching page (preferring the focused record's page when still visible).
     pub fn set_visible_flags(
         &mut self,
         flags: impl IntoIterator<Item = TxnFlag>,
@@ -252,8 +260,7 @@ impl JournalReport {
             let delegate = table.delegate_mut();
             if delegate.visible_flags != next {
                 delegate.visible_flags = next;
-                delegate.page = 1;
-                delegate.load_page(cx);
+                delegate.load_filtered_page(cx);
             }
         });
     }
@@ -362,6 +369,7 @@ impl JournalReport {
                 delegate.expand_all = show;
                 delegate.expanded.clear();
                 delegate.rebuild_rows();
+                sync_focused_selection(table, false, cx);
                 cx.notify();
             }
         });
@@ -370,6 +378,7 @@ impl JournalReport {
     fn toggle_postings(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
             table.delegate_mut().toggle_entry(entry_ix);
+            sync_focused_selection(table, false, cx);
             cx.notify();
         });
     }
@@ -380,7 +389,11 @@ impl JournalReport {
 
     /// Toggles a transaction row's postings, or opens a posting row's account.
     fn activate_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
-        let row = self.table.read(cx).delegate().rows.get(row_ix).copied();
+        let row = self.table.update(cx, |table, _| {
+            let delegate = table.delegate_mut();
+            delegate.focus_row(row_ix);
+            delegate.rows.get(row_ix).copied()
+        });
         match row {
             Some(JournalRow::Transaction(entry_ix)) => {
                 let is_balance =
@@ -418,11 +431,18 @@ impl JournalReport {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.table.update(cx, |table, _| {
+            table.delegate_mut().focus_entry(action.0);
+        });
         self.toggle_postings(action.0, cx);
     }
 
     fn on_edit_entry(&mut self, action: &EditEntry, window: &mut Window, cx: &mut Context<Self>) {
-        let txn = self.table.read(cx).delegate().entries[action.0].txn.clone();
+        let txn = self.table.update(cx, |table, cx| {
+            table.delegate_mut().focus_entry(action.0);
+            sync_focused_selection(table, false, cx);
+            table.delegate().entries[action.0].txn.clone()
+        });
         EntryEditor::open(&txn, self.session.clone(), window, cx);
     }
 
@@ -434,21 +454,22 @@ impl JournalReport {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(target) = self
+        if self
             .table
             .read(cx)
             .delegate()
             .entries
             .get(entry_ix)
-            .map(|entry| entry.txn.src().clone())
-        else {
+            .is_none()
+        {
             return;
-        };
+        }
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
+            delegate.focus_entry(entry_ix);
             delegate.query = SharedString::default();
             delegate.visible_flags = RECORD_TYPES.iter().map(|(flag, _, _)| *flag).collect();
-            delegate.load_context_page(target, cx);
+            delegate.load_filtered_page(cx);
         });
         self.search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
@@ -467,12 +488,31 @@ impl JournalReport {
 
     fn on_table_event(
         &mut self,
-        _: Entity<TableState<JournalDelegate>>,
+        table: Entity<TableState<JournalDelegate>>,
         event: &TableEvent,
         cx: &mut Context<Self>,
     ) {
-        if let TableEvent::DoubleClickedRow(row_ix) = event {
-            self.activate_row(*row_ix, cx);
+        match event {
+            TableEvent::SelectRow(row_ix) => {
+                table.update(cx, |table, cx| {
+                    if table.delegate_mut().focus_row(*row_ix) {
+                        cx.notify();
+                    }
+                });
+            }
+            TableEvent::RightClickedRow(Some(row_ix)) => {
+                table.update(cx, |table, cx| {
+                    table.delegate_mut().focus_row(*row_ix);
+                    if table.selected_row().is_some() {
+                        table.clear_selection(cx);
+                    }
+                    cx.notify();
+                });
+            }
+            TableEvent::DoubleClickedRow(row_ix) => {
+                self.activate_row(*row_ix, cx);
+            }
+            _ => {}
         }
     }
 
@@ -691,6 +731,7 @@ impl JournalDelegate {
             old_first: false,
             query: SharedString::default(),
             visible_flags: RECORD_TYPES.iter().map(|(flag, _, _)| *flag).collect(),
+            focused_entry: None,
             page: 1,
             page_size: DEFAULT_ENTRIES_PER_PAGE,
             total: 0,
@@ -698,6 +739,26 @@ impl JournalDelegate {
             failed: None,
             generation: 0,
             _load_task: None,
+        }
+    }
+
+    fn filter_options(&self, page: Option<usize>) -> FilterOptions {
+        let query = (!self.query.trim().is_empty()).then(|| self.query.to_string());
+        let flags = (self.visible_flags.len() < RECORD_TYPES.len()).then(|| {
+            RECORD_TYPES
+                .iter()
+                .filter(|(flag, _, _)| self.visible_flags.contains(flag))
+                .map(|(_, label, _)| *label)
+                .collect::<Vec<_>>()
+                .join(",")
+        });
+        FilterOptions {
+            entries: Some(self.page_size),
+            page,
+            old_first: Some(self.old_first),
+            query,
+            flags,
+            ..Default::default()
         }
     }
 
@@ -709,23 +770,7 @@ impl JournalDelegate {
         self.failed = None;
         self.generation += 1;
         let generation = self.generation;
-        let query = (!self.query.trim().is_empty()).then(|| self.query.to_string());
-        let flags = (self.visible_flags.len() < RECORD_TYPES.len()).then(|| {
-            RECORD_TYPES
-                .iter()
-                .filter(|(flag, _, _)| self.visible_flags.contains(flag))
-                .map(|(_, label, _)| *label)
-                .collect::<Vec<_>>()
-                .join(",")
-        });
-        let options = FilterOptions {
-            entries: Some(self.page_size),
-            page: Some(self.page),
-            old_first: Some(self.old_first),
-            query,
-            flags,
-            ..Default::default()
-        };
+        let options = self.filter_options(Some(self.page));
         let task = self.source.journal(self.account.as_deref(), &options, cx);
         self._load_task = Some(cx.spawn(async move |table, cx| {
             let result = task.await;
@@ -748,6 +793,7 @@ impl JournalDelegate {
                             delegate.entries = entries;
                             delegate.expanded.clear();
                             delegate.rebuild_rows();
+                            sync_focused_selection(table, false, cx);
                         }
                         Err(error) => delegate.failed = Some(format!("{error:#}").into()),
                     }
@@ -758,24 +804,28 @@ impl JournalDelegate {
         cx.notify();
     }
 
-    /// Resolves the unfiltered page containing `target`, loads that page, and
-    /// selects + scrolls to `target`'s row once its entries arrive.
-    fn load_context_page(&mut self, target: Source, cx: &mut Context<TableState<Self>>) {
+    /// Reloads entries after a search or flag-filter change. When the user has
+    /// a focused record and it still matches the active filters, loads the page
+    /// containing that record and scrolls it into view; otherwise falls back to
+    /// page 1 while preserving `focused_entry`.
+    fn load_filtered_page(&mut self, cx: &mut Context<TableState<Self>>) {
+        let Some(target) = self.focused_entry.clone() else {
+            self.page = 1;
+            self.load_page(cx);
+            return;
+        };
         self.loading = true;
         self.failed = None;
         self.generation += 1;
         let generation = self.generation;
-        let base_options = FilterOptions {
-            entries: Some(self.page_size),
-            old_first: Some(self.old_first),
-            ..Default::default()
-        };
-        let page_task =
-            self.source
-                .journal_page_of(self.account.as_deref(), &base_options, &target, cx);
+        let options = self.filter_options(None);
+        let page_task = self
+            .source
+            .journal_page_of(self.account.as_deref(), &options, &target, cx);
         self._load_task = Some(cx.spawn(async move |table, cx| {
-            let page = match page_task.await {
-                Ok(page) => page.unwrap_or(1),
+            let (page, found) = match page_task.await {
+                Ok(Some(page)) => (page, true),
+                Ok(None) => (1, false),
                 Err(error) => {
                     table
                         .update(cx, |table, cx| {
@@ -798,12 +848,7 @@ impl JournalDelegate {
                         return None;
                     }
                     delegate.page = page;
-                    let options = FilterOptions {
-                        entries: Some(delegate.page_size),
-                        page: Some(page),
-                        old_first: Some(delegate.old_first),
-                        ..Default::default()
-                    };
+                    let options = delegate.filter_options(Some(page));
                     Some(
                         delegate
                             .source
@@ -829,13 +874,7 @@ impl JournalDelegate {
                             delegate.entries = entries;
                             delegate.expanded.clear();
                             delegate.rebuild_rows();
-                            if let Some(row_ix) = delegate.rows.iter().position(|row| {
-                                matches!(row, JournalRow::Transaction(ix)
-                                    if delegate.entries[*ix].txn.src() == &target)
-                            }) {
-                                table.set_selected_row(row_ix, cx);
-                                table.scroll_to_row(row_ix, cx);
-                            }
+                            sync_focused_selection(table, found, cx);
                         }
                         Err(error) => delegate.failed = Some(format!("{error:#}").into()),
                     }
@@ -844,6 +883,46 @@ impl JournalDelegate {
                 .ok();
         }));
         cx.notify();
+    }
+
+    fn focus_entry(&mut self, entry_ix: usize) -> bool {
+        let Some(src) = self
+            .entries
+            .get(entry_ix)
+            .map(|entry| entry.txn.src().clone())
+        else {
+            return false;
+        };
+        if self.focused_entry.as_ref() == Some(&src) {
+            return false;
+        }
+        self.focused_entry = Some(src);
+        true
+    }
+
+    fn focus_row(&mut self, row_ix: usize) -> bool {
+        match self.rows.get(row_ix).copied() {
+            Some(JournalRow::Transaction(entry_ix) | JournalRow::Posting(entry_ix, _)) => {
+                self.focus_entry(entry_ix)
+            }
+            None => false,
+        }
+    }
+
+    fn is_focused_entry(&self, entry_ix: usize) -> bool {
+        self.focused_entry.as_ref().is_some_and(|focused| {
+            self.entries
+                .get(entry_ix)
+                .is_some_and(|entry| entry.txn.src() == focused)
+        })
+    }
+
+    fn focused_row_ix(&self) -> Option<usize> {
+        let target = self.focused_entry.as_ref()?;
+        self.rows.iter().position(|row| {
+            matches!(row, JournalRow::Transaction(ix)
+                if self.entries[*ix].txn.src() == target)
+        })
     }
 
     /// Lays the entries out as rows: a transaction, then its postings when
@@ -875,6 +954,23 @@ impl JournalDelegate {
             self.expanded.insert(entry_ix);
         }
         self.rebuild_rows();
+    }
+}
+
+fn sync_focused_selection(
+    table: &mut TableState<JournalDelegate>,
+    scroll: bool,
+    cx: &mut Context<TableState<JournalDelegate>>,
+) {
+    if let Some(row_ix) = table.delegate().focused_row_ix() {
+        if table.selected_row() != Some(row_ix) {
+            table.set_selected_row(row_ix, cx);
+        }
+        if scroll {
+            table.scroll_to_row(row_ix, cx);
+        }
+    } else if table.selected_row().is_some() {
+        table.clear_selection(cx);
     }
 }
 
@@ -968,14 +1064,26 @@ impl TableDelegate for JournalDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        // Alternates background by transaction index so expanded posting
-        // sub-rows share the background color of their parent transaction row.
+        // Alternates background by transaction index (or highlights the user-focused
+        // record) so expanded posting sub-rows share their parent's background color.
         let row = div().id(("row", row_ix));
         match self.rows.get(row_ix).copied() {
-            Some(JournalRow::Transaction(entry_ix)) => row.bg(table_row_bg(entry_ix, cx)),
-            Some(JournalRow::Posting(entry_ix, _)) => row
-                .bg(table_row_bg(entry_ix, cx))
-                .text_color(cx.theme().muted_foreground),
+            Some(JournalRow::Transaction(entry_ix)) => {
+                let bg = if self.is_focused_entry(entry_ix) {
+                    table_focused_row_bg(cx)
+                } else {
+                    table_row_bg(entry_ix, cx)
+                };
+                row.bg(bg)
+            }
+            Some(JournalRow::Posting(entry_ix, _)) => {
+                let bg = if self.is_focused_entry(entry_ix) {
+                    table_focused_row_bg(cx)
+                } else {
+                    table_row_bg(entry_ix, cx)
+                };
+                row.bg(bg).text_color(cx.theme().muted_foreground)
+            }
             None => row,
         }
     }
@@ -987,6 +1095,7 @@ impl TableDelegate for JournalDelegate {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
+        self.focus_row(row_ix);
         match self.rows.get(row_ix) {
             Some(&JournalRow::Transaction(entry_ix)) => {
                 let menu = menu.menu("Edit entry", Box::new(EditEntry(entry_ix)));
@@ -1036,6 +1145,8 @@ impl TableDelegate for JournalDelegate {
                                 .label(txn.date().to_string())
                                 .accessibility_label(format!("Edit the entry of {}", txn.date()))
                                 .on_click(cx.listener(move |table, _, window, cx| {
+                                    table.delegate_mut().focus_entry(entry_ix);
+                                    sync_focused_selection(table, false, cx);
                                     // Along the table's path, whatever has focus, so
                                     // the journal above the table receives it; after
                                     // this update of the table, which it reads.
@@ -1069,6 +1180,8 @@ impl TableDelegate for JournalDelegate {
                                         .label(account.clone())
                                         .accessibility_label(format!("Open account {account}"))
                                         .on_click(cx.listener(move |table, _, window, cx| {
+                                            table.delegate_mut().focus_entry(entry_ix);
+                                            sync_focused_selection(table, false, cx);
                                             let handle = table.focus_handle(cx);
                                             let account = to_open.clone();
                                             window.defer(cx, move |window, cx| {
@@ -1105,8 +1218,10 @@ impl TableDelegate for JournalDelegate {
                                 .cursor_pointer()
                                 .on_click(cx.listener(move |table, _, _, cx| {
                                     cx.stop_propagation();
-                                    table.clear_selection(cx);
-                                    table.delegate_mut().toggle_entry(entry_ix);
+                                    let delegate = table.delegate_mut();
+                                    delegate.focus_entry(entry_ix);
+                                    delegate.toggle_entry(entry_ix);
+                                    sync_focused_selection(table, false, cx);
                                     cx.notify();
                                 }))
                                 .when(!txn.payee().is_empty(), |this| {
@@ -1167,6 +1282,8 @@ impl TableDelegate for JournalDelegate {
                                     .label(account.clone())
                                     .accessibility_label(format!("Open account {account}"))
                                     .on_click(cx.listener(move |table, _, window, cx| {
+                                        table.delegate_mut().focus_entry(entry_ix);
+                                        sync_focused_selection(table, false, cx);
                                         let handle = table.focus_handle(cx);
                                         let account = to_open.clone();
                                         window.defer(cx, move |window, cx| {

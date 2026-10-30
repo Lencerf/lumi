@@ -16,6 +16,9 @@ pub(crate) fn configure_theme(cx: &mut App) {
         } else {
             theme.muted
         };
+        theme.table_active = theme
+            .blue
+            .opacity(if theme.is_dark() { 0.22 } else { 0.14 });
     });
 }
 
@@ -42,6 +45,11 @@ pub(crate) fn table_row_bg(row_ix: usize, cx: &App) -> Hsla {
     } else {
         cx.theme().table_even
     }
+}
+
+/// Background color for the user-focused record in report tables.
+pub(crate) fn table_focused_row_bg(cx: &App) -> Hsla {
+    cx.theme().table_active
 }
 
 /// A compact inline button colored to show that a datum in a table — a date
