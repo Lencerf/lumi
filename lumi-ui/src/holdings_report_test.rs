@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::table::TableDelegate as _;
-use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, FontWeight, Styled as _, TestAppContext,
-    WindowBounds, WindowOptions, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Entity, FontWeight, Modifiers, MouseButton,
+    MouseDownEvent, PlatformInput, Styled as _, TestAppContext, WindowBounds, WindowOptions, point,
+    px, size,
 };
 use lumi::web::Position;
 use rust_decimal::Decimal;
@@ -283,5 +284,90 @@ fn test_holdings_search_shortcut_filters_by_currency_date_and_account(cx: &mut T
     cx.read(|cx| {
         let report = app.read(cx).holdings().expect("holdings report is shown");
         assert_eq!(report.read(cx).accounts(cx).len(), 4);
+    });
+}
+
+#[gpui_kit::test]
+fn test_holdings_cmd_f_typing_sequential_chars_does_not_select_or_overwrite_first_char(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Holdings,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    let find_shortcut = if cfg!(target_os = "macos") {
+        "cmd-f"
+    } else {
+        "ctrl-f"
+    };
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        let search_input = report.read(cx).search_input_state().clone();
+
+        let origin = search_input.read(cx).text_bounds().expect("search bounds");
+        let click_pos = point(origin.origin.x + px(4.), origin.origin.y + px(8.));
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: click_pos,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+
+        window.press(find_shortcut, cx);
+        window.render_frame(cx);
+        assert!(report.read(cx).is_search_focused(window, cx));
+        assert_eq!(search_input.read(cx).selected_range(), 0..0);
+
+        window.input("v", cx);
+        window.render_frame(cx);
+        window.pointer_move(click_pos, Some(MouseButton::Left), cx);
+        assert_eq!(search_input.read(cx).value(), "v");
+        assert_eq!(search_input.read(cx).selected_range(), 1..1);
+
+        window.input("t", cx);
+        window.render_frame(cx);
+        window.pointer_up(click_pos, MouseButton::Left, cx);
+        assert_eq!(search_input.read(cx).value(), "vt");
+        assert_eq!(search_input.read(cx).selected_range(), 2..2);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        assert_eq!(report.read(cx).search_query(cx), "vt");
+        assert_eq!(
+            report.read(cx).accounts(cx),
+            ["Assets:Investments:Brokerage"]
+        );
     });
 }

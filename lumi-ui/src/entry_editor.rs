@@ -262,7 +262,9 @@ impl EntryEditor {
         let provider = BeancountCompletionProvider::new();
         let provider_for_state = provider.clone();
         let text = cx.new(|cx| {
-            let mut state = EditorState::new(window, cx).language(highlight::LANGUAGE);
+            let mut state = EditorState::new(window, cx)
+                .language(highlight::LANGUAGE)
+                .searchable(false);
             state.set_soft_wrap(false, window, cx);
             state.set_line_number(false, window, cx);
             state.set_folding(false, window, cx);
