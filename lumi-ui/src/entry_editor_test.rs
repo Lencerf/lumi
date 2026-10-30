@@ -816,3 +816,120 @@ fn test_entry_editor_paste_shorter_text_does_not_keep_n_chars_selected_on_stale_
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_unedited_entry_editor_auto_closes_on_outside_click_but_not_on_drag_out(
+    cx: &mut TestAppContext,
+) {
+    let ledger = TempLedger::new("outside-click-unedited");
+    let (handle, _) = open_journal(&ledger, cx);
+    let outside = point(px(20.), px(20.));
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Navigating the caret, clicking inside the dialog chrome, or dragging a
+    // text selection from inside the editor out onto the backdrop does not edit
+    // the entry and must not dismiss the dialog.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find_by_label("Entry text").value(), Some(PAY_CARD));
+
+        window.press("end", cx);
+        window.click_at("entry-editor-dialog", point(px(12.), px(12.)), cx);
+        assert!(window.try_find("entry-editor-dialog").is_some());
+
+        let inside = window.find_by_label("Entry text").bounds().center();
+        window.drag(inside, outside, cx);
+        assert!(window.try_find("entry-editor-dialog").is_some());
+
+        // Clicking outside the dialog while unedited auto-closes it.
+        window.click_at("entry-editor-backdrop", outside, cx);
+        assert!(window.try_find("entry-editor-dialog").is_none());
+        assert!(window.try_find_by_label("Entry text").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_edited_or_duplicated_entry_editor_does_not_auto_close_on_outside_click(
+    cx: &mut TestAppContext,
+) {
+    let ledger = TempLedger::new("outside-click-edited");
+    let (handle, app) = open_journal(&ledger, cx);
+    let session = cx.read(|cx| app.read(cx).session().clone());
+    let txn = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        report.read(cx).entries(cx)[0].txn.clone()
+    });
+    let outside = point(px(20.), px(20.));
+
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            EntryEditor::open(&txn, session.clone(), window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // Type one character so an edit has happened.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!editor.read(cx).has_edited(cx));
+        window.press("end", cx);
+        window.input("x", cx);
+    })
+    .unwrap();
+
+    // Clicking outside does not close an edited dialog.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(editor.read(cx).is_changed(cx));
+        assert!(editor.read(cx).has_edited(cx));
+        window.click_at("entry-editor-backdrop", outside, cx);
+        assert!(window.try_find("entry-editor-dialog").is_some());
+
+        // Deleting the typed character restores the original text, yet an edit
+        // happened during this session so clicking outside still keeps it open.
+        window.press("backspace", cx);
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find_by_label("Entry text").value(), Some(PAY_CARD));
+        assert!(!editor.read(cx).is_changed(cx));
+        assert!(editor.read(cx).has_edited(cx));
+        window.click_at("entry-editor-backdrop", outside, cx);
+        assert!(window.try_find("entry-editor-dialog").is_some());
+
+        window.click("cancel", cx);
+        assert!(window.try_find("entry-editor-dialog").is_none());
+    })
+    .unwrap();
+
+    // Switching to Duplicate mode also counts as an edit and blocks auto-close.
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            EntryEditor::open(&txn, session, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-entry", cx);
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(editor.read(cx).has_edited(cx));
+        window.click_at("entry-editor-backdrop", outside, cx);
+        assert!(window.try_find("entry-editor-dialog").is_some());
+    })
+    .unwrap();
+}

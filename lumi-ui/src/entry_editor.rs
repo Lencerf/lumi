@@ -14,8 +14,9 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Context, Empty, Entity, EntityId, EventEmitter, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Task, WeakEntity, WeakFocusHandle, Window, actions, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _,
+    WeakEntity, WeakFocusHandle, Window, actions, div, px,
 };
 use lumi::{Source, Transaction};
 
@@ -51,6 +52,9 @@ pub struct EntryEditor {
     drag_guard: EditDragGuard,
     /// The entry's text as read; `None` until it has arrived.
     original: Option<SharedString>,
+    /// Whether any edit has occurred since the dialog opened, even if later
+    /// undone or edited back to match `original`.
+    edited: bool,
     /// When `true`, saving appends the text as a new entry in `source.file`
     /// rather than replacing the entry that was read.
     duplicating: bool,
@@ -190,6 +194,7 @@ impl Render for EntryEditorLayer {
         let viewport = window.viewport_size();
         div()
             .id("entry-editor-backdrop")
+            .test_support()
             .absolute()
             .inset_0()
             .occlude()
@@ -199,9 +204,20 @@ impl Render for EntryEditorLayer {
             .justify_center()
             .pt(viewport.height / 10.)
             .px_4()
+            .on_click({
+                let editor = editor.clone();
+                move |_, window, cx| {
+                    editor.update(cx, |this, cx| {
+                        if !this.has_edited(cx) {
+                            this.close(window, cx);
+                        }
+                    });
+                }
+            })
             .child(
                 div()
                     .id("entry-editor-dialog")
+                    .test_support()
                     .occlude()
                     .v_flex()
                     .w(px(720.))
@@ -280,6 +296,7 @@ impl EntryEditor {
         let _subscriptions = vec![
             cx.subscribe(&text, |this, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.edited = true;
                     this.drag_guard.cancel();
                     cx.notify();
                 }
@@ -324,6 +341,7 @@ impl EntryEditor {
             text,
             drag_guard,
             original: None,
+            edited: false,
             duplicating: false,
             dismissing_overlay,
             pending: None,
@@ -357,6 +375,12 @@ impl EntryEditor {
         self.original
             .as_ref()
             .is_some_and(|original| *original != self.text.read(cx).value())
+    }
+
+    /// Whether any edit has occurred since the dialog opened, including edits
+    /// later reverted back to the original text or switching to duplicate mode.
+    pub fn has_edited(&self, cx: &App) -> bool {
+        self.edited || self.duplicating || self.is_changed(cx)
     }
 
     pub fn is_saving(&self) -> bool {
@@ -395,6 +419,7 @@ impl EntryEditor {
             state.set_value(updated, window, cx);
             state.focus(window, cx);
         });
+        self.edited = true;
         self.duplicating = true;
         self.error = None;
         window.refresh();
