@@ -457,6 +457,7 @@ pub fn completions(ledger: &Ledger) -> Completions {
         payee_narrations,
         tags,
         links,
+        decimal_point_column: Some(ledger.decimal_point_column()),
     }
 }
 

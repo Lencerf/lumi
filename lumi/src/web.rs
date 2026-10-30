@@ -91,4 +91,8 @@ pub struct Completions {
     pub tags: Vec<String>,
     /// Distinct links (including leading `^`), most recently used first.
     pub links: Vec<String>,
+    /// 1-based column at which posting decimal points should align, configured
+    /// via `custom "lumi-option" "decimal-point-column"` (default `50`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub decimal_point_column: Option<usize>,
 }

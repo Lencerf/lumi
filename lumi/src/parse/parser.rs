@@ -1,5 +1,6 @@
 use super::lexer::Lexer;
 use super::token::Token;
+use crate::options::{CUSTOM_LUMI_OPTION, LUMI_OPTION_DECIMAL_POINT_COLUMN};
 use crate::{
     Account, AccountDoc, AccountNote, Amount, Currency, Error, ErrorLevel, ErrorType, EventInfo,
     Link, Location, Meta, NaiveDate, Narration, Payee, Price, Source, SrcFile, Tag, TxnFlag,
@@ -199,6 +200,7 @@ pub struct LedgerDraft {
     pub commodities: HashMap<Currency, (Meta, Source)>,
     pub txns: Vec<TxnDraft>,
     pub options: HashMap<String, (String, Source)>,
+    pub lumi_options: HashMap<String, (String, Source)>,
     pub events: HashMap<String, Vec<EventInfo>>,
     pub files: Vec<SrcFile>,
 }
@@ -219,6 +221,25 @@ impl LedgerDraft {
             })
         } else {
             self.options.insert(key, (val, src));
+            Ok(())
+        }
+    }
+
+    /// Adds a `custom "lumi-option"` setting into a [`LedgerDraft`]. Returns
+    /// `Err(Error)` with [`ErrorLevel::Warning`] if `key` was already specified.
+    pub fn add_lumi_option(&mut self, key: String, val: String, src: Source) -> Result<(), Error> {
+        if let Some((_, existing_src)) = self.lumi_options.get(&key) {
+            Err(Error {
+                level: ErrorLevel::Warning,
+                r#type: ErrorType::Duplicate,
+                msg: format!(
+                    "Ignored directive: lumi-option {} has been specified at {}.",
+                    key, existing_src
+                ),
+                src,
+            })
+        } else {
+            self.lumi_options.insert(key, (val, src));
             Ok(())
         }
     }
@@ -258,6 +279,7 @@ impl LedgerDraft {
             commodities,
             txns,
             options,
+            lumi_options,
             events,
             files,
         } = another;
@@ -272,6 +294,11 @@ impl LedgerDraft {
         }
         for (key, (val, src)) in options {
             if let Err(e) = self.add_option(key, val, src) {
+                errors.push(e);
+            }
+        }
+        for (key, (val, src)) in lumi_options {
+            if let Err(e) = self.add_lumi_option(key, val, src) {
                 errors.push(e);
             }
         }
@@ -543,15 +570,80 @@ impl<'source> Parser<'source> {
             Token::Note => self.parse_note(date, draft),
             Token::Event => self.parse_event(date, draft),
             Token::Commodity => self.parse_commodity(draft, Some(date_str)),
-            Token::Custom => self.parse_custom(start, errors),
+            Token::Custom => self.parse_custom(start, draft, errors),
             _ => self.unexpected(token, text),
         }
     }
 
-    fn parse_custom(&mut self, start: Location, errors: &mut Vec<Error>) -> Result<(), Error> {
+    fn parse_custom(
+        &mut self,
+        start: Location,
+        draft: &mut LedgerDraft,
+        errors: &mut Vec<Error>,
+    ) -> Result<(), Error> {
         let custom_line = self.lexer.location().line;
         self.lexer.take(Token::Custom)?;
         let kind = self.parse_string()?;
+        if kind == CUSTOM_LUMI_OPTION {
+            if self.lexer.location().line != custom_line {
+                return Err(Error {
+                    level: ErrorLevel::Error,
+                    r#type: ErrorType::Syntax,
+                    msg: "Expected option name in custom \"lumi-option\".".to_string(),
+                    src: self.src_from(start),
+                });
+            }
+            let key = self.parse_string()?;
+            if self.lexer.location().line != custom_line {
+                return Err(Error {
+                    level: ErrorLevel::Error,
+                    r#type: ErrorType::Syntax,
+                    msg: format!("Expected value for lumi-option {:?}.", key),
+                    src: self.src_from(start),
+                });
+            }
+            let (val_token, val_text) = self.lexer.peek()?;
+            let val = match val_token {
+                Token::String => {
+                    self.lexer.consume();
+                    Self::remove_quotes(val_text)
+                }
+                Token::Number => {
+                    self.lexer.consume();
+                    val_text
+                }
+                _ => return self.unexpected(val_token, val_text),
+            };
+            if self.lexer.location().line == custom_line
+                && let Ok((token, text)) = self.lexer.peek()
+            {
+                return self.unexpected(token, text);
+            }
+            self.parse_meta()?;
+            let src = self.src_from(start);
+            return match key {
+                LUMI_OPTION_DECIMAL_POINT_COLUMN => {
+                    let Some(col) = val.trim().parse::<usize>().ok().filter(|&col| col >= 1) else {
+                        return Err(Error {
+                            level: ErrorLevel::Error,
+                            r#type: ErrorType::Syntax,
+                            msg: format!("Invalid decimal-point-column: {:?}.", val),
+                            src,
+                        });
+                    };
+                    draft.add_lumi_option(key.to_string(), col.to_string(), src)
+                }
+                _ => {
+                    errors.push(Error {
+                        msg: format!("Ignored lumi-option: {:?}.", key),
+                        level: ErrorLevel::Warning,
+                        r#type: ErrorType::Unsupported,
+                        src,
+                    });
+                    Ok(())
+                }
+            };
+        }
         while self.lexer.location().line == custom_line {
             let Ok((token, text)) = self.lexer.peek() else {
                 break;
