@@ -13,7 +13,7 @@ use crate::LumiApp;
 use crate::navigation::Page;
 use crate::session::LedgerSession;
 use crate::source::LocalLedger;
-use crate::trie_report::{TrieLoad, TriePresentation, TrieReport, roots};
+use crate::trie_report::{TrieLoad, TriePresentation, TrieReport, TrieRow, roots};
 
 /// The query fixture of the `lumi` crate.
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../lumi/src/query_test.bean");
@@ -63,6 +63,21 @@ fn test_presentation_resolves_account_names() {
     assert_eq!(presentation.rows[2].name.as_ref(), "Checking");
     assert_eq!(presentation.rows[2].level, 2);
     assert_eq!(presentation.currencies, ["USD"]);
+
+    let tree_lines: Vec<String> = presentation.rows.iter().map(TrieRow::tree_line).collect();
+    assert_eq!(
+        tree_lines,
+        [
+            "Assets",
+            "├── Bank",
+            "│   ├── Checking",
+            "│   └── Savings",
+            "├── Cash",
+            "│   └── Wallet",
+            "│       └── Coins",
+            "└── Investments",
+        ]
+    );
 }
 
 /// A session over the fixture ledger with its first load completed, and a
@@ -306,6 +321,72 @@ fn test_report_scrolls_both_ways(cx: &mut TestAppContext) {
             window.find(equity).bounds().origin.x < equity_x,
             "scrolling right moves the second column left"
         );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_balance_and_income_views_render_full_height_tree_guides(cx: &mut TestAppContext) {
+    // Balance sheet: verify root has no guides, child accounts have `level`
+    // full-height guide columns immediately to the left of their button.
+    let (bs_handle, _bs_app) = open_app(Page::BalanceSheet, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+    cx.update_window(bs_handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find((ElementId::from("tree-guide"), "Assets:0"))
+                .is_none()
+        );
+
+        let assets_x = window
+            .find((ElementId::from("account"), "Assets"))
+            .bounds()
+            .origin
+            .x;
+        let checking_x = window
+            .find((ElementId::from("account"), "Assets:Bank:Checking"))
+            .bounds()
+            .origin
+            .x;
+        let g0 = window
+            .find((ElementId::from("tree-guide"), "Assets:Bank:Checking:0"))
+            .bounds();
+        let g1 = window
+            .find((ElementId::from("tree-guide"), "Assets:Bank:Checking:1"))
+            .bounds();
+        assert!(
+            g0.size.height >= px(28.),
+            "guide stretches across row height: {g0:?}"
+        );
+        assert_eq!(g0.size.height, g1.size.height);
+        assert_eq!(g1.origin.x, g0.origin.x + g0.size.width);
+        assert_eq!(
+            checking_x,
+            assets_x + g0.size.width + g1.size.width,
+            "two tree-guide columns precede a level-2 account component"
+        );
+    })
+    .unwrap();
+
+    // Income statement: verify both Income and Expenses hierarchies render guides.
+    let (inc_handle, _inc_app) = open_app(Page::Income, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+    cx.update_window(inc_handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find((ElementId::from("tree-guide"), "Income:0"))
+                .is_none()
+        );
+        let inc_guide = window
+            .find((ElementId::from("tree-guide"), "Income:Salary:0"))
+            .bounds();
+        let exp_guide = window
+            .find((ElementId::from("tree-guide"), "Expenses:Food:0"))
+            .bounds();
+        assert!(inc_guide.size.height >= px(28.));
+        assert!(exp_guide.size.height >= px(28.));
     })
     .unwrap();
 }
