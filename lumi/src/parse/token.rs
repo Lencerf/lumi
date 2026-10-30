@@ -15,6 +15,12 @@ pub enum Token {
     #[token("option")]
     Option,
 
+    #[token("plugin")]
+    Plugin,
+
+    #[token("custom")]
+    Custom,
+
     #[token("event")]
     Event,
 
