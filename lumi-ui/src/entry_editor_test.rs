@@ -3,10 +3,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui_kit::test::{TestAppContextExt as _, TestQueryExt as _, TestWindowExt as _};
+use gpui_kit::test::{
+    TestAppContextExt as _, TestEventExt as _, TestQueryExt as _, TestWindowExt as _,
+};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
-    px, size,
+    AnyWindowHandle, AppContext as _, Bounds, ClipboardItem, Entity, EntityInputHandler as _,
+    Modifiers, MouseButton, MouseDownEvent, PlatformInput, TestAppContext, WindowBounds,
+    WindowOptions, point, px, size,
 };
 
 use crate::LumiApp;
@@ -737,4 +740,79 @@ fn test_tag_and_link_completions_insert_and_save(cx: &mut TestAppContext) {
             .text()
             .contains("2025-06-01 * \"Pay card\" #paris-2025 ^flight-receipt")
     );
+}
+
+#[gpui_kit::test]
+fn test_entry_editor_paste_shorter_text_does_not_keep_n_chars_selected_on_stale_drag(
+    cx: &mut TestAppContext,
+) {
+    let ledger = TempLedger::new("paste-shorter-drag");
+    let (handle, app) = open_journal(&ledger, cx);
+    let session = cx.read(|cx| app.read(cx).session().clone());
+    let txn = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("the journal is shown");
+        report.read(cx).entries(cx)[0].txn.clone()
+    });
+
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            EntryEditor::open(&txn, session, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let state = editor.read(cx).editor_state().clone();
+        // `"card"` on line 1 of `PAY_CARD` is 4 chars (`18..22`); paste `"it"` (2 chars).
+        let start = PAY_CARD.find("card").unwrap();
+        let end = start + "card".len();
+        let word_bounds = state.update(cx, |state, cx| {
+            let text_bounds = state.text_bounds().expect("text bounds");
+            state
+                .bounds_for_range(start..end, text_bounds, window, cx)
+                .expect("word bounds")
+        });
+        let click_pos = point(
+            word_bounds.origin.x + word_bounds.size.width * 0.5,
+            word_bounds.origin.y + word_bounds.size.height * 0.5,
+        );
+        let drag_end = point(
+            word_bounds.origin.x + word_bounds.size.width,
+            word_bounds.origin.y + word_bounds.size.height * 0.5,
+        );
+
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: click_pos,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(state.read(cx).selected_range(), start..end);
+
+        cx.write_to_clipboard(ClipboardItem::new_string("it".into()));
+        let paste = if cfg!(target_os = "macos") {
+            "cmd-v"
+        } else {
+            "ctrl-v"
+        };
+        window.press(paste, cx);
+        window.pointer_move(drag_end, Some(MouseButton::Left), cx);
+        window.pointer_up(drag_end, MouseButton::Left, cx);
+
+        let pasted_end = start + "it".len();
+        assert!(
+            state
+                .read(cx)
+                .value()
+                .starts_with("2025-06-01 * \"Pay it\"")
+        );
+        assert_eq!(state.read(cx).selected_range(), pasted_end..pasted_end);
+    })
+    .unwrap();
 }

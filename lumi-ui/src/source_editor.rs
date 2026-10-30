@@ -18,6 +18,7 @@ use gpui_kit::{
 
 use crate::completion::BeancountCompletionProvider;
 use crate::errors_report::common_dir;
+use crate::input_guard::EditDragGuard;
 use crate::session::LedgerSession;
 use crate::style::table_card;
 use crate::{completion, highlight};
@@ -72,6 +73,7 @@ pub struct SourceEditor {
     session: Entity<LedgerSession>,
     file_select: Entity<SelectState<SearchableVec<SourceFileItem>>>,
     text: Entity<EditorState>,
+    drag_guard: EditDragGuard,
     provider: Rc<BeancountCompletionProvider>,
     files: Vec<SharedString>,
     selected_file: Option<SharedString>,
@@ -115,6 +117,7 @@ impl SourceEditor {
             lsp.set_completion_highlighter(completion::highlighter());
             state
         });
+        let drag_guard = EditDragGuard::new(&text);
         let file_select =
             cx.new(|cx| SelectState::new(SearchableVec::new(Vec::new()), None, window, cx));
         let _subscriptions = vec![
@@ -122,8 +125,9 @@ impl SourceEditor {
                 this.on_session_changed(window, cx)
             }),
             cx.subscribe_in(&file_select, window, Self::on_select_event),
-            cx.subscribe(&text, |_, _, event, cx| {
+            cx.subscribe(&text, |this, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.drag_guard.cancel();
                     cx.notify();
                 }
             }),
@@ -132,6 +136,7 @@ impl SourceEditor {
             session,
             file_select,
             text,
+            drag_guard,
             provider,
             files: Vec::new(),
             selected_file: None,
@@ -615,6 +620,8 @@ impl Render for SourceEditor {
                     table_card(cx)
                         .relative()
                         .size_full()
+                        .capture_action(self.drag_guard.paste_capture())
+                        .child(self.drag_guard.element())
                         .child(
                             Editor::new(&self.text)
                                 .size_full()

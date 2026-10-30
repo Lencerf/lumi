@@ -4,10 +4,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::input::RopeExt as _;
-use gpui_kit::test::{TestAppContextExt as _, TestQueryExt as _, TestWindowExt as _};
+use gpui_kit::test::{
+    TestAppContextExt as _, TestEventExt as _, TestQueryExt as _, TestWindowExt as _,
+};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
-    px, size,
+    AnyWindowHandle, AppContext as _, Bounds, ClipboardItem, Entity, EntityInputHandler as _,
+    Modifiers, MouseButton, MouseDownEvent, PlatformInput, TestAppContext, WindowBounds,
+    WindowOptions, point, px, size,
 };
 
 use crate::LumiApp;
@@ -652,4 +655,73 @@ fn test_jumping_to_file_line_places_target_at_top_unless_near_eof(cx: &mut TestA
         assert!(visible.contains(&117));
         assert_eq!(visible.end, total_lines);
     });
+}
+
+#[gpui_kit::test]
+fn test_source_editor_paste_shorter_text_does_not_keep_n_chars_selected_on_stale_drag(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("paste-shorter-drag");
+    let (handle, app) = open_editor(&ledger, cx);
+    let editor = cx.read(|cx| app.read(cx).editor().expect("editor page is open"));
+
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.select_file(ledger.expenses_str(), window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let state = editor.read(cx).editor_state().clone();
+        // `"Blue"` in `2025-01-10 * "Blue Bottle" ...` is 4 chars; `"Bottle"` at `19..25` is 6 chars.
+        let word_bounds = state.update(cx, |state, cx| {
+            let text_bounds = state.text_bounds().expect("text bounds");
+            state
+                .bounds_for_range(19..25, text_bounds, window, cx)
+                .expect("word bounds")
+        });
+        let click_pos = point(
+            word_bounds.origin.x + word_bounds.size.width * 0.5,
+            word_bounds.origin.y + word_bounds.size.height * 0.5,
+        );
+        let drag_end = point(
+            word_bounds.origin.x + word_bounds.size.width,
+            word_bounds.origin.y + word_bounds.size.height * 0.5,
+        );
+
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: click_pos,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(state.read(cx).selected_range(), 19..25);
+
+        cx.write_to_clipboard(ClipboardItem::new_string("Cup".into()));
+        let paste = if cfg!(target_os = "macos") {
+            "cmd-v"
+        } else {
+            "ctrl-v"
+        };
+        window.press(paste, cx);
+        window.pointer_move(drag_end, Some(MouseButton::Left), cx);
+        window.pointer_up(drag_end, MouseButton::Left, cx);
+
+        assert!(
+            state
+                .read(cx)
+                .value()
+                .starts_with("2025-01-10 * \"Blue Cup\" \"Latte\"")
+        );
+        assert_eq!(state.read(cx).selected_range(), 22..22);
+    })
+    .unwrap();
 }

@@ -20,6 +20,7 @@ use gpui_kit::{
 use lumi::{Source, Transaction};
 
 use crate::completion::BeancountCompletionProvider;
+use crate::input_guard::EditDragGuard;
 use crate::session::LedgerSession;
 use crate::style::interactive_button;
 use crate::{completion, highlight};
@@ -47,6 +48,7 @@ pub struct EntryEditor {
     session: Entity<LedgerSession>,
     source: Source,
     text: Entity<EditorState>,
+    drag_guard: EditDragGuard,
     /// The entry's text as read; `None` until it has arrived.
     original: Option<SharedString>,
     /// When `true`, saving appends the text as a new entry in `source.file`
@@ -271,10 +273,12 @@ impl EntryEditor {
             lsp.set_completion_highlighter(completion::highlighter());
             state
         });
+        let drag_guard = EditDragGuard::new(&text);
         let dismissing_overlay = Rc::new(Cell::new(false));
         let _subscriptions = vec![
-            cx.subscribe(&text, |_, _, event, cx| {
+            cx.subscribe(&text, |this, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
+                    this.drag_guard.cancel();
                     cx.notify();
                 }
             }),
@@ -316,6 +320,7 @@ impl EntryEditor {
             session,
             source,
             text,
+            drag_guard,
             original: None,
             duplicating: false,
             dismissing_overlay,
@@ -532,6 +537,8 @@ impl Render for EntryEditor {
             .child(
                 div()
                     .relative()
+                    .capture_action(self.drag_guard.paste_capture())
+                    .child(self.drag_guard.element())
                     .child(
                         Editor::new(&self.text)
                             .h(px(320.))
