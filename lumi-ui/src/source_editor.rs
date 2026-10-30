@@ -12,8 +12,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, actions,
-    div, px,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window,
+    actions, div, point, px,
 };
 
 use crate::completion::BeancountCompletionProvider;
@@ -107,6 +107,7 @@ impl SourceEditor {
             state.set_soft_wrap(false, window, cx);
             state.set_line_number(true, window, cx);
             state.set_folding(false, window, cx);
+            state.set_scroll_beyond_last_line(Some(0), window, cx);
             state.set_highlighter_factory(highlight::highlighter_factory(), cx);
             let lsp = state.lsp_mut();
             lsp.completion_provider = Some(provider_for_state);
@@ -641,26 +642,57 @@ impl Render for SourceEditor {
 #[path = "source_editor_test.rs"]
 mod tests;
 
+fn scroll_line_to_top(state: &mut EditorState, row: u32, cx: &mut Context<EditorState>) -> bool {
+    let Some(line_height) = state.line_height() else {
+        return false;
+    };
+    let Some(bounds) = state.text_bounds().filter(|b| b.size.height > px(0.)) else {
+        return false;
+    };
+    let desired_y = -(row as f32 * line_height);
+    let content_height = state.text().lines_len() as f32 * line_height;
+    let min_y = (bounds.size.height - content_height).min(px(0.));
+    state.set_scroll_offset(point(px(0.), desired_y.max(min_y)), cx);
+    true
+}
+
+fn schedule_scroll_to_top(
+    weak: WeakEntity<EditorState>,
+    applied: Position,
+    attempts_left: u8,
+    window: &mut Window,
+) {
+    if attempts_left == 0 {
+        return;
+    }
+    window.on_next_frame(move |window, cx| {
+        let Some(text) = weak.upgrade() else {
+            return;
+        };
+        let done = text.update(cx, |state, cx| {
+            if state.cursor_position() != applied {
+                return true;
+            }
+            scroll_line_to_top(state, applied.line, cx)
+        });
+        if !done {
+            schedule_scroll_to_top(weak, applied, attempts_left - 1, window);
+        }
+    });
+}
+
 fn move_cursor_to_line(text: &Entity<EditorState>, line: usize, window: &mut Window, cx: &mut App) {
     let target_line = line.saturating_sub(1) as u32;
     let applied = text.update(cx, |state, cx| {
         let last_line = state.text().lines_len().saturating_sub(1) as u32;
         let pos = Position::new(target_line.min(last_line), 0);
         state.set_cursor_position(pos, window, cx);
+        scroll_line_to_top(state, pos.line, cx);
         pos
     });
-    // `scroll_to` inside `set_cursor_position` requires a completed layout pass
-    // (`last_layout` / `last_bounds`) for the current buffer. Re-applying once
-    // on the next frame guarantees the viewport scrolls to `applied` even when
-    // `Page::Editor` or the target file is painted for the first time.
-    let weak = text.downgrade();
-    window.on_next_frame(move |window, cx| {
-        if let Some(text) = weak.upgrade() {
-            text.update(cx, |state, cx| {
-                if state.cursor_position() == applied {
-                    state.set_cursor_position(applied, window, cx);
-                }
-            });
-        }
-    });
+    // `line_height()` and `text_bounds()` require a completed layout pass when
+    // `Page::Editor` is painted for the first time; re-applying on the next
+    // frame guarantees `applied` lands at the top of the viewport (clamped at
+    // the end of the file).
+    schedule_scroll_to_top(text.downgrade(), applied, 3, window);
 }
