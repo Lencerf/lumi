@@ -7,8 +7,9 @@ use gpui_kit::component::table::{Table, TableBody, TableCell, TableHead, TableHe
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, ElementId, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div, rems,
+    AnyElement, Context, ElementId, Entity, EventEmitter, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task,
+    TestSupportExt as _, Window, div, px, relative, rems,
 };
 use lumi::web::{TrieOptions, TrieTable};
 
@@ -52,6 +53,19 @@ enum TrieLoad {
     Failed(SharedString),
 }
 
+/// One column of the tree prefix drawn in front of an account component.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TreeGuide {
+    /// `│   `: an ancestor level that still has siblings below this row.
+    Pass,
+    /// `    `: an ancestor level whose branch already ended above this row.
+    Space,
+    /// `├── `: connects this row to its parent when more siblings follow.
+    Branch,
+    /// `└── `: connects this row to its parent as the final sibling.
+    Last,
+}
+
 /// One account hierarchy prepared for rendering.
 struct TriePresentation {
     currencies: Vec<SharedString>,
@@ -62,10 +76,29 @@ struct TrieRow {
     /// The full account name, e.g. `Assets:Bank:Checking`.
     account: SharedString,
     level: usize,
+    /// Tree guide segments (`level` columns) drawn before `name`.
+    guides: Vec<TreeGuide>,
     /// The last segment of the account name.
     name: SharedString,
     /// One formatted balance per currency; empty for a zero balance.
     numbers: Vec<SharedString>,
+}
+
+#[cfg(test)]
+impl TrieRow {
+    pub(crate) fn tree_line(&self) -> String {
+        let mut line = String::new();
+        for guide in &self.guides {
+            line.push_str(match guide {
+                TreeGuide::Pass => "│   ",
+                TreeGuide::Space => "    ",
+                TreeGuide::Branch => "├── ",
+                TreeGuide::Last => "└── ",
+            });
+        }
+        line.push_str(&self.name);
+        line
+    }
 }
 
 /// The root accounts of each column of `page`.
@@ -228,6 +261,7 @@ impl TrieReport {
                 let theme = cx.theme();
                 let mono = theme.mono_font_family.clone();
                 let border = theme.border;
+                let guide_color = muted.opacity(0.55);
                 table_card(cx)
                     .child(
                         Table::new()
@@ -252,29 +286,49 @@ impl TrieReport {
                                     TableRow::new()
                                         .bg(row_bg)
                                         .child(
-                                            TableCell::new().child(
-                                                div().pl(rems(row.level as f32 * 1.25)).child(
-                                                    // Opens the account's journal. Small,
-                                                    // like the table, so the name is set
-                                                    // like the numbers beside it.
-                                                    interactive_button(
-                                                        (
-                                                            ElementId::from("account"),
-                                                            row.account.clone(),
-                                                        ),
-                                                        cx,
-                                                    )
-                                                    .font_family(mono.clone())
-                                                    .when(row.level == 0, |this| {
-                                                        this.font_semibold()
-                                                    })
-                                                    .label(row.name.clone())
-                                                    .accessibility_label(row.account.clone())
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        this.open_account(account.clone(), cx)
-                                                    })),
+                                            TableCell::new()
+                                                .py_0()
+                                                .items_stretch()
+                                                .children(
+                                                    row.guides.iter().copied().enumerate().map(
+                                                        |(col_ix, guide)| {
+                                                            render_tree_guide(
+                                                                &row.account,
+                                                                col_ix,
+                                                                guide,
+                                                                guide_color,
+                                                            )
+                                                        },
+                                                    ),
+                                                )
+                                                .child(
+                                                    div().py(px(3.)).flex().items_center().child(
+                                                        // Opens the account's journal. Small,
+                                                        // like the table, so the name is set
+                                                        // like the numbers beside it.
+                                                        interactive_button(
+                                                            (
+                                                                ElementId::from("account"),
+                                                                row.account.clone(),
+                                                            ),
+                                                            cx,
+                                                        )
+                                                        .font_family(mono.clone())
+                                                        .when(row.level == 0, |this| {
+                                                            this.font_semibold()
+                                                        })
+                                                        .label(row.name.clone())
+                                                        .accessibility_label(row.account.clone())
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.open_account(
+                                                                    account.clone(),
+                                                                    cx,
+                                                                )
+                                                            },
+                                                        )),
+                                                    ),
                                                 ),
-                                            ),
                                         )
                                         .children(row.numbers.iter().map(|number| {
                                             TableCell::new()
@@ -293,32 +347,127 @@ impl TrieReport {
     }
 }
 
+fn render_tree_guide(
+    account: &SharedString,
+    col_ix: usize,
+    guide: TreeGuide,
+    line_color: Hsla,
+) -> impl IntoElement {
+    let id = (
+        ElementId::from("tree-guide"),
+        SharedString::from(format!("{account}:{col_ix}")),
+    );
+    let cell = div()
+        .id(id)
+        .test_support()
+        .relative()
+        .w(rems(1.25))
+        .flex_shrink_0();
+    match guide {
+        TreeGuide::Space => cell,
+        TreeGuide::Pass => cell.child(
+            div()
+                .absolute()
+                .left(px(10.))
+                .top(px(-1.))
+                .bottom_0()
+                .w(px(1.))
+                .bg(line_color),
+        ),
+        TreeGuide::Branch => cell
+            .child(
+                div()
+                    .absolute()
+                    .left(px(10.))
+                    .top(px(-1.))
+                    .bottom_0()
+                    .w(px(1.))
+                    .bg(line_color),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(10.))
+                    .right_0()
+                    .top(relative(0.5))
+                    .h(px(1.))
+                    .bg(line_color),
+            ),
+        TreeGuide::Last => cell
+            .child(
+                div()
+                    .absolute()
+                    .left(px(10.))
+                    .top(px(-1.))
+                    .bottom(relative(0.5))
+                    .w(px(1.))
+                    .bg(line_color),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(10.))
+                    .right_0()
+                    .top(relative(0.5))
+                    .h(px(1.))
+                    .bg(line_color),
+            ),
+    }
+}
+
 impl TriePresentation {
     /// Flattens the rows of `table`, resolving each row's full account name
-    /// from the names of the rows above it.
+    /// and `tree`-style connector guides from the hierarchy.
     fn new(root: &str, table: TrieTable<String>) -> Self {
-        let mut ancestors: Vec<(String, usize)> = Vec::new();
-        let rows: Vec<TrieRow> = table
-            .rows
-            .into_iter()
-            .map(|row| {
+        let raw_rows = table.rows;
+        let mut ancestors: Vec<(String, usize, bool)> = Vec::new();
+        let rows: Vec<TrieRow> = raw_rows
+            .iter()
+            .enumerate()
+            .map(|(ix, row)| {
                 while ancestors
                     .last()
-                    .is_some_and(|(_, level)| *level >= row.level)
+                    .is_some_and(|(_, level, _)| *level >= row.level)
                 {
                     ancestors.pop();
                 }
-                ancestors.push((row.name.clone(), row.level));
+                let has_next_sibling = row.level > 0
+                    && raw_rows[ix + 1..]
+                        .iter()
+                        .find(|next| next.level <= row.level)
+                        .is_some_and(|next| next.level == row.level);
+                let mut guides = Vec::with_capacity(row.level);
+                if row.level > 0 {
+                    for (_, _, ancestor_has_next) in ancestors.iter().skip(1) {
+                        guides.push(if *ancestor_has_next {
+                            TreeGuide::Pass
+                        } else {
+                            TreeGuide::Space
+                        });
+                    }
+                    guides.push(if has_next_sibling {
+                        TreeGuide::Branch
+                    } else {
+                        TreeGuide::Last
+                    });
+                }
+                ancestors.push((row.name.clone(), row.level, has_next_sibling));
                 let account = ancestors
                     .iter()
-                    .map(|(name, _)| name.as_str())
+                    .map(|(name, _, _)| name.as_str())
                     .collect::<Vec<_>>()
                     .join(":");
                 TrieRow {
                     account: account.into(),
                     level: row.level,
-                    name: row.name.into(),
-                    numbers: row.numbers.into_iter().map(SharedString::from).collect(),
+                    guides,
+                    name: (&row.name).into(),
+                    numbers: row
+                        .numbers
+                        .iter()
+                        .cloned()
+                        .map(SharedString::from)
+                        .collect(),
                 }
             })
             .collect();
