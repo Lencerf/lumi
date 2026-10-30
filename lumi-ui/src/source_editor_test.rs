@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui_kit::component::input::RopeExt as _;
 use gpui_kit::test::{TestAppContextExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
@@ -530,5 +531,125 @@ fn test_clicking_location_in_entry_editor_jumps_to_file_and_line_in_source_edito
             Some(ledger.main_str().as_str())
         );
         assert_eq!(editor.read(cx).cursor_line(cx), 7);
+    });
+}
+
+#[gpui_kit::test]
+fn test_jumping_to_file_line_places_target_at_top_unless_near_eof(cx: &mut TestAppContext) {
+    let ledger = MultiFileLedger::new("scroll-top-and-eof");
+    // Build a 120-line `2025/expenses.bean`:
+    // - Lines 1..=56: 56 comment lines
+    // - Lines 57..=59: `2025-03-01` ("Middle entry", journal row 0) at line 57
+    // - Lines 60..=117: 58 comment lines
+    // - Lines 118..=120: `2025-02-28` ("Bottom entry", journal row 1) at line 118
+    let mut lines: Vec<String> = (1..=56).map(|n| format!("; padding {n}")).collect();
+    lines.push("2025-03-01 * \"Blue Bottle\" \"Middle entry\"".into());
+    lines.push("  Expenses:Food:Coffee   5.00 USD".into());
+    lines.push("  Assets:Cash           -5.00 USD".into());
+    lines.extend((60..=117).map(|n| format!("; padding {n}")));
+    lines.push("2025-02-28 * \"Blue Bottle\" \"Bottom entry\"".into());
+    lines.push("  Expenses:Food:Coffee   6.00 USD".into());
+    lines.push("  Assets:Cash           -6.00 USD".into());
+    assert_eq!(lines.len(), 120);
+    fs::write(&ledger.expenses_path, lines.join("\n")).unwrap();
+
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(600.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(ledger.main_str())),
+                        "main.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // Jump to row 0 (`2025-03-01` at line 57, well above the last viewport).
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-in-editor", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Render frames so initial layout + deferred top-aligned scroll settle.
+    for _ in 0..3 {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+    cx.read(|cx| {
+        let editor = app.read(cx).editor().expect("editor page is open");
+        assert_eq!(editor.read(cx).cursor_line(cx), 57);
+        let visible = editor
+            .read(cx)
+            .editor_state()
+            .read(cx)
+            .visible_row_range()
+            .expect("editor is laid out");
+        // 1-based line 57 is 0-based row 56 -> scrolled to be the first line in view.
+        assert_eq!(visible.start, 56);
+    });
+
+    // Now return to Journal and jump to row 1 (`2025-02-28` at line 118, within
+    // the last 3 lines of the 120-line file): scroll stops at EOF rather than
+    // placing line 118 at the top with blank space below.
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(ShowJournal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-in-editor", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    for _ in 0..2 {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+    cx.read(|cx| {
+        let editor = app.read(cx).editor().expect("editor page is open");
+        assert_eq!(editor.read(cx).cursor_line(cx), 118);
+        let state = editor.read(cx).editor_state().read(cx);
+        let visible = state.visible_row_range().expect("editor is laid out");
+        let total_lines = state.text().lines_len();
+        assert!(visible.start > 56);
+        assert!(visible.start < 117);
+        assert!(visible.contains(&117));
+        assert_eq!(visible.end, total_lines);
     });
 }
