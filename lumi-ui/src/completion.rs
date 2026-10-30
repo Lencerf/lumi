@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
@@ -23,6 +23,7 @@ const MAX_COMPLETION_ITEMS: usize = 50;
 #[derive(Default)]
 pub(crate) struct BeancountCompletionProvider {
     data: RefCell<Completions>,
+    requested_on_last_edit: Cell<bool>,
 }
 
 impl BeancountCompletionProvider {
@@ -32,6 +33,17 @@ impl BeancountCompletionProvider {
 
     pub(crate) fn set_completions(&self, completions: Completions) {
         *self.data.borrow_mut() = completions;
+    }
+
+    pub(crate) fn decimal_point_column(&self) -> usize {
+        self.data
+            .borrow()
+            .decimal_point_column
+            .unwrap_or(lumi::DEFAULT_DECIMAL_POINT_COLUMN)
+    }
+
+    pub(crate) fn take_requested_on_last_edit(&self) -> bool {
+        self.requested_on_last_edit.replace(false)
     }
 
     pub(crate) fn complete_at(
@@ -59,6 +71,7 @@ impl CompletionProvider for BeancountCompletionProvider {
     ) -> Task<Result<CompletionResponse>> {
         let invoked = trigger.trigger_kind == CompletionTriggerKind::INVOKED;
         let items = self.complete_at(text, offset, invoked);
+        self.requested_on_last_edit.set(!items.is_empty());
         Task::ready(Ok(CompletionResponse::Array(items)))
     }
 

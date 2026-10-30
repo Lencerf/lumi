@@ -20,6 +20,7 @@ use gpui_kit::{
 };
 use lumi::{Source, Transaction};
 
+use crate::align::PostingAligner;
 use crate::completion::BeancountCompletionProvider;
 use crate::input_guard::EditDragGuard;
 use crate::session::LedgerSession;
@@ -50,6 +51,8 @@ pub struct EntryEditor {
     source: Source,
     text: Entity<EditorState>,
     drag_guard: EditDragGuard,
+    aligner: PostingAligner,
+    provider: Rc<BeancountCompletionProvider>,
     /// The entry's text as read; `None` until it has arrived.
     original: Option<SharedString>,
     /// Whether any edit has occurred since the dialog opened, even if later
@@ -292,12 +295,15 @@ impl EntryEditor {
             state
         });
         let drag_guard = EditDragGuard::new(&text);
+        let aligner = PostingAligner::new(&text, false, cx);
         let dismissing_overlay = Rc::new(Cell::new(false));
         let _subscriptions = vec![
-            cx.subscribe(&text, |this, _, event, cx| {
+            cx.subscribe_in(&text, window, |this, _, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.edited = true;
                     this.drag_guard.cancel();
+                    this.aligner
+                        .on_change(&this.text, &this.provider, window, cx);
                     cx.notify();
                 }
             }),
@@ -319,7 +325,7 @@ impl EntryEditor {
             let (result, completions) = (entry_task.await, completions_task.await);
             this.update_in(cx, |this, window, cx| {
                 if let Ok(completions) = completions {
-                    provider.set_completions(completions);
+                    this.provider.set_completions(completions);
                 }
                 match result {
                     Ok(text) => {
@@ -340,6 +346,8 @@ impl EntryEditor {
             source,
             text,
             drag_guard,
+            aligner,
+            provider,
             original: None,
             edited: false,
             duplicating: false,
@@ -565,6 +573,8 @@ impl Render for EntryEditor {
                 div()
                     .relative()
                     .capture_action(self.drag_guard.paste_capture())
+                    .capture_action(self.aligner.undo_capture())
+                    .capture_action(self.aligner.redo_capture())
                     .child(self.drag_guard.element())
                     .child(
                         Editor::new(&self.text)
