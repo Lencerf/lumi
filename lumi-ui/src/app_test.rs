@@ -299,3 +299,81 @@ fn test_go_back_returns_from_account_view_to_the_last_view(cx: &mut TestAppConte
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_open_path_loads_bean_file_on_cold_start_and_switches_when_running(cx: &mut TestAppContext) {
+    let vault = TempLedger::new("finder-vault", VAULT_LEDGER);
+    let (handle, app) = open_app(None, Page::BalanceSheet, cx);
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("open-ledger-empty").is_some());
+    })
+    .unwrap();
+
+    // Simulate the OS file manager delivering a `.bean` path right after launch.
+    cx.update_window(handle, |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_path(Path::new(FIXTURE), window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let expected_fixture_path: SharedString = FIXTURE.into();
+    cx.read(|cx| {
+        let app = app.read(cx);
+        assert_eq!(
+            app.ledger_name(),
+            Some(&SharedString::from("query_test.bean"))
+        );
+        assert_eq!(app.ledger_path(), Some(&expected_fixture_path));
+        let session = app.session().read(cx);
+        assert!(session.has_source());
+        assert!(session.is_loaded());
+        assert_eq!(session.revision(), 1);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("open-ledger-empty").is_none());
+        assert!(
+            window
+                .try_find((ElementId::from("account"), "Assets:Cash"))
+                .is_some()
+        );
+    })
+    .unwrap();
+
+    // Simulate double-clicking another `.bean` file while the app is already open.
+    let vault_path = vault.0.clone();
+    cx.update_window(handle, |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_path(&vault_path, window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let expected_vault_name = vault.file_name();
+    let expected_vault_path: SharedString = vault.0.to_string_lossy().into_owned().into();
+    cx.read(|cx| {
+        let app = app.read(cx);
+        assert_eq!(app.ledger_name(), Some(&expected_vault_name));
+        assert_eq!(app.ledger_path(), Some(&expected_vault_path));
+        assert_eq!(app.session().read(cx).revision(), 2);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find((ElementId::from("account"), "Assets:Vault"))
+                .is_some()
+        );
+        assert!(
+            window
+                .try_find((ElementId::from("account"), "Assets:Cash"))
+                .is_none()
+        );
+    })
+    .unwrap();
+}

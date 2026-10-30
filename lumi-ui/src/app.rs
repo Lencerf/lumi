@@ -12,8 +12,8 @@ use gpui_kit::component::sidebar::{
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AnyView, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
     SharedString, Styled as _, Subscription, Task, Window, actions, div,
 };
 
@@ -679,6 +679,11 @@ impl Render for LumiApp {
             .text_color(cx.theme().foreground)
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                if let Some(path) = paths.paths().first() {
+                    this.open_path(path, window, cx);
+                }
+            }))
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::on_open_ledger))
             .on_action(cx.listener(Self::refresh))

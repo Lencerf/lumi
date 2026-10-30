@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use lumi_ui::Page;
 
-use crate::{CliAction, file_url_to_path, parse_args};
+use crate::{
+    CliAction, file_url_to_path, open_target_to_path, parse_args, strip_windows_drive_slash,
+};
 
 fn parse(args: &[&str]) -> Result<CliAction, ()> {
     parse_args(args.iter().map(|arg| (*arg).to_string()))
@@ -119,4 +121,44 @@ fn test_file_url_to_path_decodes_local_file_urls() {
     assert_eq!(file_url_to_path("https://example.com/main.bean"), None);
     assert_eq!(file_url_to_path("file://remote-host/share/main.bean"), None);
     assert_eq!(file_url_to_path("file:///bad%ZZescape.bean"), None);
+}
+
+#[test]
+fn test_open_target_to_path_accepts_file_urls_and_raw_paths() {
+    assert_eq!(
+        open_target_to_path("file:///Users/alice/Ledgers/main.bean"),
+        Some(PathBuf::from("/Users/alice/Ledgers/main.bean"))
+    );
+    assert_eq!(
+        open_target_to_path("/Users/alice/Ledgers/main.bean"),
+        Some(PathBuf::from("/Users/alice/Ledgers/main.bean"))
+    );
+    assert_eq!(open_target_to_path(""), None);
+    assert_eq!(open_target_to_path("https://example.com/main.bean"), None);
+    assert_eq!(open_target_to_path("lumi://open/main.bean"), None);
+}
+
+#[test]
+fn test_strip_windows_drive_slash_normalizes_drive_letter_urls() {
+    assert_eq!(
+        strip_windows_drive_slash(b"/C:/Users/alice/main.bean"),
+        b"C:/Users/alice/main.bean"
+    );
+    assert_eq!(strip_windows_drive_slash(b"/d:"), b"d:");
+    assert_eq!(
+        strip_windows_drive_slash(b"/Users/alice/main.bean"),
+        b"/Users/alice/main.bean"
+    );
+}
+
+#[test]
+fn test_parse_args_decodes_file_urls_from_system_file_managers() {
+    assert_eq!(
+        parse(&["file:///home/alice/My%20Ledgers/main.bean"]),
+        Ok(CliAction::Run {
+            path: Some(PathBuf::from("/home/alice/My Ledgers/main.bean")),
+            page: Page::BalanceSheet,
+        })
+    );
+    assert_eq!(parse(&["file:///bad%ZZescape.bean"]), Err(()));
 }

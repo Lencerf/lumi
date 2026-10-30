@@ -42,27 +42,47 @@
                 <string>bean</string>
                 <string>beancount</string>
             </array>
+            <key>CFBundleTypeIconFile</key>
+            <string>Lumi</string>
             <key>CFBundleTypeName</key>
             <string>Beancount Ledger</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>io.github.lencerf.lumi.beancount</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Text Document</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
             <key>LSHandlerRank</key>
             <string>Alternate</string>
             <key>LSItemContentTypes</key>
             <array>
-                <string>io.github.lencerf.lumi.beancount</string>
+                <string>public.plain-text</string>
+                <string>public.text</string>
+                <string>public.source-code</string>
+                <string>public.data</string>
             </array>
         </dict>
     </array>
-    <key>UTImportedTypeDeclarations</key>
+    <key>UTExportedTypeDeclarations</key>
     <array>
         <dict>
             <key>UTTypeConformsTo</key>
             <array>
+                <string>public.utf8-plain-text</string>
                 <string>public.plain-text</string>
             </array>
             <key>UTTypeDescription</key>
             <string>Beancount Ledger</string>
+            <key>UTTypeIconFile</key>
+            <string>Lumi</string>
             <key>UTTypeIdentifier</key>
             <string>io.github.lencerf.lumi.beancount</string>
             <key>UTTypeTagSpecification</key>
@@ -71,6 +91,11 @@
                 <array>
                     <string>bean</string>
                     <string>beancount</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>text/x-beancount</string>
+                    <string>text/plain</string>
                 </array>
             </dict>
         </dict>

@@ -123,6 +123,10 @@ fn test_assemble_bundle_creates_standard_macos_app_layout() {
     assert!(info_plist.contains("<string>0.2.0</string>"));
     assert!(info_plist.contains("<string>io.github.lencerf.lumi</string>"));
     assert!(info_plist.contains("<string>lumi-app</string>"));
+    assert!(info_plist.contains("<key>UTExportedTypeDeclarations</key>"));
+    assert!(info_plist.contains("<string>io.github.lencerf.lumi.beancount</string>"));
+    assert!(info_plist.contains("<string>Owner</string>"));
+    assert!(info_plist.contains("<string>Alternate</string>"));
     assert!(info_plist.contains("<string>bean</string>"));
     assert!(info_plist.contains("<string>beancount</string>"));
 

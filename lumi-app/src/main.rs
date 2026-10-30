@@ -51,7 +51,7 @@ fn main() -> ExitCode {
 
     let app = gpui_kit::application().with_assets(LumiAssets);
     app.on_open_urls(move |urls| {
-        let Some(path) = urls.iter().find_map(|url| file_url_to_path(url)) else {
+        let Some(path) = urls.iter().find_map(|url| open_target_to_path(url)) else {
             return;
         };
         let async_app = {
@@ -69,9 +69,16 @@ fn main() -> ExitCode {
         }
     });
     app.on_reopen(move |cx| {
-        if cx.windows().is_empty() {
-            open_main_window(&reopen_state, Page::BalanceSheet, cx);
+        let existing = reopen_state.borrow().window_view.clone();
+        if let Some((window, _)) = existing
+            && window
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            cx.activate(true);
+            return;
         }
+        open_main_window(&reopen_state, Page::BalanceSheet, cx);
         cx.activate(true);
     });
     app.run(move |cx| {
@@ -93,6 +100,7 @@ fn open_path_in_app(state: &Rc<RefCell<AppState>>, path: PathBuf, cx: &mut App) 
         && window
             .update(cx, |_, window, cx| {
                 view.update(cx, |app, cx| app.open_path(&path, window, cx));
+                window.activate_window();
             })
             .is_ok()
     {
@@ -137,8 +145,21 @@ fn open_main_window(state: &Rc<RefCell<AppState>>, page: Page, cx: &mut App) {
     .detach();
 }
 
-/// Converts a `file://` URL received from macOS LaunchServices into a local
-/// filesystem path.
+/// Converts a `file://` URL or raw filesystem path received from an OS file
+/// manager into a local [`PathBuf`]. Non-file URL schemes (such as `https://`)
+/// are ignored.
+fn open_target_to_path(target: &str) -> Option<PathBuf> {
+    if target.starts_with("file://") {
+        file_url_to_path(target)
+    } else if target.is_empty() || target.contains("://") {
+        None
+    } else {
+        Some(PathBuf::from(target))
+    }
+}
+
+/// Converts a `file://` URL received from macOS LaunchServices or an XDG
+/// desktop launcher into a local filesystem path.
 fn file_url_to_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file://")?;
     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
@@ -157,7 +178,24 @@ fn file_url_to_path(url: &str) -> Option<PathBuf> {
     }
     #[cfg(not(unix))]
     {
+        #[cfg(windows)]
+        let bytes = strip_windows_drive_slash(&bytes).to_vec();
         String::from_utf8(bytes).ok().map(PathBuf::from)
+    }
+}
+
+/// Strips the leading `/` from `/C:/...` in Windows `file:///C:/...` URLs.
+#[cfg_attr(all(unix, not(test)), allow(dead_code))]
+fn strip_windows_drive_slash(bytes: &[u8]) -> &[u8] {
+    if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b':'
+        && bytes.get(3).is_none_or(|&b| b == b'/' || b == b'\\')
+    {
+        &bytes[1..]
+    } else {
+        bytes
     }
 }
 
@@ -221,7 +259,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<CliAction, ()> {
             }
         }
         if path.is_none() {
-            path = Some(PathBuf::from(arg));
+            let resolved = if !positional_only && arg.starts_with("file://") {
+                file_url_to_path(&arg).ok_or(())?
+            } else {
+                PathBuf::from(arg)
+            };
+            path = Some(resolved);
         } else {
             return Err(());
         }
