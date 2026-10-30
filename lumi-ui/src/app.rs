@@ -14,7 +14,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    SharedString, Styled as _, Subscription, Task, Window, actions, div,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    TestSupportExt as _, Window, actions, div,
 };
 
 use crate::entry_editor::{EntryEditorLayer, OpenSource};
@@ -211,6 +212,16 @@ impl LumiApp {
             .ok()
     }
 
+    /// The errors report shown, if the page is [`Page::Errors`].
+    pub fn errors(&self) -> Option<Entity<ErrorsReport>> {
+        self.reports
+            .get(&self.page)?
+            .view
+            .clone()
+            .downcast::<ErrorsReport>()
+            .ok()
+    }
+
     /// The built-in source editor shown, if the page is [`Page::Editor`].
     pub fn editor(&self) -> Option<Entity<SourceEditor>> {
         self.reports
@@ -340,7 +351,7 @@ impl LumiApp {
             Page::Errors => {
                 let view = cx.new(|cx| ErrorsReport::new(session, window, cx));
                 Report {
-                    _subscription: None,
+                    _subscription: Some(cx.subscribe_in(&view, window, Self::on_report_event)),
                     view: view.into(),
                 }
             }
@@ -374,6 +385,9 @@ impl LumiApp {
                     cx.notify();
                 }
             }
+            ReportEvent::OpenSource { file, line } => {
+                self.open_source_location(file.clone(), *line, window, cx);
+            }
         }
     }
 
@@ -384,13 +398,23 @@ impl LumiApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_source_location(event.file.clone(), event.line, window, cx);
+    }
+
+    fn open_source_location(
+        &mut self,
+        file: SharedString,
+        line: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_page(Page::Editor, window, cx);
         if let Ok(editor) = self
             .report(&Page::Editor, window, cx)
             .downcast::<SourceEditor>()
         {
             editor.update(cx, |editor, cx| {
-                editor.open_location(event.file.clone(), event.line, window, cx)
+                editor.open_location(file, line, window, cx)
             });
         }
     }
@@ -528,6 +552,7 @@ impl LumiApp {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let error_count = self.session.read(cx).error_count();
         Sidebar::new("lumi-sidebar")
             .w_48()
             .header(self.render_sidebar_header(cx))
@@ -538,6 +563,25 @@ impl LumiApp {
                         SidebarMenuItem::new(page.title())
                             .icon(page.icon())
                             .active(active)
+                            .when(page == Page::Errors && error_count > 0, |item| {
+                                let count_text: SharedString = error_count.to_string().into();
+                                item.suffix(move |_, cx| {
+                                    div()
+                                        .id("sidebar-error-count")
+                                        .test_support()
+                                        .aria_label(count_text.clone())
+                                        .flex_shrink_0()
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .rounded_full()
+                                        .bg(cx.theme().red.opacity(0.14))
+                                        .text_xs()
+                                        .font_semibold()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_color(cx.theme().red)
+                                        .child(count_text.clone())
+                                })
+                            })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_page(page.clone(), window, cx)
                             }))

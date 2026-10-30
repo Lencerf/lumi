@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use gpui_kit::{Context, SharedString, Task};
+use lumi::ErrorLevel;
 
 use crate::source::LedgerSource;
 
@@ -17,6 +18,7 @@ pub struct LedgerSession {
     revision: u64,
     loaded: bool,
     reloading: bool,
+    error_count: usize,
     last_error: Option<SharedString>,
     _reload_task: Option<Task<()>>,
 }
@@ -29,6 +31,7 @@ impl LedgerSession {
             revision: 0,
             loaded: false,
             reloading: false,
+            error_count: 0,
             last_error: None,
             _reload_task: None,
         }
@@ -72,6 +75,12 @@ impl LedgerSession {
         self.reloading
     }
 
+    /// The number of [`ErrorLevel::Error`] diagnostics reported by the last
+    /// reload; `0` until a reload completes.
+    pub fn error_count(&self) -> usize {
+        self.error_count
+    }
+
     /// Why the last reload failed, until a reload succeeds.
     pub fn last_error(&self) -> Option<&SharedString> {
         self.last_error.as_ref()
@@ -83,6 +92,7 @@ impl LedgerSession {
         self.source = Some(source);
         self.loaded = false;
         self.reloading = false;
+        self.error_count = 0;
         self.last_error = None;
         self._reload_task = None;
         self.reload(cx);
@@ -102,6 +112,20 @@ impl LedgerSession {
         let task = source.reload(cx);
         self._reload_task = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
+            let error_count = if result.is_ok() {
+                if let Ok(errors_task) = this.update(cx, |_, cx| source.errors(cx)) {
+                    errors_task.await.ok().map(|errors| {
+                        errors
+                            .iter()
+                            .filter(|error| error.level == ErrorLevel::Error)
+                            .count()
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             this.update(cx, |this, cx| {
                 this.reloading = false;
                 match result {
@@ -109,6 +133,9 @@ impl LedgerSession {
                         this.revision += 1;
                         this.loaded = true;
                         this.last_error = None;
+                        if let Some(count) = error_count {
+                            this.error_count = count;
+                        }
                     }
                     Err(error) => this.last_error = Some(format!("{error:#}").into()),
                 }

@@ -120,8 +120,9 @@ fn test_holdings_load_and_open_accounts(cx: &mut TestAppContext) {
     let _subscription = cx.update(|cx| {
         let opened = opened.clone();
         cx.subscribe(&report, move |_, event: &ReportEvent, _| {
-            let ReportEvent::OpenAccount(account) = event;
-            opened.lock().unwrap().push(account.to_string());
+            if let ReportEvent::OpenAccount(account) = event {
+                opened.lock().unwrap().push(account.to_string());
+            }
         })
     });
     report.update(cx, |report, cx| report.open_row(2, cx));

@@ -20,6 +20,8 @@ pub enum Page {
 pub enum ReportEvent {
     /// Show the journal of the named account.
     OpenAccount(SharedString),
+    /// Open `file` at 1-based `line` in the built-in source editor.
+    OpenSource { file: SharedString, line: usize },
 }
 
 impl Page {
