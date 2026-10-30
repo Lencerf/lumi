@@ -177,6 +177,7 @@ fn build_and_bundle(options: &BundleOptions) -> Result<PathBuf, String> {
 
     let bundle_path = assemble_bundle(&binary_path, &out_dir, env!("CARGO_PKG_VERSION"))?;
     codesign_if_macos(&bundle_path)?;
+    register_launch_services_if_macos(&bundle_path);
     Ok(bundle_path)
 }
 
@@ -308,6 +309,19 @@ fn codesign_if_macos(bundle_path: &Path) -> Result<(), String> {
 fn codesign_if_macos(_: &Path) -> Result<(), String> {
     Ok(())
 }
+
+/// Refreshes macOS LaunchServices registration so Finder immediately recognizes
+/// `Lumi.app` for `.bean` and `.beancount` files under "Open With".
+#[cfg(target_os = "macos")]
+fn register_launch_services_if_macos(bundle_path: &Path) {
+    const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+    if Path::new(LSREGISTER).is_file() {
+        let _ = Command::new(LSREGISTER).arg("-f").arg(bundle_path).status();
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn register_launch_services_if_macos(_: &Path) {}
 
 #[cfg(test)]
 #[path = "../bundle_macos_test.rs"]

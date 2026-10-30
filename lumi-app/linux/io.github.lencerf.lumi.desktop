@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lumi
+Comment=Double-entry accounting viewer and editor for Beancount ledgers
+Exec=lumi-app %f
+Icon=io.github.lencerf.lumi
+Terminal=false
+Categories=Office;Finance;
+MimeType=text/x-beancount;application/x-beancount;text/plain;
+StartupWMClass=io.github.lencerf.lumi
