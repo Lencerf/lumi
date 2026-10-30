@@ -147,6 +147,29 @@ fn test_resolve_styles_covers_every_byte_and_clips_subranges() {
 }
 
 #[test]
+fn test_plugin_and_custom_directives_highlight_as_keywords() {
+    let src = "plugin \"beancount.plugins.sellgains\"\n2025-01-01 custom \"fava-option\" \"auto-reload\" \"True\"";
+    let rope = Rope::from(src);
+    let spans = BeancountHighlighter::lex_rope(&rope);
+    let labeled: Vec<(&str, &str)> = spans
+        .iter()
+        .map(|(span, kind)| (&src[span.clone()], *kind))
+        .collect();
+    assert_eq!(
+        labeled,
+        [
+            ("plugin", "keyword"),
+            ("\"beancount.plugins.sellgains\"", "string"),
+            ("2025-01-01", "constant"),
+            ("custom", "keyword"),
+            ("\"fava-option\"", "string"),
+            ("\"auto-reload\"", "string"),
+            ("\"True\"", "string"),
+        ]
+    );
+}
+
+#[test]
 fn test_factory_matches_beancount_only() {
     let factory = highlighter_factory();
     assert_eq!(

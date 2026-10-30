@@ -80,6 +80,8 @@ pub enum ErrorType {
     Ambiguous,
     /// Duplicate information, such as two identical tags in a single transaction.
     Duplicate,
+    /// A valid Beancount directive recognized by the parser as a no-op.
+    Unsupported,
 }
 
 /// The level of an error. Any information in the source file resulting an

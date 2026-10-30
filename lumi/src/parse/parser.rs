@@ -329,8 +329,9 @@ impl<'source> Parser<'source> {
             let r = match token {
                 Token::Include => self.parse_include(),
                 Token::Option => self.parse_option(draft),
+                Token::Plugin => self.parse_plugin(errors),
                 Token::Commodity => self.parse_commodity(draft, None),
-                Token::Date => self.parse_dated_entry(draft),
+                Token::Date => self.parse_dated_entry(draft, errors),
                 Token::PushTag => self.parse_push_tag(),
                 Token::PopTag => self.parse_pop_tag(),
                 _ => self.unexpected(token, text),
@@ -341,8 +342,10 @@ impl<'source> Parser<'source> {
                     match token {
                         Token::Option
                         | Token::Include
+                        | Token::Plugin
                         | Token::Date
                         | Token::PushTag
+                        | Token::PopTag
                         | Token::Commodity => break,
                         _ => self.lexer.consume(),
                     }
@@ -463,6 +466,24 @@ impl<'source> Parser<'source> {
         draft.add_option(key.to_string(), val.to_string(), src)
     }
 
+    fn parse_plugin(&mut self, errors: &mut Vec<Error>) -> Result<(), Error> {
+        let start = self.lexer.location();
+        self.lexer.take(Token::Plugin)?;
+        let name = self.parse_string()?;
+        if self.lexer.location().line == start.line
+            && matches!(self.lexer.peek(), Ok((Token::String, _)))
+        {
+            self.parse_string()?;
+        }
+        errors.push(Error {
+            msg: format!("Ignored directive: plugin {:?}.", name),
+            level: ErrorLevel::Info,
+            r#type: ErrorType::Unsupported,
+            src: self.src_from(start),
+        });
+        Ok(())
+    }
+
     fn parse_commodity(
         &mut self,
         draft: &mut LedgerDraft,
@@ -491,7 +512,11 @@ impl<'source> Parser<'source> {
         Ok(meta)
     }
 
-    fn parse_dated_entry(&mut self, draft: &mut LedgerDraft) -> Result<(), Error> {
+    fn parse_dated_entry(
+        &mut self,
+        draft: &mut LedgerDraft,
+        errors: &mut Vec<Error>,
+    ) -> Result<(), Error> {
         let start = self.lexer.location();
         let date_str = self.lexer.take(Token::Date)?;
         let date = date_str.parse::<NaiveDate>().map_err(|_| Error {
@@ -518,8 +543,45 @@ impl<'source> Parser<'source> {
             Token::Note => self.parse_note(date, draft),
             Token::Event => self.parse_event(date, draft),
             Token::Commodity => self.parse_commodity(draft, Some(date_str)),
+            Token::Custom => self.parse_custom(start, errors),
             _ => self.unexpected(token, text),
         }
+    }
+
+    fn parse_custom(&mut self, start: Location, errors: &mut Vec<Error>) -> Result<(), Error> {
+        let custom_line = self.lexer.location().line;
+        self.lexer.take(Token::Custom)?;
+        let kind = self.parse_string()?;
+        while self.lexer.location().line == custom_line {
+            let Ok((token, text)) = self.lexer.peek() else {
+                break;
+            };
+            match token {
+                Token::String | Token::Account | Token::Currency => self.lexer.consume(),
+                Token::Date => {
+                    self.parse_date()?;
+                }
+                Token::Number => {
+                    let num_start = self.lexer.location();
+                    self.lexer.consume();
+                    text.parse::<Decimal>().map_err(|e| Error {
+                        msg: e.to_string(),
+                        src: self.src_from(num_start),
+                        level: ErrorLevel::Error,
+                        r#type: ErrorType::Syntax,
+                    })?;
+                }
+                _ => return self.unexpected(token, text),
+            }
+        }
+        self.parse_meta()?;
+        errors.push(Error {
+            msg: format!("Ignored directive: custom {:?}.", kind),
+            level: ErrorLevel::Info,
+            r#type: ErrorType::Unsupported,
+            src: self.src_from(start),
+        });
+        Ok(())
     }
 
     fn parse_event(&mut self, date: NaiveDate, draft: &mut LedgerDraft) -> Result<(), Error> {
@@ -873,3 +935,7 @@ impl<'source> Parser<'source> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "parser_test.rs"]
+mod tests;

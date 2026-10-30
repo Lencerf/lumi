@@ -37,7 +37,7 @@ fn lex_with_locations(src: &str) -> Vec<LocatedToken<'_>> {
 
 #[test]
 fn test_keywords() {
-    let src = "include commodity option event note document open close \
+    let src = "include commodity option plugin custom event note document open close \
                pushtag poptag balance pad txn";
     let tokens: Vec<Token> = lex(src).into_iter().map(|(t, _)| t).collect();
     assert_eq!(
@@ -46,6 +46,8 @@ fn test_keywords() {
             Token::Include,
             Token::Commodity,
             Token::Option,
+            Token::Plugin,
+            Token::Custom,
             Token::Event,
             Token::Note,
             Token::Document,
@@ -302,8 +304,8 @@ fn test_transaction() {
 #[test]
 fn test_unrecognized_input_is_an_error_token() {
     assert_eq!(
-        lex("plugin \"x\""),
-        [(Token::Error, "plugin"), (Token::String, "\"x\"")]
+        lex("query \"x\""),
+        [(Token::Error, "query"), (Token::String, "\"x\"")]
     );
     assert_eq!(
         lex("foo bar"),

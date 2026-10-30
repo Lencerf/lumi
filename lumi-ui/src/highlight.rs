@@ -147,6 +147,8 @@ fn token_highlight_name(token: Token) -> Option<&'static str> {
         Token::Include
         | Token::Commodity
         | Token::Option
+        | Token::Plugin
+        | Token::Custom
         | Token::Event
         | Token::Note
         | Token::Document
