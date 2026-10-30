@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use anyhow::{Result, anyhow};
 use gpui_kit::{App, AppContext as _, Task};
 use lumi::web::{FilterOptions, JournalItem, TrieOptions, TrieTable, TrieTableRow};
-use lumi::{Ledger, Source, edit, query};
+use lumi::{ErrorLevel, Ledger, Source, edit, query};
 
 use crate::source::{Completions, JournalPage, LedgerSource, Positions};
 
@@ -39,11 +39,13 @@ impl LocalLedger {
     /// The number of errors the last reload reported, if any reload has
     /// completed.
     pub fn error_count(&self) -> Option<usize> {
-        self.loaded
-            .read()
-            .ok()?
-            .as_ref()
-            .map(|loaded| loaded.errors.len())
+        self.loaded.read().ok()?.as_ref().map(|loaded| {
+            loaded
+                .errors
+                .iter()
+                .filter(|error| error.level == ErrorLevel::Error)
+                .count()
+        })
     }
 
     /// Runs `query` against the parsed ledger on the background executor.

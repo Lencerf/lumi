@@ -6,15 +6,16 @@ use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Div, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Stateful, Styled as _, Subscription, Task, Window,
-    div, px,
+    App, AppContext as _, Context, Div, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, Stateful, Styled as _, Subscription, Task,
+    WeakEntity, Window, div, px,
 };
 use lumi::ErrorLevel;
 
+use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
-use crate::style::{table_card, table_header, table_row_bg};
+use crate::style::{interactive_button, table_card, table_header, table_row_bg};
 
 /// The errors, warnings and notes the last reload of the ledger reported,
 /// most severe first.
@@ -29,12 +30,15 @@ pub struct ErrorsReport {
 struct ErrorRow {
     level: ErrorLevel,
     message: SharedString,
+    file: SharedString,
+    line: usize,
     /// `file:line:column` of the directive the error is about.
     location: SharedString,
 }
 
 struct ErrorsDelegate {
     source: Arc<dyn LedgerSource>,
+    report: WeakEntity<ErrorsReport>,
     columns: Vec<Column>,
     errors: Vec<ErrorRow>,
     loading: bool,
@@ -43,6 +47,8 @@ struct ErrorsDelegate {
     _load_task: Option<Task<()>>,
 }
 
+impl EventEmitter<ReportEvent> for ErrorsReport {}
+
 impl ErrorsReport {
     pub fn new(
         session: Entity<LedgerSession>,
@@ -50,7 +56,8 @@ impl ErrorsReport {
         cx: &mut Context<Self>,
     ) -> Self {
         let source = session.read(cx).source().clone();
-        let table = cx.new(|cx| TableState::new(ErrorsDelegate::new(source), window, cx));
+        let report = cx.entity().downgrade();
+        let table = cx.new(|cx| TableState::new(ErrorsDelegate::new(source, report), window, cx));
         let _subscriptions = vec![cx.observe(&session, |this, _, cx| this.load(cx))];
         let mut this = Self {
             session,
@@ -100,14 +107,9 @@ impl ErrorsReport {
 
 impl Render for ErrorsReport {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (count, failed) = {
+        let (summary, failed) = {
             let delegate = self.table.read(cx).delegate();
-            (delegate.errors.len(), delegate.failed.clone())
-        };
-        let summary: SharedString = match count {
-            0 => "No errors".into(),
-            1 => "1 error".into(),
-            n => format!("{n} errors").into(),
+            (format_summary(&delegate.errors), delegate.failed.clone())
         };
         div()
             .v_flex()
@@ -153,6 +155,35 @@ impl Render for ErrorsReport {
     }
 }
 
+fn format_summary(rows: &[ErrorRow]) -> SharedString {
+    let mut errors = 0usize;
+    let mut warnings = 0usize;
+    let mut infos = 0usize;
+    for row in rows {
+        match row.level {
+            ErrorLevel::Error => errors += 1,
+            ErrorLevel::Warning => warnings += 1,
+            ErrorLevel::Info => infos += 1,
+        }
+    }
+    let mut parts = Vec::with_capacity(3);
+    match errors {
+        0 => parts.push("No errors".to_string()),
+        1 => parts.push("1 error".to_string()),
+        n => parts.push(format!("{n} errors")),
+    }
+    if warnings > 0 {
+        parts.push(match warnings {
+            1 => "1 warning".to_string(),
+            n => format!("{n} warnings"),
+        });
+    }
+    if infos > 0 {
+        parts.push(format!("{infos} info"));
+    }
+    parts.join(", ").into()
+}
+
 fn level_text(level: ErrorLevel) -> &'static str {
     match level {
         ErrorLevel::Error => "Error",
@@ -162,9 +193,10 @@ fn level_text(level: ErrorLevel) -> &'static str {
 }
 
 impl ErrorsDelegate {
-    fn new(source: Arc<dyn LedgerSource>) -> Self {
+    fn new(source: Arc<dyn LedgerSource>, report: WeakEntity<ErrorsReport>) -> Self {
         Self {
             source,
+            report,
             columns: vec![
                 Column::new("level", "Level").width(px(90.)),
                 Column::new("message", "Message").width(px(620.)),
@@ -227,6 +259,8 @@ fn error_rows(mut errors: Vec<lumi::Error>) -> Vec<ErrorRow> {
             ErrorRow {
                 level: error.level,
                 message: error.msg.into(),
+                file: error.src.file.as_str().into(),
+                line: error.src.start.line,
                 location: format!("{file}:{}:{}", error.src.start.line, error.src.start.col).into(),
             }
         })
@@ -308,10 +342,29 @@ impl TableDelegate for ErrorsDelegate {
                 )
                 .child(level_text(error.level)),
             "message" => div().child(error.message.clone()),
-            "location" => div()
-                .font_family(cx.theme().mono_font_family.clone())
-                .text_color(cx.theme().muted_foreground)
-                .child(error.location.clone()),
+            "location" => {
+                let report = self.report.clone();
+                let file = error.file.clone();
+                let line = error.line;
+                let location = error.location.clone();
+                div().h_flex().child(
+                    interactive_button(("error-location", row_ix), cx)
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .label(location.clone())
+                        .accessibility_label(format!("Open {location} in editor"))
+                        .tooltip("Open in editor")
+                        .on_click(move |_, _, cx| {
+                            report
+                                .update(cx, |_, cx| {
+                                    cx.emit(ReportEvent::OpenSource {
+                                        file: file.clone(),
+                                        line,
+                                    });
+                                })
+                                .ok();
+                        }),
+                )
+            }
             _ => div(),
         }
     }
