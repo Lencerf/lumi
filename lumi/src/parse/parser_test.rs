@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::{ErrorLevel, ErrorType, Ledger};
+use crate::{DEFAULT_DECIMAL_POINT_COLUMN, ErrorLevel, ErrorType, Ledger};
 
 struct TempBean(PathBuf);
 
@@ -121,6 +121,59 @@ plugin \"beancount.plugins.auto\"
             (ErrorLevel::Error, ErrorType::Syntax, 1),
             (ErrorLevel::Info, ErrorType::Unsupported, 2),
             (ErrorLevel::Error, ErrorType::Syntax, 3),
+        ]
+    );
+}
+
+#[test]
+fn test_lumi_option_decimal_point_column_parses_without_diagnostics_and_validates() {
+    let default_bean = TempBean::new("lumi-opt-default", "2020-01-01 open Assets:Cash\n");
+    let (default_ledger, default_diags) = Ledger::from_file(default_bean.path());
+    assert!(default_diags.is_empty(), "{default_diags:?}");
+    assert_eq!(
+        default_ledger.decimal_point_column(),
+        DEFAULT_DECIMAL_POINT_COLUMN
+    );
+
+    let quoted_bean = TempBean::new(
+        "lumi-opt-quoted",
+        "1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"60\"\n2020-01-01 open Assets:Cash\n",
+    );
+    let (quoted_ledger, quoted_diags) = Ledger::from_file(quoted_bean.path());
+    assert!(quoted_diags.is_empty(), "{quoted_diags:?}");
+    assert_eq!(quoted_ledger.decimal_point_column(), 60);
+
+    let numeric_bean = TempBean::new(
+        "lumi-opt-number",
+        "1994-05-30 custom \"lumi-option\" \"decimal-point-column\" 44\n2020-01-01 open Assets:Cash\n",
+    );
+    let (numeric_ledger, numeric_diags) = Ledger::from_file(numeric_bean.path());
+    assert!(numeric_diags.is_empty(), "{numeric_diags:?}");
+    assert_eq!(numeric_ledger.decimal_point_column(), 44);
+
+    let invalid_bean = TempBean::new(
+        "lumi-opt-invalid",
+        "\
+1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"0\"
+1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"abc\"
+1994-05-30 custom \"lumi-option\" \"unknown-key\" \"1\"
+1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"58\"
+1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"62\"
+",
+    );
+    let (invalid_ledger, invalid_diags) = Ledger::from_file(invalid_bean.path());
+    assert_eq!(invalid_ledger.decimal_point_column(), 58);
+    let summary: Vec<(ErrorLevel, ErrorType, usize)> = invalid_diags
+        .iter()
+        .map(|d| (d.level, d.r#type, d.src.start.line))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (ErrorLevel::Error, ErrorType::Syntax, 1),
+            (ErrorLevel::Error, ErrorType::Syntax, 2),
+            (ErrorLevel::Warning, ErrorType::Unsupported, 3),
+            (ErrorLevel::Warning, ErrorType::Duplicate, 5),
         ]
     );
 }

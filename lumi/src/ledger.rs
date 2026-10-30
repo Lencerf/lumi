@@ -377,6 +377,9 @@ pub struct Ledger {
     /// Returns the options as a hash map.
     #[getset(get = "pub")]
     pub(crate) options: HashMap<String, (String, Source)>,
+    /// Returns options specified via `custom "lumi-option" "<key>" "<value>"`.
+    #[getset(get = "pub")]
+    pub(crate) lumi_options: HashMap<String, (String, Source)>,
     /// Returns the events.
     #[getset(get = "pub")]
     pub(crate) events: HashMap<String, Vec<EventInfo>>,
@@ -394,6 +397,17 @@ impl Ledger {
         let (ledger, more_errors) = draft.into_ledger();
         errors.extend(more_errors);
         (ledger, errors)
+    }
+
+    /// Returns the 1-based column at which posting decimal points should align,
+    /// from `custom "lumi-option" "decimal-point-column"` or
+    /// [`crate::DEFAULT_DECIMAL_POINT_COLUMN`] (`50`).
+    pub fn decimal_point_column(&self) -> usize {
+        self.lumi_options
+            .get(crate::options::LUMI_OPTION_DECIMAL_POINT_COLUMN)
+            .and_then(|(val, _)| val.trim().parse::<usize>().ok())
+            .filter(|&col| col >= 1)
+            .unwrap_or(crate::options::DEFAULT_DECIMAL_POINT_COLUMN)
     }
 }
 

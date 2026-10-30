@@ -42,6 +42,7 @@ fn sample_completions() -> Completions {
             "#comparison".to_string(),
         ],
         links: vec!["^flight-receipt".to_string(), "^inv-2025-001".to_string()],
+        decimal_point_column: None,
     }
 }
 

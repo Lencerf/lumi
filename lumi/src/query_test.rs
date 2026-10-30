@@ -506,6 +506,7 @@ poptag #coffee-run
     assert_eq!(got.links, ["^inv-1", "^inv-2"]);
     // Used currencies (USD, EUR from @ price) come before declared-only (CHF, GBP).
     assert_eq!(got.currencies, ["USD", "EUR", "CHF", "GBP"]);
+    assert_eq!(got.decimal_point_column, Some(50));
 }
 
 #[test]

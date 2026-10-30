@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use chrono::NaiveDate;
 
 use crate::edit::{
-    EditError, append_entry_text, delete_entry_text, entry_text, file_text, replace_entry_text,
-    replace_file_text, with_date,
+    EditError, align_posting_line, append_entry_text, delete_entry_text, entry_text, file_text,
+    parse_decimal_point_column_in_text, replace_entry_text, replace_file_text, with_date,
 };
 use crate::{Ledger, TxnFlag};
 
@@ -297,4 +297,111 @@ fn test_file_text_and_replace_file_text_preserve_line_endings_and_detect_externa
         replace_file_text(crlf.path(), &loaded, "stale overwrite\n"),
         Err(EditError::FileChanged { .. })
     ));
+}
+
+fn aligned_line(line: &str, col: usize) -> String {
+    match align_posting_line(line, col) {
+        Some(alignment) => format!(
+            "{}{}{}",
+            &line[..alignment.ws_range.start],
+            " ".repeat(alignment.desired_spaces),
+            &line[alignment.ws_range.end..]
+        ),
+        None => line.to_string(),
+    }
+}
+
+#[test]
+fn test_align_posting_line_aligns_decimal_point_and_preserves_min_one_space() {
+    let aligned = aligned_line("    Liabilities:WellsFargo:Bilt -2.36 USD", 50);
+    assert_eq!(
+        aligned,
+        "    Liabilities:WellsFargo:Bilt                -2.36 USD"
+    );
+    assert_eq!(aligned.find('.').unwrap() + 1, 50);
+    assert_eq!(align_posting_line(&aligned, 50), None);
+
+    // Typing `-2` -> `-2.` -> `-2.36` keeps the separator constant so the
+    // decimal point lands at column 50 without shifting.
+    assert_eq!(
+        aligned_line("    Liabilities:WellsFargo:Bilt -2", 50),
+        "    Liabilities:WellsFargo:Bilt                -2"
+    );
+    assert_eq!(
+        align_posting_line("    Liabilities:WellsFargo:Bilt                -2.", 50),
+        None
+    );
+
+    // Leading-dot decimals, integers with cost/price/comment, and flagged postings.
+    let dot_only = aligned_line("  Assets:Cash -.50 USD", 50);
+    assert_eq!(dot_only.find('.').unwrap() + 1, 50);
+
+    let with_cost = aligned_line(
+        "  Assets:Brokerage 100 AAPL { 185.50 USD, 2024-05-01 } @ 190.00 USD ; buy",
+        50,
+    );
+    assert_eq!(
+        with_cost,
+        "  Assets:Brokerage                            100 AAPL { 185.50 USD, 2024-05-01 } @ 190.00 USD ; buy"
+    );
+
+    let flagged = aligned_line("    ! Liabilities:WellsFargo:Bilt -2.36 USD", 50);
+    assert_eq!(flagged.find('.').unwrap() + 1, 50);
+
+    // When the account name reaches or exceeds the target column, at least one
+    // space separator is preserved (and excess spaces collapse to one).
+    assert_eq!(
+        aligned_line(
+            "    Liabilities:WellsFargo:VeryLongSubAccountName:CreditCard     -2.36 USD",
+            50,
+        ),
+        "    Liabilities:WellsFargo:VeryLongSubAccountName:CreditCard -2.36 USD"
+    );
+    assert_eq!(
+        align_posting_line(
+            "    Liabilities:WellsFargo:VeryLongSubAccountName:CreditCard -2.36 USD",
+            50,
+        ),
+        None
+    );
+
+    // Non-posting lines, elided amounts, incomplete signs, and partial dates are untouched.
+    for untouched in [
+        "2024-05-01 * \"Payee\" \"Narration\"",
+        "2024-05-01 balance Assets:Cash 100.00 USD",
+        "1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"50\"",
+        "  note: \"100.00 USD\"",
+        "  ; Assets:Cash 10.00 USD",
+        "    Expenses:Dining",
+        "    Expenses:Dining -",
+        "    Expenses:Dining 2024-05",
+    ] {
+        assert_eq!(
+            align_posting_line(untouched, 50),
+            None,
+            "expected None for {untouched:?}"
+        );
+    }
+}
+
+#[test]
+fn test_parse_decimal_point_column_in_text_ignores_comments_and_multiline_strings() {
+    let text = "\
+; 1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"70\"
+2024-01-01 * \"Multi-line narration
+1994-05-30 custom \\\"lumi-option\\\" \\\"decimal-point-column\\\" \\\"80\\\"
+end\"
+1994-05-30 custom \"lumi-option\" \"decimal-point-column\" \"62\" ; inline comment
+";
+    assert_eq!(parse_decimal_point_column_in_text(text), Some(62));
+    assert_eq!(
+        parse_decimal_point_column_in_text(
+            "1994-05-30 custom \"lumi-option\" \"decimal-point-column\" 48\n"
+        ),
+        Some(48)
+    );
+    assert_eq!(
+        parse_decimal_point_column_in_text("2024-01-01 open Assets:Cash\n"),
+        None
+    );
 }

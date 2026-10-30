@@ -13,3 +13,4 @@ pub mod utils;
 pub mod web;
 
 pub use ledger::*;
+pub use options::DEFAULT_DECIMAL_POINT_COLUMN;

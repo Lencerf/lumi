@@ -922,6 +922,7 @@ impl LedgerDraft {
             commodities,
             mut txns,
             options,
+            lumi_options,
             events,
             files,
         } = self;
@@ -1054,6 +1055,7 @@ impl LedgerDraft {
             commodities,
             txns: valid_txns,
             options,
+            lumi_options,
             events,
             balance_sheet: running_balance,
             files,
