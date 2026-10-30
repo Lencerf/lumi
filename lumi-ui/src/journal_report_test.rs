@@ -344,6 +344,7 @@ fn test_description_cell_toggles_postings_and_sub_rows_match_parent_background(
         assert_eq!(bounds.size.width, px(380.));
         window.click_at(("postings", 0usize), point(px(340.), px(10.)), cx);
         window.click_at(("postings", 1usize), point(px(340.), px(10.)), cx);
+        window.click_at(("postings", 2usize), point(px(340.), px(10.)), cx);
     })
     .unwrap();
 
@@ -352,15 +353,19 @@ fn test_description_cell_toggles_postings_and_sub_rows_match_parent_background(
         let table = report.read(cx).table.clone();
         let even_bg = Some(cx.theme().table.into());
         let odd_bg = Some(cx.theme().table_even.into());
+        let focused_bg = Some(cx.theme().table_active.into());
         {
             let delegate = table.read(cx).delegate();
-            // Rows 0..=2 belong to transaction 0; rows 3..=5 belong to transaction 1.
+            // Rows 0..=2 belong to transaction 0 (unfocused even); rows 3..=5
+            // belong to transaction 1 (unfocused odd); rows 6..=8 belong to
+            // transaction 2 (last clicked -> focused).
             assert_eq!(delegate.rows[0], JournalRow::Transaction(0));
             assert_eq!(delegate.rows[1], JournalRow::Posting(0, 0));
             assert_eq!(delegate.rows[2], JournalRow::Posting(0, 1));
             assert_eq!(delegate.rows[3], JournalRow::Transaction(1));
             assert_eq!(delegate.rows[4], JournalRow::Posting(1, 0));
             assert_eq!(delegate.rows[5], JournalRow::Posting(1, 1));
+            assert_eq!(delegate.rows[6], JournalRow::Transaction(2));
         }
         for row_ix in 0..=2 {
             let bg = table.update(cx, |state, cx| {
@@ -383,6 +388,17 @@ fn test_description_cell_toggles_postings_and_sub_rows_match_parent_background(
                     .clone()
             });
             assert_eq!(bg, odd_bg);
+        }
+        for row_ix in 6..=8 {
+            let bg = table.update(cx, |state, cx| {
+                state
+                    .delegate_mut()
+                    .render_tr(row_ix, window, cx)
+                    .style()
+                    .background
+                    .clone()
+            });
+            assert_eq!(bg, focused_bg);
         }
 
         // Clicking the description cell again collapses its sub-rows.
@@ -795,5 +811,166 @@ fn test_show_in_context_clears_filters_and_locates_entry_page(cx: &mut TestAppCo
         assert_eq!(report.page_number(cx), 2);
         assert_eq!(report.entries(cx)[1].txn.flag(), TxnFlag::Balance);
         assert_eq!(report.table.read(cx).selected_row(), Some(1));
+    });
+}
+
+#[gpui_kit::test]
+fn test_focused_record_highlighted_and_kept_in_view_across_filters(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // Two rows per page over 9 entries -> 5 pages (newest first:
+    // page 1: 2025-06-01, 2025-05-20;
+    // page 2: 2024-04-01, 2024-03-15 (bal);
+    // page 3: 2024-03-01, 2024-02-10;
+    // page 4: 2024-02-03, 2024-01-15 ("Salary");
+    // page 5: 2024-01-01 ("Opening balances")).
+    let report = cx.read(|cx| app.read(cx).journal().expect("journal is shown"));
+    report.update(cx, |report, cx| report.set_page_size(2, cx));
+    report.update(cx, |report, cx| report.open_page_number(4, cx));
+    cx.run_until_parked();
+
+    // Right-click row 1 ("Salary", 2024-01-15) on page 4 -> it becomes focused
+    // and receives the distinct focused background color.
+    let salary_src = cx.read(|cx| report.read(cx).entries(cx)[1].txn.src().clone());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("postings", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        let focused_bg = Some(cx.theme().table_active.into());
+        let unfocused_bg = Some(cx.theme().table.into());
+        let table = report.read(cx).table.clone();
+        let row0_bg = table.update(cx, |state, cx| {
+            state
+                .delegate_mut()
+                .render_tr(0, window, cx)
+                .style()
+                .background
+                .clone()
+        });
+        let row1_bg = table.update(cx, |state, cx| {
+            state
+                .delegate_mut()
+                .render_tr(1, window, cx)
+                .style()
+                .background
+                .clone()
+        });
+        assert_eq!(row0_bg, unfocused_bg);
+        assert_eq!(row1_bg, focused_bg);
+        assert_eq!(report.read(cx).focused_entry(cx), Some(salary_src.clone()));
+    })
+    .unwrap();
+
+    // Navigate away to page 1 manually; then toggle `bal` off (leaving 8 `*`
+    // transactions across 4 pages, with "Salary" now at index 6 -> page 4).
+    // Because "Salary" is focused and still matches, the table jumps to page 4!
+    report.update(cx, |report, cx| report.open_page_number(1, cx));
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(report.read(cx).page_number(cx), 1));
+
+    report.update(cx, |report, cx| {
+        report.set_visible_flags([TxnFlag::Posted], cx);
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.total(cx), 8);
+        assert_eq!(report.page_number(cx), 4);
+        assert_eq!(report.entries(cx)[0].txn.narration(), "Salary");
+        assert_eq!(report.table.read(cx).selected_row(), Some(0));
+    });
+
+    // Narrow search to "2024": 6 matching `*` entries (pages 1..=3), with
+    // "Salary" at index 4 -> page 3!
+    cx.update_window(handle, |_, window, cx| {
+        report.update(cx, |report, cx| report.set_search_query("2024", window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.total(cx), 6);
+        assert_eq!(report.page_number(cx), 3);
+        assert_eq!(report.entries(cx)[0].txn.narration(), "Salary");
+    });
+
+    // Filter out "Salary" by searching for "Broker": falls back to page 1,
+    // while still remembering "Salary" so clearing search returns to page 4!
+    cx.update_window(handle, |_, window, cx| {
+        report.update(cx, |report, cx| {
+            report.set_search_query("Broker", window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.total(cx), 1);
+        assert_eq!(report.page_number(cx), 1);
+        assert_eq!(report.focused_entry(cx), Some(salary_src.clone()));
+    });
+
+    cx.update_window(handle, |_, window, cx| {
+        report.update(cx, |report, cx| report.set_search_query("", window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = report.read(cx);
+        assert_eq!(report.page_number(cx), 4);
+        assert_eq!(report.entries(cx)[0].txn.narration(), "Salary");
+    });
+
+    // Verify the same remembered-focus behavior in an Account view
+    // (`Assets:Bank:Checking` has 6 entries -> 3 pages at 2 rows/page, with
+    // "Opening balances" at row 1 of page 3).
+    let (_acct_session, acct_report) =
+        open_journal(Page::Account("Assets:Bank:Checking".into()), cx);
+    acct_report.update(cx, |report, cx| report.set_page_size(2, cx));
+    acct_report.update(cx, |report, cx| report.open_page_number(3, cx));
+    cx.run_until_parked();
+
+    // Activate/click row 1 ("Opening balances") on page 3, move to page 1, and
+    // search for "USD" (5 USD entries -> "Opening balances" is on page 3, row 0).
+    acct_report.update(cx, |report, cx| report.activate_row(1, cx));
+    acct_report.update(cx, |report, cx| report.open_page_number(1, cx));
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(acct_report.read(cx).page_number(cx), 1));
+
+    acct_report.update(cx, |report, cx| report.apply_search_query("USD".into(), cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = acct_report.read(cx);
+        assert_eq!(report.total(cx), 5);
+        assert_eq!(report.page_number(cx), 3);
+        assert_eq!(report.entries(cx)[0].txn.narration(), "Opening balances");
     });
 }

@@ -1,7 +1,7 @@
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{FontWeight, Styled as _, TestAppContext, px};
 
-use crate::style::{table_card, table_header, table_row_bg};
+use crate::style::{table_card, table_focused_row_bg, table_header, table_row_bg};
 
 #[gpui_kit::test]
 fn test_configure_theme_sets_table_palette_and_removes_row_border(cx: &mut TestAppContext) {
@@ -14,6 +14,9 @@ fn test_configure_theme_sets_table_palette_and_removes_row_border(cx: &mut TestA
         assert_eq!(theme.table_even, theme.muted);
         assert_eq!(table_row_bg(0, cx), theme.table);
         assert_eq!(table_row_bg(1, cx), theme.muted);
+        assert_eq!(table_focused_row_bg(cx), theme.table_active);
+        assert_ne!(table_focused_row_bg(cx), table_row_bg(0, cx));
+        assert_ne!(table_focused_row_bg(cx), table_row_bg(1, cx));
     });
 }
 
