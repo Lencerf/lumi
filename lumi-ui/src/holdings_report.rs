@@ -17,6 +17,7 @@ use gpui_kit::{
 use lumi::web::Position;
 use rust_decimal::Decimal;
 
+use crate::input_guard::EditDragGuard;
 use crate::journal_report::{ActivateRow, OpenAccount};
 use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
@@ -33,6 +34,7 @@ pub struct HoldingsReport {
     session: Entity<LedgerSession>,
     table: Entity<TableState<HoldingsDelegate>>,
     search_input: Entity<InputState>,
+    search_drag_guard: EditDragGuard,
     requested_revision: Option<u64>,
     _subscriptions: Vec<Subscription>,
 }
@@ -73,6 +75,7 @@ impl HoldingsReport {
                 .placeholder("Search account, currency, date…")
                 .clean_on_escape()
         });
+        let search_drag_guard = EditDragGuard::new(&search_input);
         let _subscriptions = vec![
             cx.observe(&session, |this, _, cx| this.load(cx)),
             cx.subscribe(&table, Self::on_table_event),
@@ -82,6 +85,7 @@ impl HoldingsReport {
             session,
             table,
             search_input,
+            search_drag_guard,
             requested_revision: None,
             _subscriptions,
         };
@@ -113,6 +117,7 @@ impl HoldingsReport {
 
     /// Focuses the search box and selects any existing query text.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_drag_guard.cancel();
         self.search_input.update(cx, |input, cx| {
             input.focus(window, cx);
             input.select_all(window, cx);
@@ -150,6 +155,7 @@ impl HoldingsReport {
         cx: &mut Context<Self>,
     ) {
         if matches!(event, InputEvent::Change) {
+            self.search_drag_guard.cancel();
             let query = input.read(cx).value();
             self.apply_search_query(query, cx);
         }
@@ -244,18 +250,24 @@ impl Render for HoldingsReport {
                     .px_6()
                     .pt_4()
                     .child(
-                        div().w(px(320.)).max_w_full().child(
-                            Input::new(&self.search_input)
-                                .id("holdings-search")
-                                .small()
-                                .cleanable(true)
-                                .aria_label("Search holdings")
-                                .prefix(
-                                    Icon::new(IconName::Search)
-                                        .small()
-                                        .text_color(cx.theme().muted_foreground),
-                                ),
-                        ),
+                        div()
+                            .relative()
+                            .w(px(320.))
+                            .max_w_full()
+                            .capture_action(self.search_drag_guard.paste_capture())
+                            .child(self.search_drag_guard.element())
+                            .child(
+                                Input::new(&self.search_input)
+                                    .id("holdings-search")
+                                    .small()
+                                    .cleanable(true)
+                                    .aria_label("Search holdings")
+                                    .prefix(
+                                        Icon::new(IconName::Search)
+                                            .small()
+                                            .text_color(cx.theme().muted_foreground),
+                                    ),
+                            ),
                     )
                     .child(
                         div()

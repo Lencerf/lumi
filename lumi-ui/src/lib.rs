@@ -13,6 +13,7 @@ mod entry_editor;
 mod errors_report;
 mod highlight;
 mod holdings_report;
+mod input_guard;
 mod journal_report;
 mod menu;
 mod navigation;

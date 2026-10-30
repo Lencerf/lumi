@@ -26,6 +26,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::entry_editor::EntryEditor;
+use crate::input_guard::EditDragGuard;
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
@@ -88,6 +89,7 @@ pub struct JournalReport {
     session: Entity<LedgerSession>,
     table: Entity<TableState<JournalDelegate>>,
     search_input: Entity<InputState>,
+    search_drag_guard: EditDragGuard,
     /// The ledger revision the table was last reset for.
     requested_revision: Option<u64>,
     _subscriptions: Vec<Subscription>,
@@ -141,6 +143,7 @@ impl JournalReport {
                 .placeholder("Search date, account, payee, narration, currency…")
                 .clean_on_escape()
         });
+        let search_drag_guard = EditDragGuard::new(&search_input);
         let _subscriptions = vec![
             cx.observe(&session, |this, _, cx| this.load(cx)),
             cx.subscribe(&table, Self::on_table_event),
@@ -151,6 +154,7 @@ impl JournalReport {
             session,
             table,
             search_input,
+            search_drag_guard,
             requested_revision: None,
             _subscriptions,
         };
@@ -203,6 +207,7 @@ impl JournalReport {
 
     /// Focuses the search box and selects any existing query text.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_drag_guard.cancel();
         self.search_input.update(cx, |input, cx| {
             input.focus(window, cx);
             input.select_all(window, cx);
@@ -239,6 +244,7 @@ impl JournalReport {
         cx: &mut Context<Self>,
     ) {
         if matches!(event, InputEvent::Change) {
+            self.search_drag_guard.cancel();
             let query = input.read(cx).value();
             self.apply_search_query(query, cx);
         }
@@ -624,18 +630,24 @@ impl Render for JournalReport {
                             .flex_1()
                             .min_w_0()
                             .child(
-                                div().w(px(300.)).max_w_full().child(
-                                    Input::new(&self.search_input)
-                                        .id((ElementId::from("journal-search"), self.page.id()))
-                                        .small()
-                                        .cleanable(true)
-                                        .aria_label("Search entries")
-                                        .prefix(
-                                            Icon::new(IconName::Search)
-                                                .small()
-                                                .text_color(cx.theme().muted_foreground),
-                                        ),
-                                ),
+                                div()
+                                    .relative()
+                                    .w(px(300.))
+                                    .max_w_full()
+                                    .capture_action(self.search_drag_guard.paste_capture())
+                                    .child(self.search_drag_guard.element())
+                                    .child(
+                                        Input::new(&self.search_input)
+                                            .id((ElementId::from("journal-search"), self.page.id()))
+                                            .small()
+                                            .cleanable(true)
+                                            .aria_label("Search entries")
+                                            .prefix(
+                                                Icon::new(IconName::Search)
+                                                    .small()
+                                                    .text_color(cx.theme().muted_foreground),
+                                            ),
+                                    ),
                             )
                             .child(self.render_record_type_selector(&visible_flags, cx)),
                     )
