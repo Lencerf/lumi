@@ -15,9 +15,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, App, AppContext as _, Context, Div, ElementId, Entity, EventEmitter, Focusable as _,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    Action, App, AppContext as _, ClickEvent, Context, Div, ElementId, Entity, EventEmitter,
+    Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     TestSupportExt as _, Window, div, px,
 };
 use lumi::web::{DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
@@ -276,6 +276,16 @@ impl JournalReport {
         });
     }
 
+    fn toggle_visible_flag(&mut self, flag: TxnFlag, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if !delegate.visible_flags.remove(&flag) {
+                delegate.visible_flags.insert(flag);
+            }
+            delegate.load_filtered_page(cx);
+        });
+    }
+
     fn render_record_type_selector(
         &self,
         visible_flags: &HashSet<TxnFlag>,
@@ -300,12 +310,13 @@ impl JournalReport {
                             .label(label)
                             .tooltip(description)
                             .selected(visible_flags.contains(&flag))
-                    }))
-                    .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
-                        let flags = selected
-                            .iter()
-                            .filter_map(|ix| RECORD_TYPES.get(*ix).map(|(flag, _, _)| *flag));
-                        this.set_visible_flags(flags, cx);
+                            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                                if event.click_count() >= 2 {
+                                    this.set_visible_flags([flag], cx);
+                                } else {
+                                    this.toggle_visible_flag(flag, cx);
+                                }
+                            }))
                     })),
             )
             .child(if filtered {

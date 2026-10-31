@@ -686,6 +686,133 @@ fn test_record_type_selector_toggles_entry_flags_and_resets_all(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+fn test_double_clicking_record_type_flag_selects_only_that_flag(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // 1. From all flags selected: double-clicking `bal` isolates `bal`.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click((gpui_kit::ElementId::from("record-type"), "bal"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(
+            report.read(cx).visible_flags(cx),
+            [TxnFlag::Balance].into_iter().collect()
+        );
+        assert_eq!(report.read(cx).total(cx), 1);
+        assert_eq!(report.read(cx).entries(cx)[0].txn.flag(), TxnFlag::Balance);
+    });
+
+    // 2. When `bal` is already the only selected flag: double-clicking `bal`
+    //    again keeps only `bal` selected.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click((gpui_kit::ElementId::from("record-type"), "bal"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(
+            report.read(cx).visible_flags(cx),
+            [TxnFlag::Balance].into_iter().collect()
+        );
+        assert_eq!(report.read(cx).total(cx), 1);
+    });
+
+    // 3. When `bal` is selected and `*` is unselected: double-clicking `*`
+    //    selects `*` and deselects `bal`.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click((gpui_kit::ElementId::from("record-type"), "*"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(
+            report.read(cx).visible_flags(cx),
+            [TxnFlag::Posted].into_iter().collect()
+        );
+        assert_eq!(report.read(cx).total(cx), 8);
+    });
+
+    // 4. When multiple flags (`*` and `!`) are selected: double-clicking `*`
+    //    deselects `!` and keeps `*`.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((gpui_kit::ElementId::from("record-type"), "!"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(
+            report.read(cx).visible_flags(cx),
+            [TxnFlag::Posted, TxnFlag::Pending].into_iter().collect()
+        );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click((gpui_kit::ElementId::from("record-type"), "*"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(
+            report.read(cx).visible_flags(cx),
+            [TxnFlag::Posted].into_iter().collect()
+        );
+    });
+
+    // 5. When no flags are selected: double-clicking `pad` selects only `pad`.
+    cx.update_window(handle, |_, window, cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        report.update(cx, |report, cx| report.set_visible_flags([], cx));
+        window.render_frame(cx);
+        window.double_click((gpui_kit::ElementId::from("record-type"), "pad"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        assert_eq!(
+            report.read(cx).visible_flags(cx),
+            [TxnFlag::Pad].into_iter().collect()
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn test_show_in_context_clears_filters_and_locates_entry_page(cx: &mut TestAppContext) {
     cx.update(crate::init);
     let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
