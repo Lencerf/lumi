@@ -56,6 +56,12 @@ pub struct EditEntry(pub usize);
 #[action(namespace = lumi_ui, no_json)]
 pub struct ShowInContext(pub usize);
 
+/// Navigates from an account journal to the main Journal page and shows the
+/// transaction at the given entry index.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = lumi_ui, no_json)]
+pub struct ShowInJournal(pub usize);
+
 /// Activates the selected row: toggles a transaction's postings, or opens a
 /// posting's account. Bound to Enter.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
@@ -469,26 +475,16 @@ impl JournalReport {
     }
 
     /// Clears the search query and record-type filter, navigates to the page
-    /// containing `entry_ix`, and selects its row in the table.
-    pub fn show_in_context(
+    /// containing `source`, and selects its row in the table.
+    pub fn show_entry_in_context(
         &mut self,
-        entry_ix: usize,
+        source: Source,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .table
-            .read(cx)
-            .delegate()
-            .entries
-            .get(entry_ix)
-            .is_none()
-        {
-            return;
-        }
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            delegate.focus_entry(entry_ix);
+            delegate.focused_entry = Some(source);
             delegate.query = SharedString::default();
             delegate.visible_flags = RECORD_TYPES.iter().map(|(flag, _, _)| *flag).collect();
             delegate.load_filtered_page(cx);
@@ -499,6 +495,27 @@ impl JournalReport {
         table_focus.focus(window, cx);
     }
 
+    /// Clears the search query and record-type filter, navigates to the page
+    /// containing `entry_ix`, and selects its row in the table.
+    pub fn show_in_context(
+        &mut self,
+        entry_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self
+            .table
+            .read(cx)
+            .delegate()
+            .entries
+            .get(entry_ix)
+            .map(|entry| entry.txn.src().clone())
+        else {
+            return;
+        };
+        self.show_entry_in_context(source, window, cx);
+    }
+
     fn on_show_in_context(
         &mut self,
         action: &ShowInContext,
@@ -506,6 +523,25 @@ impl JournalReport {
         cx: &mut Context<Self>,
     ) {
         self.show_in_context(action.0, window, cx);
+    }
+
+    fn on_show_in_journal(
+        &mut self,
+        action: &ShowInJournal,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self.table.update(cx, |table, _| {
+            let delegate = table.delegate_mut();
+            delegate.focus_entry(action.0);
+            delegate
+                .entries
+                .get(action.0)
+                .map(|entry| entry.txn.src().clone())
+        }) else {
+            return;
+        };
+        cx.emit(ReportEvent::ShowInJournal(source));
     }
 
     fn on_table_event(
@@ -629,6 +665,7 @@ impl Render for JournalReport {
             .on_action(cx.listener(Self::on_toggle_postings))
             .on_action(cx.listener(Self::on_edit_entry))
             .on_action(cx.listener(Self::on_show_in_context))
+            .on_action(cx.listener(Self::on_show_in_journal))
             .on_action(cx.listener(|this, _: &Search, window, cx| this.focus_search(window, cx)))
             .child(
                 div()
@@ -1124,6 +1161,7 @@ impl TableDelegate for JournalDelegate {
         _: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
         self.focus_row(row_ix);
+        let in_account = self.account.is_some();
         match self.rows.get(row_ix) {
             Some(&JournalRow::Transaction(entry_ix)) => {
                 let menu = menu.menu("Edit entry", Box::new(EditEntry(entry_ix)));
@@ -1137,14 +1175,25 @@ impl TableDelegate for JournalDelegate {
                     };
                     menu.menu(label, Box::new(TogglePostings(entry_ix)))
                 };
-                menu.menu("Show in context", Box::new(ShowInContext(entry_ix)))
+                let menu = menu.menu("Show in context", Box::new(ShowInContext(entry_ix)));
+                if in_account {
+                    menu.menu("Show in Journal", Box::new(ShowInJournal(entry_ix)))
+                } else {
+                    menu
+                }
             }
             Some(&JournalRow::Posting(entry_ix, posting_ix)) => {
                 let account = self.entries[entry_ix].txn.postings()[posting_ix]
                     .account
                     .to_string();
-                menu.menu("Open account", Box::new(OpenAccount(account.into())))
-                    .menu("Show in context", Box::new(ShowInContext(entry_ix)))
+                let menu = menu
+                    .menu("Open account", Box::new(OpenAccount(account.into())))
+                    .menu("Show in context", Box::new(ShowInContext(entry_ix)));
+                if in_account {
+                    menu.menu("Show in Journal", Box::new(ShowInJournal(entry_ix)))
+                } else {
+                    menu
+                }
             }
             _ => menu,
         }

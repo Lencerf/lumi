@@ -878,6 +878,7 @@ fn test_show_in_context_clears_filters_and_locates_entry_page(cx: &mut TestAppCo
         let mut menu = window.within("popup-menu");
         assert!(menu.try_find_by_label("Edit entry").is_some());
         assert!(menu.try_find_by_label("Show postings").is_some());
+        assert!(menu.try_find_by_label("Show in Journal").is_none());
         let item_id = menu
             .find_by_label("Show in context")
             .path()
@@ -939,6 +940,139 @@ fn test_show_in_context_clears_filters_and_locates_entry_page(cx: &mut TestAppCo
         assert_eq!(report.page_number(cx), 2);
         assert_eq!(report.entries(cx)[1].txn.flag(), TxnFlag::Balance);
         assert_eq!(report.table.read(cx).selected_row(), Some(1));
+    });
+}
+
+#[gpui_kit::test]
+fn test_account_view_show_in_journal_navigates_and_locates_entry(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Account("Assets:Cash".into()),
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // 1. Even when `Page::Journal` has never been opened yet, right-clicking an
+    //    entry in an account view shows "Show in Journal" and jumps to it in
+    //    the main Journal (the 2024-03-15 balance assertion is index 3 of 9).
+    let balance_src = cx.read(|cx| {
+        let report = app.read(cx).journal().expect("account journal is shown");
+        report.read(cx).entries(cx)[0].txn.src().clone()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("balance-account", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let mut menu = window.within("popup-menu");
+        assert!(menu.try_find_by_label("Show in context").is_some());
+        let item_id = menu
+            .find_by_label("Show in Journal")
+            .path()
+            .last()
+            .unwrap()
+            .clone();
+        menu.click(item_id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Journal);
+        let journal = app.read(cx).journal().expect("main journal is shown");
+        let journal = journal.read(cx);
+        assert_eq!(journal.total(cx), 9);
+        assert_eq!(journal.focused_entry(cx), Some(balance_src));
+        assert_eq!(journal.table.read(cx).selected_row(), Some(3));
+    });
+
+    // 2. Configure the main Journal to 2 rows/page with filters that hide
+    //    "Opening balances", then navigate to `Assets:Cash`, expand
+    //    "Opening balances", and trigger "Show in Journal" from its posting row.
+    let journal = cx.read(|cx| app.read(cx).journal().expect("main journal is shown"));
+    cx.update_window(handle, |_, window, cx| {
+        journal.update(cx, |report, cx| {
+            report.set_page_size(2, cx);
+            report.set_visible_flags([TxnFlag::Balance], cx);
+            report.set_search_query("Broker", window, cx);
+        });
+        window.dispatch_action(
+            Box::new(crate::journal_report::OpenAccount("Assets:Cash".into())),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let opening_src = cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into()));
+        let acct = app.read(cx).journal().expect("account journal is shown");
+        acct.read(cx).entries(cx)[2].txn.src().clone()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("postings", 2usize), cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("posting-account", 3usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let mut menu = window.within("popup-menu");
+        assert!(menu.try_find_by_label("Open account").is_some());
+        let item_id = menu
+            .find_by_label("Show in Journal")
+            .path()
+            .last()
+            .unwrap()
+            .clone();
+        menu.click(item_id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find_by_label("Search entries").value(), Some(""));
+    })
+    .unwrap();
+    cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Journal);
+        let journal = journal.read(cx);
+        assert_eq!(journal.search_query(cx), "");
+        assert_eq!(journal.visible_flags(cx).len(), 4);
+        assert_eq!(journal.total(cx), 9);
+        assert_eq!(journal.page_number(cx), 5);
+        assert_eq!(journal.entries(cx)[0].txn.narration(), "Opening balances");
+        assert_eq!(journal.focused_entry(cx), Some(opening_src));
+        assert_eq!(journal.table.read(cx).selected_row(), Some(0));
     });
 }
 
