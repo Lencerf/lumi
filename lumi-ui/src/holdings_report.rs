@@ -22,7 +22,10 @@ use crate::journal_report::{ActivateRow, OpenAccount};
 use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
 use crate::source::{LedgerSource, Positions};
-use crate::style::{interactive_button, table_card, table_header, table_row_bg};
+use crate::style::{
+    data_table_td, data_table_th, interactive_button, table_card, table_header, table_row,
+    table_row_bg,
+};
 
 /// The key context of the holdings table; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "HoldingsReport";
@@ -489,13 +492,22 @@ impl TableDelegate for HoldingsDelegate {
         table_header()
     }
 
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        data_table_th(&self.columns, col_ix, cx)
+    }
+
     fn render_tr(
         &mut self,
         row_ix: usize,
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let row = div().id(("row", row_ix));
+        let row = table_row(row_ix);
         if row_ix < self.holdings.len() {
             row.bg(table_row_bg(row_ix, cx))
         } else {
@@ -541,9 +553,10 @@ impl TableDelegate for HoldingsDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let holding = &self.holdings[row_ix];
+        let columns_count = self.columns.len();
         let mono = cx.theme().mono_font_family.clone();
         // Every column is an identifier or a number, so all are monospaced.
-        match self.columns[col_ix].key.as_ref() {
+        let cell = match self.columns[col_ix].key.as_ref() {
             "account" => {
                 let account = holding.account.clone();
                 let to_open = account.clone();
@@ -581,7 +594,8 @@ impl TableDelegate for HoldingsDelegate {
                 .child(holding.book_value.clone())
                 .into_any_element(),
             _ => div().into_any_element(),
-        }
+        };
+        data_table_td(row_ix, col_ix, columns_count, cell, cx)
     }
 
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {

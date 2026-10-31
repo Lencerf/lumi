@@ -210,6 +210,30 @@ include \"sub.bean\"
         window.render_frame(cx);
         assert_eq!(app.read(cx).session().read(cx).error_count(), 0);
         assert!(window.try_find("sidebar-error-count").is_none());
+
+        // Navigate back to Errors to verify its 3 columns render aligned 1px separators.
+        window.within("lumi-sidebar").click("0-0-4", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("col-sep-head", 0usize)).is_none());
+        for col in 1..=3usize {
+            let head = window.find(("col-sep-head", col)).bounds();
+            let row1 = window
+                .find((
+                    gpui_kit::ElementId::from("col-sep-cell"),
+                    format!("1:{col}"),
+                ))
+                .bounds();
+            assert_eq!(head.size.width, px(1.));
+            assert_eq!(head.size.height, px(29.));
+            assert_eq!(row1.size.width, px(1.));
+            assert_eq!(row1.size.height, px(30.));
+            assert_eq!(row1.origin.x, head.origin.x);
+        }
     })
     .unwrap();
 }
