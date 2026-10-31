@@ -36,7 +36,8 @@ pub use entry_editor::{CancelEntry, EntryEditor, SaveEntry};
 pub use errors_report::ErrorsReport;
 pub use holdings_report::HoldingsReport;
 pub use journal_report::{
-    ActivateRow, EditEntry, JournalReport, OpenAccount, RECORD_TYPES, ShowInContext, TogglePostings,
+    ActivateRow, EditEntry, JournalReport, OpenAccount, RECORD_TYPES, ShowInContext, ShowInJournal,
+    TogglePostings,
 };
 pub use navigation::{Page, ReportEvent};
 pub use session::LedgerSession;

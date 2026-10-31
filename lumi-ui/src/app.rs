@@ -385,9 +385,29 @@ impl LumiApp {
                     cx.notify();
                 }
             }
+            ReportEvent::ShowInJournal(source) => {
+                self.open_journal_entry(source.clone(), window, cx);
+            }
             ReportEvent::OpenSource { file, line } => {
                 self.open_source_location(file.clone(), *line, window, cx);
             }
+        }
+    }
+
+    fn open_journal_entry(
+        &mut self,
+        source: lumi::Source,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_page(Page::Journal, window, cx);
+        if let Ok(journal) = self
+            .report(&Page::Journal, window, cx)
+            .downcast::<JournalReport>()
+        {
+            journal.update(cx, |journal, cx| {
+                journal.show_entry_in_context(source, window, cx)
+            });
         }
     }
 

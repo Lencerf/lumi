@@ -20,6 +20,8 @@ pub enum Page {
 pub enum ReportEvent {
     /// Show the journal of the named account.
     OpenAccount(SharedString),
+    /// Show the entry at `Source` in the main journal.
+    ShowInJournal(lumi::Source),
     /// Open `file` at 1-based `line` in the built-in source editor.
     OpenSource { file: SharedString, line: usize },
 }
