@@ -1,7 +1,10 @@
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{FontWeight, Styled as _, TestAppContext, px};
 
-use crate::style::{table_card, table_focused_row_bg, table_header, table_row_bg};
+use crate::style::{
+    table_card, table_col_separator_color, table_focused_row_bg, table_header, table_row,
+    table_row_bg,
+};
 
 #[gpui_kit::test]
 fn test_configure_theme_sets_table_palette_and_removes_row_border(cx: &mut TestAppContext) {
@@ -14,6 +17,10 @@ fn test_configure_theme_sets_table_palette_and_removes_row_border(cx: &mut TestA
         assert_eq!(theme.table_even, theme.muted);
         assert_eq!(table_row_bg(0, cx), theme.table);
         assert_eq!(table_row_bg(1, cx), theme.muted);
+        assert_eq!(table_col_separator_color(cx), theme.table);
+        assert_eq!(table_col_separator_color(cx), table_row_bg(0, cx));
+        assert_ne!(table_col_separator_color(cx), theme.table_head);
+        assert_ne!(table_col_separator_color(cx), table_row_bg(1, cx));
         assert_eq!(table_focused_row_bg(cx), theme.table_active);
         assert_ne!(table_focused_row_bg(cx), table_row_bg(0, cx));
         assert_ne!(table_focused_row_bg(cx), table_row_bg(1, cx));
@@ -44,5 +51,8 @@ fn test_table_card_and_header_match_paper_card_style(cx: &mut TestAppContext) {
 
         let mut header = table_header();
         assert_eq!(header.style().text.font_weight, Some(FontWeight::MEDIUM));
+
+        let mut row = table_row(0);
+        assert_eq!(row.style().border_widths.bottom, Some(px(0.).into()));
     });
 }

@@ -15,7 +15,9 @@ use lumi::web::{TrieOptions, TrieTable};
 
 use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
-use crate::style::{interactive_button, table_card, table_row_bg};
+use crate::style::{
+    interactive_button, table_card, table_row_bg, trie_cell_col_separator, trie_head_col_separator,
+};
 
 /// A report made of account hierarchies with their balances, such as the
 /// balance sheet (Assets beside Liabilities and Equity) or the income
@@ -271,12 +273,20 @@ impl TrieReport {
                                 TableHeader::new().font_medium().child(
                                     TableRow::new()
                                         .child(TableHead::new().min_w_40().child("Account"))
-                                        .children(presentation.currencies.iter().map(|currency| {
-                                            TableHead::new()
-                                                .w_24()
-                                                .text_right()
-                                                .child(currency.clone())
-                                        })),
+                                        .children(presentation.currencies.iter().enumerate().map(
+                                            |(col_ix, currency)| {
+                                                TableHead::new()
+                                                    .relative()
+                                                    .w_24()
+                                                    .text_right()
+                                                    .child(currency.clone())
+                                                    .child(trie_head_col_separator(
+                                                        root,
+                                                        col_ix + 1,
+                                                        cx,
+                                                    ))
+                                            },
+                                        )),
                                 ),
                             )
                             .child(TableBody::new().border_t_1().border_color(border).children(
@@ -330,14 +340,25 @@ impl TrieReport {
                                                     ),
                                                 ),
                                         )
-                                        .children(row.numbers.iter().map(|number| {
-                                            TableCell::new()
-                                                .w_24()
-                                                .text_right()
-                                                .font_family(mono.clone())
-                                                .when(row.level == 0, |this| this.font_semibold())
-                                                .child(number.clone())
-                                        }))
+                                        .children(row.numbers.iter().enumerate().map(
+                                            |(col_ix, number)| {
+                                                TableCell::new()
+                                                    .relative()
+                                                    .w_24()
+                                                    .text_right()
+                                                    .font_family(mono.clone())
+                                                    .when(row.level == 0, |this| {
+                                                        this.font_semibold()
+                                                    })
+                                                    .child(number.clone())
+                                                    .child(trie_cell_col_separator(
+                                                        root,
+                                                        row_ix,
+                                                        col_ix + 1,
+                                                        cx,
+                                                    ))
+                                            },
+                                        ))
                                 }),
                             )),
                     )

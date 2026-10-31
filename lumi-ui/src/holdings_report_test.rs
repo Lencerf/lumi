@@ -372,3 +372,62 @@ fn test_holdings_cmd_f_typing_sequential_chars_does_not_select_or_overwrite_firs
         );
     });
 }
+
+#[gpui_kit::test]
+fn test_holdings_table_renders_aligned_full_height_column_separators(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, _app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Holdings,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("col-sep-head", 0usize)).is_none());
+        for col in 1..=5usize {
+            let head = window.find(("col-sep-head", col)).bounds();
+            let row0 = window
+                .find((
+                    gpui_kit::ElementId::from("col-sep-cell"),
+                    format!("0:{col}"),
+                ))
+                .bounds();
+            let row1 = window
+                .find((
+                    gpui_kit::ElementId::from("col-sep-cell"),
+                    format!("1:{col}"),
+                ))
+                .bounds();
+            assert_eq!(head.size.width, px(1.));
+            assert_eq!(head.size.height, px(29.));
+            assert_eq!(row0.size.width, px(1.));
+            assert_eq!(row1.size.width, px(1.));
+            assert_eq!(row1.size.height, px(30.));
+            assert_eq!(row0.origin.x, head.origin.x);
+            assert_eq!(row1.origin.x, head.origin.x);
+            assert_eq!(row1.origin.y, row0.origin.y + row0.size.height);
+        }
+    })
+    .unwrap();
+}

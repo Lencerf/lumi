@@ -390,3 +390,84 @@ fn test_balance_and_income_views_render_full_height_tree_guides(cx: &mut TestApp
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_balance_and_income_tables_render_aligned_full_height_column_separators(
+    cx: &mut TestAppContext,
+) {
+    let (bs_handle, _bs_app) = open_app(Page::BalanceSheet, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+    cx.update_window(bs_handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Column 0 ("Account") has no leading separator; currency columns 1..=N do.
+        assert!(
+            window
+                .try_find((ElementId::from("trie-col-sep-head"), "Assets:0"))
+                .is_none()
+        );
+        for col in [1usize, 2usize] {
+            let head = window
+                .find((
+                    ElementId::from("trie-col-sep-head"),
+                    format!("Assets:{col}"),
+                ))
+                .bounds();
+            let row0 = window
+                .find((
+                    ElementId::from("trie-col-sep-cell"),
+                    format!("Assets:0:{col}"),
+                ))
+                .bounds();
+            let row1 = window
+                .find((
+                    ElementId::from("trie-col-sep-cell"),
+                    format!("Assets:1:{col}"),
+                ))
+                .bounds();
+            assert_eq!(head.size.width, px(1.));
+            assert!(
+                head.size.height >= px(24.),
+                "header sep full height: {head:?}"
+            );
+            assert_eq!(row0.size.width, px(1.));
+            assert_eq!(row1.size.width, px(1.));
+            assert_eq!(row0.origin.x, head.origin.x);
+            assert_eq!(row1.origin.x, head.origin.x);
+            assert!(
+                row1.origin.y <= row0.origin.y + row0.size.height,
+                "no vertical gap between row0 ({row0:?}) and row1 ({row1:?})"
+            );
+        }
+        // Liabilities has zero non-zero balances in the fixture (1 column only),
+        // while Equity has 1 currency column.
+        assert!(
+            window
+                .try_find((ElementId::from("trie-col-sep-head"), "Liabilities:1"))
+                .is_none()
+        );
+        assert!(
+            window
+                .try_find((ElementId::from("trie-col-sep-head"), "Equity:1"))
+                .is_some()
+        );
+    })
+    .unwrap();
+
+    let (inc_handle, _inc_app) = open_app(Page::Income, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+    cx.update_window(inc_handle, |_, window, cx| {
+        window.render_frame(cx);
+        for root in ["Income", "Expenses"] {
+            let head = window
+                .find((ElementId::from("trie-col-sep-head"), format!("{root}:1")))
+                .bounds();
+            let row1 = window
+                .find((ElementId::from("trie-col-sep-cell"), format!("{root}:1:1")))
+                .bounds();
+            assert_eq!(head.size.width, px(1.));
+            assert_eq!(row1.size.width, px(1.));
+            assert_eq!(row1.origin.x, head.origin.x);
+        }
+    })
+    .unwrap();
+}

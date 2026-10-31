@@ -31,7 +31,8 @@ use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
 use crate::style::{
-    interactive_button, table_card, table_focused_row_bg, table_header, table_row_bg,
+    data_table_td, data_table_th, interactive_button, table_card, table_focused_row_bg,
+    table_header, table_row, table_row_bg,
 };
 
 /// Opens the journal of an account, from a posting's context menu.
@@ -1105,6 +1106,15 @@ impl TableDelegate for JournalDelegate {
         table_header()
     }
 
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        data_table_th(&self.columns, col_ix, cx)
+    }
+
     fn perform_sort(
         &mut self,
         col_ix: usize,
@@ -1131,7 +1141,7 @@ impl TableDelegate for JournalDelegate {
     ) -> Stateful<Div> {
         // Alternates background by transaction index (or highlights the user-focused
         // record) so expanded posting sub-rows share their parent's background color.
-        let row = div().id(("row", row_ix));
+        let row = table_row(row_ix);
         match self.rows.get(row_ix).copied() {
             Some(JournalRow::Transaction(entry_ix)) => {
                 let bg = if self.is_focused_entry(entry_ix) {
@@ -1207,8 +1217,9 @@ impl TableDelegate for JournalDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let mono = cx.theme().mono_font_family.clone();
+        let columns_count = self.columns.len();
         let column = self.columns[col_ix].key.as_ref();
-        match self.rows[row_ix] {
+        let cell = match self.rows[row_ix] {
             JournalRow::Transaction(entry_ix) => {
                 let entry = &self.entries[entry_ix];
                 let txn = &entry.txn;
@@ -1275,7 +1286,7 @@ impl TableDelegate for JournalDelegate {
                             let expanded = self.is_expanded(entry_ix);
                             let tag_color = cx.theme().cyan;
                             let link_color = cx.theme().magenta;
-                            let cell_pad = Size::Small.table_cell_padding().left;
+                            let pad = Size::Small.table_cell_padding();
                             div()
                                 .id(("postings", entry_ix))
                                 .test_support()
@@ -1286,8 +1297,11 @@ impl TableDelegate for JournalDelegate {
                                     "Show postings"
                                 })
                                 .absolute()
-                                .inset_0()
-                                .px(cell_pad)
+                                .left(-pad.left)
+                                .right(-pad.right)
+                                .top(-pad.top)
+                                .bottom(-pad.bottom)
+                                .px(pad.left)
                                 .h_flex()
                                 .items_center()
                                 .gap_1()
@@ -1381,7 +1395,8 @@ impl TableDelegate for JournalDelegate {
                     _ => div().into_any_element(),
                 }
             }
-        }
+        };
+        data_table_td(row_ix, col_ix, columns_count, cell, cx)
     }
 
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {

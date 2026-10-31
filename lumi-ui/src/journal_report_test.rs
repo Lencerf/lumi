@@ -1320,3 +1320,94 @@ fn test_journal_cmd_f_typing_sequential_chars_does_not_select_or_overwrite_first
         assert_eq!(report.read(cx).entries(cx)[0].txn.payee(), "Broker");
     });
 }
+
+#[gpui_kit::test]
+fn test_journal_and_account_tables_render_aligned_full_height_column_separators(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Expand row 1 so posting sub-rows are rendered alongside transactions.
+        window.click(("postings", 1usize), cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("col-sep-head", 0usize)).is_none());
+        for col in 1..=4usize {
+            let head = window.find(("col-sep-head", col)).bounds();
+            assert_eq!(head.size.width, px(1.));
+            assert_eq!(head.size.height, px(29.));
+            let mut prev_bottom = None;
+            for row in 0..=3usize {
+                let cell = window
+                    .find((
+                        gpui_kit::ElementId::from("col-sep-cell"),
+                        format!("{row}:{col}"),
+                    ))
+                    .bounds();
+                assert_eq!(cell.size.width, px(1.));
+                assert_eq!(cell.size.height, px(30.));
+                assert_eq!(cell.origin.x, head.origin.x);
+                if let Some(bottom) = prev_bottom {
+                    assert_eq!(
+                        cell.origin.y, bottom,
+                        "contiguous vertical line across rows"
+                    );
+                }
+                prev_bottom = Some(cell.origin.y + cell.size.height);
+            }
+        }
+        window.dispatch_action(
+            Box::new(crate::journal_report::OpenAccount("Assets:Cash".into())),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into()));
+        for col in 1..=6usize {
+            let head = window.find(("col-sep-head", col)).bounds();
+            let row1 = window
+                .find((
+                    gpui_kit::ElementId::from("col-sep-cell"),
+                    format!("1:{col}"),
+                ))
+                .bounds();
+            assert_eq!(head.size.width, px(1.));
+            assert_eq!(row1.size.width, px(1.));
+            assert_eq!(row1.size.height, px(30.));
+            assert_eq!(row1.origin.x, head.origin.x);
+        }
+    })
+    .unwrap();
+}

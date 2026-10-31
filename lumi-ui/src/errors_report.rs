@@ -6,16 +6,18 @@ use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Div, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Stateful, Styled as _, Subscription, Task,
-    WeakEntity, Window, div, px,
+    App, AppContext as _, Context, Div, Entity, EventEmitter, IntoElement, ParentElement as _,
+    Render, SharedString, Stateful, Styled as _, Subscription, Task, WeakEntity, Window, div, px,
 };
 use lumi::ErrorLevel;
 
 use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
-use crate::style::{interactive_button, table_card, table_header, table_row_bg};
+use crate::style::{
+    data_table_td, data_table_th, interactive_button, table_card, table_header, table_row,
+    table_row_bg,
+};
 
 /// The errors, warnings and notes the last reload of the ledger reported,
 /// most severe first.
@@ -307,13 +309,22 @@ impl TableDelegate for ErrorsDelegate {
         table_header()
     }
 
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        data_table_th(&self.columns, col_ix, cx)
+    }
+
     fn render_tr(
         &mut self,
         row_ix: usize,
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let row = div().id(("row", row_ix));
+        let row = table_row(row_ix);
         if row_ix < self.errors.len() {
             row.bg(table_row_bg(row_ix, cx))
         } else {
@@ -329,7 +340,8 @@ impl TableDelegate for ErrorsDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let error = &self.errors[row_ix];
-        match self.columns[col_ix].key.as_ref() {
+        let columns_count = self.columns.len();
+        let cell = match self.columns[col_ix].key.as_ref() {
             "level" => div()
                 .text_color(match error.level {
                     ErrorLevel::Error => cx.theme().red,
@@ -366,7 +378,8 @@ impl TableDelegate for ErrorsDelegate {
                 )
             }
             _ => div(),
-        }
+        };
+        data_table_td(row_ix, col_ix, columns_count, cell, cx)
     }
 
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {
