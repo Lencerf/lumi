@@ -6,16 +6,24 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Search;
+use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::sidebar::{
     Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, TitleBar,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     TestSupportExt as _, Window, actions, div,
+};
+#[cfg(not(target_family = "wasm"))]
+use gpui_kit::{
+    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions,
+    px, size,
 };
 
 use crate::entry_editor::{EntryEditorLayer, OpenSource};
@@ -53,6 +61,8 @@ actions!(
 
 /// The key context of the application view; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "LumiApp";
+
+const SHOW_TITLE_BAR: bool = !cfg!(target_os = "macos") && !cfg!(target_family = "wasm");
 
 /// Builds a [`LedgerSource`] for a ledger file path chosen in the interface.
 pub type PathOpener = Arc<dyn Fn(&Path) -> Arc<dyn LedgerSource>>;
@@ -99,6 +109,7 @@ pub struct LumiApp {
     /// switching to another root file.
     reports: HashMap<Page, Report>,
     editor_layer: Entity<EntryEditorLayer>,
+    menu_bar: Option<Entity<AppMenuBar>>,
     focus_handle: FocusHandle,
     _open_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -112,6 +123,41 @@ struct Report {
 }
 
 impl LumiApp {
+    /// Builds platform-appropriate [`WindowOptions`] for a native [`LumiApp`]
+    /// window.
+    ///
+    /// macOS uses native AppKit window chrome and the system menu bar; Linux
+    /// and Windows render a client-side [`TitleBar`] with an [`AppMenuBar`],
+    /// window dragging, and min/max/close controls.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn window_options(title: SharedString, bounds: WindowBounds) -> WindowOptions {
+        let titlebar = if cfg!(target_os = "macos") {
+            TitlebarOptions {
+                title: Some(title),
+                ..Default::default()
+            }
+        } else {
+            TitlebarOptions {
+                title: Some(title),
+                ..TitleBar::title_bar_options()
+            }
+        };
+        WindowOptions {
+            titlebar: Some(titlebar),
+            window_bounds: Some(bounds),
+            window_min_size: Some(size(px(640.), px(400.))),
+            app_id: Some("io.github.lencerf.lumi".into()),
+            app_owns_titlebar_drag: !cfg!(target_os = "macos"),
+            window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
+            window_background: if cfg!(target_os = "linux") {
+                WindowBackgroundAppearance::Transparent
+            } else {
+                WindowBackgroundAppearance::Opaque
+            },
+            ..Default::default()
+        }
+    }
+
     /// Opens `source`, named `ledger_name` in the sidebar, showing `page`, and
     /// starts loading it.
     pub fn new(
@@ -131,6 +177,7 @@ impl LumiApp {
     pub fn empty(page: Page, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let session = cx.new(|_| LedgerSession::empty());
         let editor_layer = EntryEditorLayer::register(window, cx);
+        let menu_bar = SHOW_TITLE_BAR.then(|| AppMenuBar::new(cx));
         let _subscriptions = vec![
             cx.observe(&session, |_, _, cx| cx.notify()),
             cx.subscribe_in(&editor_layer, window, Self::on_open_source),
@@ -147,6 +194,7 @@ impl LumiApp {
             back_stack: Vec::new(),
             reports: HashMap::new(),
             editor_layer,
+            menu_bar,
             focus_handle,
             _open_task: None,
             _subscriptions,
@@ -165,7 +213,7 @@ impl LumiApp {
         let mut this = Self::empty(page, window, cx);
         match path {
             Some(path) => this.open_path(path, window, cx),
-            None => window.set_window_title("Lumi"),
+            None => window.set_window_title(&this.window_title()),
         }
         this
     }
@@ -265,8 +313,8 @@ impl LumiApp {
         cx: &mut Context<Self>,
     ) {
         let had_source = self.session.read(cx).has_source();
-        window.set_window_title(&format!("{ledger_name} — Lumi"));
         self.ledger_name = Some(ledger_name);
+        window.set_window_title(&self.window_title());
         self.ledger_path = ledger_path;
         self.open_error = None;
         self.back_stack.clear();
@@ -703,6 +751,43 @@ impl LumiApp {
             )
     }
 
+    fn window_title(&self) -> SharedString {
+        match &self.ledger_name {
+            Some(name) => format!("{name} — Lumi").into(),
+            None => "Lumi".into(),
+        }
+    }
+
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> Option<TitleBar> {
+        let menu_bar = self.menu_bar.as_ref()?;
+        let title = self.window_title();
+        Some(
+            TitleBar::new()
+                .relative()
+                .child(
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .h_full()
+                        .flex_1()
+                        .min_w_0()
+                        .child(menu_bar.clone()),
+                )
+                .child(
+                    div()
+                        .id("window-title")
+                        .test_support()
+                        .aria_label(title.clone())
+                        .flex_shrink_0()
+                        .px_3()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .truncate()
+                        .child(title),
+                ),
+        )
+    }
+
     fn render_empty_ledger(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let can_open = self.path_opener.is_some();
         div()
@@ -757,10 +842,31 @@ impl Render for LumiApp {
         } else {
             self.render_empty_ledger(cx).into_any_element()
         };
+        let main_column = div()
+            .v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(self.render_header(cx))
+            .when_some(open_error, |this, message| {
+                this.child(
+                    Alert::error("open-ledger-failed", message)
+                        .title("Couldn't open the file picker")
+                        .banner(),
+                )
+            })
+            .when_some(last_error, |this, message| {
+                this.child(
+                    Alert::error("reload-failed", message)
+                        .title("Couldn't reload the ledger")
+                        .banner(),
+                )
+            })
+            .child(div().flex_1().min_h_0().child(content));
+
         div()
             .relative()
-            .h_flex()
-            .items_stretch()
+            .v_flex()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -771,6 +877,10 @@ impl Render for LumiApp {
                     this.open_path(path, window, cx);
                 }
             }))
+            .on_action(|_: &CloseWindow, window, _| window.remove_window())
+            .on_action(|_: &Minimize, window, _| window.minimize_window())
+            .on_action(|_: &Zoom, window, _| window.zoom_window())
+            .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::on_open_ledger))
             .on_action(cx.listener(Self::refresh))
@@ -793,29 +903,16 @@ impl Render for LumiApp {
             .on_action(cx.listener(|this, _: &ShowEditor, window, cx| {
                 this.open_page(Page::Editor, window, cx)
             }))
-            .child(self.render_sidebar(cx))
+            .children(self.render_title_bar(cx))
             .child(
                 div()
-                    .v_flex()
+                    .h_flex()
+                    .items_stretch()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(self.render_header(cx))
-                    .when_some(open_error, |this, message| {
-                        this.child(
-                            Alert::error("open-ledger-failed", message)
-                                .title("Couldn't open the file picker")
-                                .banner(),
-                        )
-                    })
-                    .when_some(last_error, |this, message| {
-                        this.child(
-                            Alert::error("reload-failed", message)
-                                .title("Couldn't reload the ledger")
-                                .banner(),
-                        )
-                    })
-                    .child(div().flex_1().min_h_0().child(content)),
+                    .min_h_0()
+                    .w_full()
+                    .child(self.render_sidebar(cx))
+                    .child(main_column),
             )
             .child(self.editor_layer.clone())
     }

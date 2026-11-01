@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Entity, SharedString, TitlebarOptions,
-    WindowBounds, WindowOptions, px, size,
+    AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Entity, SharedString, WindowBounds,
+    px, size,
 };
 use lumi_ui::{LumiApp, LumiAssets, Page, ledger_name_for_path};
 
@@ -117,19 +117,10 @@ fn open_main_window(state: &Rc<RefCell<AppState>>, page: Page, cx: &mut App) {
         Some(path) => format!("{} — Lumi", ledger_name_for_path(path)).into(),
         None => "Lumi".into(),
     };
-    let options = WindowOptions {
-        titlebar: Some(TitlebarOptions {
-            title: Some(title),
-            ..Default::default()
-        }),
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(1280.), px(800.)),
-            cx,
-        ))),
-        window_min_size: Some(size(px(640.), px(400.))),
-        ..Default::default()
-    };
+    let options = LumiApp::window_options(
+        title,
+        WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(800.)), cx)),
+    );
     let (window, view) = gpui_kit::open_window(options, cx, move |window, cx| {
         cx.new(|cx| LumiApp::new_local(path.as_deref(), page, window, cx))
     })
