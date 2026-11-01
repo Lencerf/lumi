@@ -385,12 +385,35 @@ impl LumiApp {
                     cx.notify();
                 }
             }
+            ReportEvent::OpenAccountEntry { account, source } => {
+                self.open_account_entry(account.clone(), source.clone(), window, cx);
+            }
             ReportEvent::ShowInJournal(source) => {
                 self.open_journal_entry(source.clone(), window, cx);
             }
             ReportEvent::OpenSource { file, line } => {
                 self.open_source_location(file.clone(), *line, window, cx);
             }
+        }
+    }
+
+    fn open_account_entry(
+        &mut self,
+        account: SharedString,
+        source: lumi::Source,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = Page::Account(account);
+        if self.page != next {
+            let prev = std::mem::replace(&mut self.page, next.clone());
+            self.back_stack.push(prev);
+            cx.notify();
+        }
+        if let Ok(journal) = self.report(&next, window, cx).downcast::<JournalReport>() {
+            journal.update(cx, |journal, cx| {
+                journal.show_entry_in_context(source, window, cx)
+            });
         }
     }
 

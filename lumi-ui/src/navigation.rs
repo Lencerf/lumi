@@ -20,6 +20,11 @@ pub enum Page {
 pub enum ReportEvent {
     /// Show the journal of the named account.
     OpenAccount(SharedString),
+    /// Show the journal of `account` focused on the entry at `source`.
+    OpenAccountEntry {
+        account: SharedString,
+        source: lumi::Source,
+    },
     /// Show the entry at `Source` in the main journal.
     ShowInJournal(lumi::Source),
     /// Open `file` at 1-based `line` in the built-in source editor.

@@ -4,8 +4,9 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::table::TableDelegate as _;
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, Modifiers, MouseButton, MouseDownEvent,
-    PlatformInput, Styled as _, TestAppContext, WindowBounds, WindowOptions, point, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, Entity, Focusable as _, Modifiers, MouseButton,
+    MouseDownEvent, PlatformInput, Styled as _, TestAppContext, WindowBounds, WindowOptions, point,
+    px, size,
 };
 use lumi::TxnFlag;
 
@@ -100,23 +101,32 @@ fn test_activating_rows(cx: &mut TestAppContext) {
     let _subscription = cx.update(|cx| {
         let opened = opened.clone();
         cx.subscribe(&report, move |_, event: &ReportEvent, _| {
-            if let ReportEvent::OpenAccount(account) = event {
-                opened.lock().unwrap().push(account.to_string());
+            if let ReportEvent::OpenAccountEntry { account, source } = event {
+                opened
+                    .lock()
+                    .unwrap()
+                    .push((account.to_string(), source.clone()));
             }
         })
     });
 
-    // A transaction row toggles its postings; a posting row opens its account.
+    // A transaction row toggles its postings; a posting row opens its account
+    // anchored to the originating entry.
     report.update(cx, |report, cx| report.activate_row(0, cx));
     cx.read(|cx| assert_eq!(report.read(cx).table.read(cx).delegate().rows.len(), 11));
-    let first_posting_account = cx.read(|cx| {
-        report.read(cx).entries(cx)[0].txn.postings()[0]
-            .account
-            .to_string()
+    let (first_posting_account, first_source) = cx.read(|cx| {
+        let entry = &report.read(cx).entries(cx)[0];
+        (
+            entry.txn.postings()[0].account.to_string(),
+            entry.txn.src().clone(),
+        )
     });
     report.update(cx, |report, cx| report.activate_row(1, cx));
     cx.run_until_parked();
-    assert_eq!(opened.lock().unwrap().as_slice(), [first_posting_account]);
+    assert_eq!(
+        opened.lock().unwrap().as_slice(),
+        [(first_posting_account, first_source)]
+    );
 
     // The balance assertion (2024-03-15, the 6th newest) has nothing to expand.
     let balance_row = cx.read(|cx| {
@@ -260,28 +270,42 @@ fn test_clicking_account_buttons_in_journal_opens_their_accounts(cx: &mut TestAp
     });
     cx.run_until_parked();
 
-    // Expand the first transaction and click its first posting's account button.
-    let first_account: gpui_kit::SharedString = cx.read(|cx| {
+    // Expand entry 4 ("Buy shares") and click its `Assets:Bank:Checking` posting
+    // button (`postings()[0]` -> row 5 once expanded). In `Assets:Bank:Checking`,
+    // "Buy shares" is the 4th newest entry (index 3).
+    let buy_shares_src = cx.read(|cx| {
         let report = app.read(cx).journal().expect("the journal is shown");
-        report.read(cx).entries(cx)[0].txn.postings()[0]
-            .account
-            .to_string()
-            .into()
+        let entry = &report.read(cx).entries(cx)[4];
+        assert_eq!(entry.txn.narration(), "Buy shares");
+        assert_eq!(
+            entry.txn.postings()[0].account.as_ref(),
+            "Assets:Bank:Checking"
+        );
+        entry.txn.src().clone()
     });
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(("postings", 0usize), cx);
+        window.click(("postings", 4usize), cx);
     })
     .unwrap();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(("posting-account", 1usize), cx);
+        window.click(("posting-account", 5usize), cx);
     })
     .unwrap();
     cx.run_until_parked();
-    cx.read(|cx| {
-        assert_eq!(app.read(cx).page(), &Page::Account(first_account));
-    });
+    cx.update_window(handle, |_, window, cx| {
+        assert_eq!(
+            app.read(cx).page(),
+            &Page::Account("Assets:Bank:Checking".into())
+        );
+        let acct = app.read(cx).journal().expect("account journal is shown");
+        let acct = acct.read(cx);
+        assert_eq!(acct.focused_entry(cx), Some(buy_shares_src));
+        assert_eq!(acct.table.read(cx).selected_row(), Some(3));
+        assert!(acct.table.read(cx).focus_handle(cx).is_focused(window));
+    })
+    .unwrap();
 
     // Return to Journal and click the balance assertion's account button.
     cx.update_window(handle, |_, window, cx| {
@@ -289,20 +313,175 @@ fn test_clicking_account_buttons_in_journal_opens_their_accounts(cx: &mut TestAp
     })
     .unwrap();
     cx.run_until_parked();
+    let balance_src = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let report = app.read(cx).journal().expect("the journal is shown");
+            let entries = report.read(cx).entries(cx);
+            let balance_ix = entries
+                .iter()
+                .position(|entry| entry.txn.flag() == TxnFlag::Balance)
+                .unwrap();
+            let src = entries[balance_ix].txn.src().clone();
+            window.click(("balance-account", balance_ix), cx);
+            src
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into()));
+        let acct = app.read(cx).journal().expect("account journal is shown");
+        let acct = acct.read(cx);
+        assert_eq!(acct.focused_entry(cx), Some(balance_src));
+        assert_eq!(acct.table.read(cx).selected_row(), Some(0));
+    });
+}
+
+#[gpui_kit::test]
+fn test_opening_account_from_account_view_focuses_source_entry(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Account("Assets:Bank:Checking".into()),
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // Configure `Assets:Bank:Checking` (6 entries total) to 2 rows/page with
+    // filters that hide "Opening balances", then switch to `Assets:Cash`.
+    let checking = cx.read(|cx| app.read(cx).journal().expect("checking journal is shown"));
     cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        let report = app.read(cx).journal().expect("the journal is shown");
-        let balance_ix = report
+        checking.update(cx, |report, cx| {
+            report.set_page_size(2, cx);
+            report.set_visible_flags([TxnFlag::Balance], cx);
+            report.set_search_query("Pay card", window, cx);
+        });
+        checking
             .read(cx)
-            .entries(cx)
-            .iter()
-            .position(|entry| entry.txn.flag() == TxnFlag::Balance)
-            .unwrap();
-        window.click(("balance-account", balance_ix), cx);
+            .table
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window, cx);
+        window.dispatch_action(
+            Box::new(crate::journal_report::OpenAccount("Assets:Cash".into())),
+            cx,
+        );
     })
     .unwrap();
     cx.run_until_parked();
-    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into())));
+
+    // In `Assets:Cash` (3 entries: balance, Dinner, Opening balances), expand
+    // entry 2 ("Opening balances") and click its `Assets:Bank:Checking` posting
+    // button (`postings()[0]` -> row 3).
+    let opening_src = cx.read(|cx| {
+        assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into()));
+        let cash = app.read(cx).journal().expect("cash journal is shown");
+        let entry = &cash.read(cx).entries(cx)[2];
+        assert_eq!(entry.txn.narration(), "Opening balances");
+        assert_eq!(
+            entry.txn.postings()[0].account.as_ref(),
+            "Assets:Bank:Checking"
+        );
+        assert_eq!(
+            entry.txn.postings()[2].account.as_ref(),
+            "Assets:Old:Savings"
+        );
+        entry.txn.src().clone()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("postings", 2usize), cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("posting-account", 3usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // `Assets:Bank:Checking` clears its filters, jumps to page 3 (where index 5
+    // "Opening balances" lives at row 1), and focuses & selects that record.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find_by_label("Search entries").value(), Some(""));
+    })
+    .unwrap();
+    cx.read(|cx| {
+        assert_eq!(
+            app.read(cx).page(),
+            &Page::Account("Assets:Bank:Checking".into())
+        );
+        let checking = checking.read(cx);
+        assert_eq!(checking.search_query(cx), "");
+        assert_eq!(checking.visible_flags(cx).len(), 4);
+        assert_eq!(checking.total(cx), 6);
+        assert_eq!(checking.page_number(cx), 3);
+        assert_eq!(checking.entries(cx)[1].txn.narration(), "Opening balances");
+        assert_eq!(checking.focused_entry(cx), Some(opening_src.clone()));
+        assert_eq!(checking.table.read(cx).selected_row(), Some(1));
+    });
+
+    // Clicking "Go back" returns to `Assets:Cash`. From there, right-click the
+    // `Assets:Old:Savings` posting (row 5) and choose "Open account": in
+    // `Assets:Old:Savings` (2 entries: Close old account, Opening balances),
+    // "Opening balances" is focused and selected at row 1.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("go-back", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into()));
+        window.render_frame(cx);
+        window.right_click(("posting-account", 5usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let mut menu = window.within("popup-menu");
+        let item_id = menu
+            .find_by_label("Open account")
+            .path()
+            .last()
+            .unwrap()
+            .clone();
+        menu.click(item_id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert_eq!(
+            app.read(cx).page(),
+            &Page::Account("Assets:Old:Savings".into())
+        );
+        let savings = app.read(cx).journal().expect("savings journal is shown");
+        let savings = savings.read(cx);
+        assert_eq!(savings.entries(cx)[1].txn.narration(), "Opening balances");
+        assert_eq!(savings.focused_entry(cx), Some(opening_src));
+        assert_eq!(savings.table.read(cx).selected_row(), Some(1));
+    });
 }
 
 #[gpui_kit::test]

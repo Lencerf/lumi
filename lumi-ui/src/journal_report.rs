@@ -40,6 +40,14 @@ use crate::style::{
 #[action(namespace = lumi_ui, no_json)]
 pub struct OpenAccount(pub SharedString);
 
+/// Opens `account`'s journal focused on the transaction at `entry_ix`.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = lumi_ui, no_json)]
+struct OpenEntryAccount {
+    account: SharedString,
+    entry_ix: usize,
+}
+
 /// Shows or hides the postings of the transaction at the given entry index.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = lumi_ui, no_json)]
@@ -416,6 +424,26 @@ impl JournalReport {
         cx.emit(ReportEvent::OpenAccount(account));
     }
 
+    fn open_account_from_entry(
+        &mut self,
+        account: SharedString,
+        entry_ix: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let source = self.table.update(cx, |table, _| {
+            let delegate = table.delegate_mut();
+            delegate.focus_entry(entry_ix);
+            delegate
+                .entries
+                .get(entry_ix)
+                .map(|entry| entry.txn.src().clone())
+        });
+        match source {
+            Some(source) => cx.emit(ReportEvent::OpenAccountEntry { account, source }),
+            None => cx.emit(ReportEvent::OpenAccount(account)),
+        }
+    }
+
     /// Toggles a transaction row's postings, or opens a posting row's account.
     fn activate_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
         let row = self.table.update(cx, |table, _| {
@@ -438,7 +466,7 @@ impl JournalReport {
                     .account
                     .to_string()
                     .into();
-                self.open_account(account, cx);
+                self.open_account_from_entry(account, entry_ix, cx);
             }
             None => {}
         }
@@ -452,6 +480,15 @@ impl JournalReport {
 
     fn on_open_account(&mut self, action: &OpenAccount, _: &mut Window, cx: &mut Context<Self>) {
         self.open_account(action.0.clone(), cx);
+    }
+
+    fn on_open_entry_account(
+        &mut self,
+        action: &OpenEntryAccount,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_account_from_entry(action.account.clone(), action.entry_ix, cx);
     }
 
     fn on_toggle_postings(
@@ -663,6 +700,7 @@ impl Render for JournalReport {
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::activate_selected_row))
             .on_action(cx.listener(Self::on_open_account))
+            .on_action(cx.listener(Self::on_open_entry_account))
             .on_action(cx.listener(Self::on_toggle_postings))
             .on_action(cx.listener(Self::on_edit_entry))
             .on_action(cx.listener(Self::on_show_in_context))
@@ -1197,7 +1235,13 @@ impl TableDelegate for JournalDelegate {
                     .account
                     .to_string();
                 let menu = menu
-                    .menu("Open account", Box::new(OpenAccount(account.into())))
+                    .menu(
+                        "Open account",
+                        Box::new(OpenEntryAccount {
+                            account: account.into(),
+                            entry_ix,
+                        }),
+                    )
                     .menu("Show in context", Box::new(ShowInContext(entry_ix)));
                 if in_account {
                     menu.menu("Show in Journal", Box::new(ShowInJournal(entry_ix)))
@@ -1274,7 +1318,7 @@ impl TableDelegate for JournalDelegate {
                                             let account = to_open.clone();
                                             window.defer(cx, move |window, cx| {
                                                 handle.dispatch_action(
-                                                    &OpenAccount(account),
+                                                    &OpenEntryAccount { account, entry_ix },
                                                     window,
                                                     cx,
                                                 );
@@ -1379,7 +1423,7 @@ impl TableDelegate for JournalDelegate {
                                         let account = to_open.clone();
                                         window.defer(cx, move |window, cx| {
                                             handle.dispatch_action(
-                                                &OpenAccount(account),
+                                                &OpenEntryAccount { account, entry_ix },
                                                 window,
                                                 cx,
                                             );
