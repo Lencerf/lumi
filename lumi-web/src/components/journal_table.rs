@@ -241,19 +241,18 @@ impl Component for JournalTable {
                         }
                     } else {
                         let mut option = self.state.options.clone();
-                        let button_class: &str;
-                        match p {
+                        let button_class = match p {
                             1 => {
                                 option.page = None;
-                                button_class = "button";
+                                "button"
                             }
                             q if q == total_pages => {
                                 option.page = Some(p);
-                                button_class = "button";
+                                "button"
                             }
                             _ => {
                                 option.page = Some(p);
-                                button_class = "button extra-page";
+                                "button extra-page"
                             }
                         };
                         html! {

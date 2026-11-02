@@ -20,9 +20,9 @@ pub struct HoldingTable {
 }
 
 pub enum Msg {
-    GetHoldings,
-    GetHoldingsSuccess(HoldingMap),
-    GetHoldingsError(Error),
+    Fetch,
+    Success(HoldingMap),
+    Failure(Error),
 }
 
 impl Component for HoldingTable {
@@ -32,9 +32,9 @@ impl Component for HoldingTable {
     fn create(ctx: &Context<Self>) -> Self {
         let (_, handle) = ctx
             .link()
-            .context::<i64>(ctx.link().callback(|_| Msg::GetHoldings))
+            .context::<i64>(ctx.link().callback(|_| Msg::Fetch))
             .expect("context to be set");
-        ctx.link().send_message(Msg::GetHoldings);
+        ctx.link().send_message(Msg::Fetch);
         Self {
             fetch_state: FetchState::NotStarted,
             _handle: handle,
@@ -43,19 +43,19 @@ impl Component for HoldingTable {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::GetHoldingsError(err) => {
+            Msg::Failure(err) => {
                 self.fetch_state = FetchState::Failed(err);
                 true
             }
-            Msg::GetHoldingsSuccess(holdings) => {
+            Msg::Success(holdings) => {
                 self.fetch_state = FetchState::Success(holdings);
                 true
             }
-            Msg::GetHoldings => {
+            Msg::Fetch => {
                 self.fetch_state = FetchState::Fetching;
                 api::get_balances(ctx, |result| match result {
-                    Ok(holdings) => Msg::GetHoldingsSuccess(holdings),
-                    Err(err) => Msg::GetHoldingsError(err),
+                    Ok(holdings) => Msg::Success(holdings),
+                    Err(err) => Msg::Failure(err),
                 });
                 false
             }

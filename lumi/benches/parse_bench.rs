@@ -3,7 +3,7 @@ use lumi::Ledger;
 
 fn parse_text_ledger(path: &str) -> Ledger {
     let (ledger, _) = Ledger::from_file(path);
-    return ledger;
+    ledger
 }
 
 fn criterion_benchmark(c: &mut Criterion) {

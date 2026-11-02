@@ -263,12 +263,13 @@ fn close_position(
         (Some(basis), Some(date)) => {
             let unit_cost_amount = basis.to_unit_cost(p_number);
             let unit_cost_number = unit_cost_amount.number;
-            let unit_cost = Some(UnitCost {
+            let unit_cost = UnitCost {
                 amount: unit_cost_amount,
                 date: *date,
-            });
+            };
+            let cost_key = Some(unit_cost.clone());
             let holding_number = running_balance
-                .and_then(|m| m.get(&unit_cost))
+                .and_then(|m| m.get(&cost_key))
                 .copied()
                 .unwrap_or_default();
             if holding_number.abs() < p_number.abs() {
@@ -277,9 +278,7 @@ fn close_position(
                     level: ErrorLevel::Error,
                     msg: format!(
                         "Account only has {} {} {}.",
-                        holding_number,
-                        p_amount.currency,
-                        unit_cost.unwrap()
+                        holding_number, p_amount.currency, unit_cost
                     ),
                     src: posting.src.clone(),
                 };
@@ -288,11 +287,11 @@ fn close_position(
                 *per_currency_change
                     .entry(basis.currency().to_owned())
                     .or_default() += unit_cost_number * p_number;
-                *pending_change.entry(unit_cost.clone()).or_default() += p_number;
+                *pending_change.entry(cost_key).or_default() += p_number;
                 let valid_posting = Posting {
                     account: posting.account,
                     amount: posting.amount.unwrap(),
-                    cost: unit_cost,
+                    cost: Some(unit_cost),
                     price: posting.price.map(|p| p.into_unit_price(p_number)),
                     meta: posting.meta,
                     src: posting.src,
@@ -729,7 +728,7 @@ fn find_pad_from(
     pad_number: Decimal,
     currency: &Currency,
     pad_from: &mut HashMap<Account, PadFromInfo>,
-    valid_txns: &mut Vec<Transaction>,
+    valid_txns: &mut [Transaction],
     valid_accounts: &HashMap<Account, AccountInfo>,
     balance_src: &Source,
 ) -> Result<Option<Account>, Error> {
@@ -823,7 +822,7 @@ fn check_balance(
     running_balance: &mut BalanceSheet,
     tolerances: &HashMap<&str, Decimal>,
     pad_from: &mut HashMap<Account, PadFromInfo>,
-    valid_txns: &mut Vec<Transaction>,
+    valid_txns: &mut [Transaction],
     valid_accounts: &HashMap<Account, AccountInfo>,
 ) -> (Transaction, Vec<Error>) {
     let mut errors = Vec::new();
@@ -915,7 +914,6 @@ impl LedgerDraft {
     /// it is dropped.
     /// In this case, the returned [`Ledger`]
     /// contains a subset of the information in `self`.
-
     pub fn into_ledger(self) -> (Ledger, Vec<Error>) {
         let LedgerDraft {
             accounts,

@@ -17,9 +17,9 @@ pub struct Props {
 }
 
 pub enum Msg {
-    GetTrie,
-    GetTrieSuccess(Trie),
-    GetTrieError(Error),
+    Fetch,
+    Success(Trie),
+    Failure(Error),
 }
 pub struct TrieTable {
     fetch_state: FetchState<Trie>,
@@ -34,9 +34,9 @@ impl Component for TrieTable {
     fn create(ctx: &Context<Self>) -> Self {
         let (_, handle) = ctx
             .link()
-            .context::<i64>(ctx.link().callback(|_| Msg::GetTrie))
+            .context::<i64>(ctx.link().callback(|_| Msg::Fetch))
             .expect("context to be set");
-        ctx.link().send_message(Msg::GetTrie);
+        ctx.link().send_message(Msg::Fetch);
         let options = serde_urlencoded::from_str(&ctx.props().options).unwrap_or_default();
         Self {
             fetch_state: FetchState::NotStarted,
@@ -47,29 +47,29 @@ impl Component for TrieTable {
 
     fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         self.fetch_state = FetchState::NotStarted;
-        ctx.link().send_message(Msg::GetTrie);
+        ctx.link().send_message(Msg::Fetch);
         true
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::GetTrieError(err) => {
+            Msg::Failure(err) => {
                 self.fetch_state = FetchState::Failed(err);
                 true
             }
-            Msg::GetTrieSuccess(trie) => {
+            Msg::Success(trie) => {
                 self.fetch_state = FetchState::Success(trie);
                 true
             }
-            Msg::GetTrie => {
+            Msg::Fetch => {
                 self.fetch_state = FetchState::Fetching;
                 api::get_trie(
                     ctx.props().root,
                     &self.options,
                     ctx,
                     |result| match result {
-                        Ok(trie) => Msg::GetTrieSuccess(trie),
-                        Err(err) => Msg::GetTrieError(err),
+                        Ok(trie) => Msg::Success(trie),
+                        Err(err) => Msg::Failure(err),
                     },
                 );
                 false

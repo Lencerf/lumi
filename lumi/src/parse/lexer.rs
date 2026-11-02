@@ -79,7 +79,7 @@ impl<'source> Lexer<'source, Token> {
 
     /// Consumes the peeked token and advances the lexer. Must be used after
     /// calling [`peek`](Lexer::peek).
-
+    ///
     /// # Panics
     ///
     /// Panics if [`peek`](Lexer::peek) is not called before.

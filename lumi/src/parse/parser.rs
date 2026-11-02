@@ -292,13 +292,16 @@ impl LedgerDraft {
     }
 }
 
+type SubTaskCond = Arc<(Mutex<(VecDeque<(String, Source)>, usize)>, Condvar)>;
+type SubWorkerHandle = std::thread::JoinHandle<Vec<(LedgerDraft, Vec<Error>)>>;
+
 /// A parser that transforms input text file into [`LedgerDraft`].
 pub struct Parser<'source> {
     lexer: Lexer<'source, Token>,
     file: SrcFile,
     accounts: HashMap<&'source str, Account>,
-    sub_task_cond: Option<Arc<(Mutex<(VecDeque<(String, Source)>, usize)>, Condvar)>>,
-    handlers: Option<Vec<std::thread::JoinHandle<Vec<(LedgerDraft, Vec<Error>)>>>>,
+    sub_task_cond: Option<SubTaskCond>,
+    handlers: Option<Vec<SubWorkerHandle>>,
     tagset: HashSet<&'source str>,
 }
 
@@ -351,10 +354,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn sub_worker(
-        _id: usize,
-        cond: Arc<(Mutex<(VecDeque<(String, Source)>, usize)>, Condvar)>,
-    ) -> Vec<(LedgerDraft, Vec<Error>)> {
+    fn sub_worker(_id: usize, cond: SubTaskCond) -> Vec<(LedgerDraft, Vec<Error>)> {
         let mut sub_drafts = vec![];
         loop {
             let (lock, cvar) = cond.as_ref();
@@ -822,7 +822,7 @@ impl<'source> Parser<'source> {
     fn parse_helper(
         path: String,
         refer_src: Source,
-        sub_task_cond: Option<Arc<(Mutex<(VecDeque<(String, Source)>, usize)>, Condvar)>>,
+        sub_task_cond: Option<SubTaskCond>,
     ) -> (LedgerDraft, Vec<Error>) {
         let mut draft = LedgerDraft::default();
         match fs::read_to_string(&path) {
