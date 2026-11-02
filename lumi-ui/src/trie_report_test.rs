@@ -494,7 +494,6 @@ fn test_trie_report_formats_and_renders_three_digit_groups_with_narrow_gap(
     let presentation = TriePresentation::new("Assets", table);
     assert_eq!(presentation.rows[0].numbers[0].as_str(), "1 123 456.7891");
     assert_eq!(presentation.rows[1].numbers[0].as_str(), "-123.45");
-    assert!(presentation.column_widths[0] > px(96.));
 
     let (inc_handle, _inc_app) = open_app(Page::Income, size(px(1200.), px(800.)), cx);
     cx.run_until_parked();
@@ -509,4 +508,121 @@ fn test_trie_report_formats_and_renders_three_digit_groups_with_narrow_gap(
         assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_income_statement_wide_multi_currency_balances_never_shrink_or_overlap(
+    cx: &mut TestAppContext,
+) {
+    let ledger_text = "\
+2024-01-01 open Assets:Bank CNY,USD
+2024-01-01 open Income:Bonuses:CashBack CNY,USD
+2024-01-01 open Income:Bonuses:Coupon USD
+2024-01-01 open Income:Bonuses:GC USD
+2024-01-01 open Income:Bonuses:Other CNY,USD
+2024-01-01 open Income:Salary CNY,USD
+
+2024-06-01 * \"Income\"
+  Income:Bonuses:CashBack       -2.00 CNY
+  Income:Bonuses:CashBack    -5378.89 USD
+  Income:Bonuses:Coupon      -1607.25 USD
+  Income:Bonuses:GC           -273.40 USD
+  Income:Bonuses:Other      -10097.35 CNY
+  Income:Bonuses:Other       -1100.11 USD
+  Income:Salary              -1897.61 CNY
+  Income:Salary           -2313959.72 USD
+  Assets:Bank                11996.96 CNY
+  Assets:Bank              2322319.37 USD
+";
+    let temp_path =
+        std::env::temp_dir().join(format!("lumi-income-col-width-{}.bean", std::process::id()));
+    std::fs::write(&temp_path, ledger_text).unwrap();
+
+    cx.update(crate::init);
+    let path_str = temp_path.to_str().unwrap().to_string();
+    let (handle, _app) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            move |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(path_str)),
+                        "income.bean",
+                        Page::Income,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let sep_cny_head = window
+            .find((ElementId::from("trie-col-sep-head"), "Income:1"))
+            .bounds();
+        let sep_usd_head = window
+            .find((ElementId::from("trie-col-sep-head"), "Income:2"))
+            .bounds();
+        let sep_cny_row0 = window
+            .find((ElementId::from("trie-col-sep-cell"), "Income:0:1"))
+            .bounds();
+        let sep_usd_row0 = window
+            .find((ElementId::from("trie-col-sep-cell"), "Income:0:2"))
+            .bounds();
+        assert_eq!(sep_cny_head.origin.x, sep_cny_row0.origin.x);
+        assert_eq!(sep_usd_head.origin.x, sep_usd_row0.origin.x);
+
+        let mut inc_table = window.within((ElementId::from("trie-table"), "Income"));
+        let mut body = inc_table.within(("table-body", 1usize));
+        let mut row0 = body.within(("table-row", 0usize));
+
+        // Column 1 (`CNY` = `-11 996.96`) stays strictly inside `[sep_cny, sep_usd)`.
+        let cny_cell = row0.within(("table-cell", 1usize));
+        let cny_g0 = cny_cell.find(("digit-group", 0usize)).bounds();
+        let cny_g1 = cny_cell.find(("digit-group", 1usize)).bounds();
+        assert!(
+            cny_g0.origin.x >= sep_cny_row0.origin.x + px(12.),
+            "CNY left group should not crowd left separator: cny_g0={cny_g0:?}, sep={sep_cny_row0:?}"
+        );
+        assert!(
+            cny_g1.origin.x + cny_g1.size.width <= sep_usd_row0.origin.x - px(4.),
+            "CNY right group must stay left of USD separator: cny_g1={cny_g1:?}, sep_usd={sep_usd_row0:?}"
+        );
+
+        // Column 2 (`USD` = `-2 322 319.37`) expands past `100px` rather than
+        // shrinking or overflowing into `CNY`.
+        let usd_cell_bounds = row0.find(("table-cell", 2usize)).bounds();
+        assert!(
+            usd_cell_bounds.size.width > px(110.),
+            "USD cell must not be shrunk to 100px: {usd_cell_bounds:?}"
+        );
+        let usd_cell = row0.within(("table-cell", 2usize));
+        let usd_g0 = usd_cell.find(("digit-group", 0usize)).bounds();
+        let usd_g1 = usd_cell.find(("digit-group", 1usize)).bounds();
+        let usd_g2 = usd_cell.find(("digit-group", 2usize)).bounds();
+        assert!(
+            usd_g0.origin.x >= sep_usd_row0.origin.x + px(12.),
+            "USD left group (`-2`) must stay well right of USD separator: usd_g0={usd_g0:?}, sep_usd={sep_usd_row0:?}"
+        );
+        assert_eq!(usd_g1.origin.x - (usd_g0.origin.x + usd_g0.size.width), px(3.));
+        assert_eq!(usd_g2.origin.x - (usd_g1.origin.x + usd_g1.size.width), px(3.));
+        assert!(
+            usd_g2.origin.x + usd_g2.size.width <= usd_cell_bounds.origin.x + usd_cell_bounds.size.width,
+            "USD right group must fit inside USD cell: usd_g2={usd_g2:?}, cell={usd_cell_bounds:?}"
+        );
+    })
+    .unwrap();
+
+    let _ = std::fs::remove_file(&temp_path);
 }

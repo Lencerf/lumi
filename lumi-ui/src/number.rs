@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use gpui_kit::component::StyledExt as _;
 use gpui_kit::{
-    AnyElement, IntoElement, ParentElement as _, Pixels, SharedString, Styled as _, div, px,
+    AnyElement, Font, Hsla, IntoElement, ParentElement as _, Pixels, SharedString, Styled as _,
+    TextRun, Window, WindowTextSystem, div, px,
 };
 #[cfg(test)]
 use gpui_kit::{InteractiveElement as _, TestSupportExt as _};
@@ -65,6 +66,24 @@ impl GroupedText {
         self.parts.len().saturating_sub(1)
     }
 
+    /// Measures the exact rendered pixel width of this grouped text in `window`
+    /// using `font` at `font_size`, including [`DIGIT_GROUP_GAP`] between groups.
+    pub(crate) fn measure_width(&self, font: Font, font_size: Pixels, window: &Window) -> Pixels {
+        if self.plain.is_empty() {
+            return px(0.);
+        }
+        let text_system = window.text_system();
+        if self.parts.is_empty() {
+            return shape_text_width(text_system, self.plain.clone(), font, font_size);
+        }
+        let parts_width = self
+            .parts
+            .iter()
+            .map(|part| shape_text_width(text_system, part.clone(), font.clone(), font_size))
+            .fold(px(0.), |acc, w| acc + w);
+        parts_width + DIGIT_GROUP_GAP * self.group_breaks() as f32
+    }
+
     /// Renders the text inline, separating 3-digit integer groups by [`DIGIT_GROUP_GAP`].
     pub(crate) fn render(&self) -> AnyElement {
         if self.parts.is_empty() {
@@ -113,6 +132,32 @@ impl fmt::Display for GroupedText {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+pub(crate) fn shape_text_width(
+    text_system: &WindowTextSystem,
+    text: SharedString,
+    font: Font,
+    font_size: Pixels,
+) -> Pixels {
+    if text.is_empty() {
+        return px(0.);
+    }
+    text_system
+        .shape_line(
+            text.clone(),
+            font_size,
+            &[TextRun {
+                len: text.len(),
+                font,
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        )
+        .width
 }
 
 /// Incrementally builds a [`GroupedText`] from numbers and literal text (such

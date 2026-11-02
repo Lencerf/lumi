@@ -4,17 +4,17 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, Size, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, ElementId, Entity, EventEmitter, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task,
-    TestSupportExt as _, Window, div, px, relative, rems,
+    AnyElement, App, Context, ElementId, Entity, EventEmitter, Font, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
+    Styled as _, Subscription, Task, TestSupportExt as _, Window, div, px, relative, rems,
 };
 use lumi::web::{TrieOptions, TrieTable};
 
 use crate::navigation::{Page, ReportEvent};
-use crate::number::{DIGIT_GROUP_GAP, GroupedText};
+use crate::number::{GroupedText, shape_text_width};
 use crate::session::LedgerSession;
 use crate::style::{
     interactive_button, table_card, table_row_bg, trie_cell_col_separator, trie_head_col_separator,
@@ -72,7 +72,6 @@ pub(crate) enum TreeGuide {
 /// One account hierarchy prepared for rendering.
 struct TriePresentation {
     currencies: Vec<SharedString>,
-    column_widths: Vec<Pixels>,
     rows: Vec<TrieRow>,
 }
 
@@ -230,6 +229,7 @@ impl TrieReport {
         &self,
         root: &'static str,
         table: &TrieLoad,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let muted = cx.theme().muted_foreground;
@@ -262,6 +262,8 @@ impl TrieReport {
                 )
                 .into_any_element(),
             TrieLoad::Ready(presentation) => {
+                let (account_min_width, currency_widths) =
+                    measure_table_columns(presentation, window, cx);
                 let theme = cx.theme();
                 let mono = theme.mono_font_family.clone();
                 let border = theme.border;
@@ -274,13 +276,20 @@ impl TrieReport {
                             .child(
                                 TableHeader::new().font_medium().child(
                                     TableRow::new()
-                                        .child(TableHead::new().min_w_40().child("Account"))
+                                        .child(
+                                            TableHead::new()
+                                                .min_w(account_min_width)
+                                                .whitespace_nowrap()
+                                                .child("Account"),
+                                        )
                                         .children(presentation.currencies.iter().enumerate().map(
                                             |(col_ix, currency)| {
-                                                let col_width = presentation.column_widths[col_ix];
+                                                let col_width = currency_widths[col_ix];
                                                 TableHead::new()
                                                     .relative()
                                                     .w(col_width)
+                                                    .min_w(col_width)
+                                                    .flex_shrink_0()
                                                     .whitespace_nowrap()
                                                     .text_right()
                                                     .child(currency.clone())
@@ -301,6 +310,7 @@ impl TrieReport {
                                         .bg(row_bg)
                                         .child(
                                             TableCell::new()
+                                                .min_w(account_min_width)
                                                 .py_0()
                                                 .items_stretch()
                                                 .children(
@@ -316,40 +326,49 @@ impl TrieReport {
                                                     ),
                                                 )
                                                 .child(
-                                                    div().py(px(3.)).flex().items_center().child(
-                                                        // Opens the account's journal. Small,
-                                                        // like the table, so the name is set
-                                                        // like the numbers beside it.
-                                                        interactive_button(
-                                                            (
-                                                                ElementId::from("account"),
+                                                    div()
+                                                        .py(px(3.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .flex_shrink_0()
+                                                        .child(
+                                                            // Opens the account's journal. Small,
+                                                            // like the table, so the name is set
+                                                            // like the numbers beside it.
+                                                            interactive_button(
+                                                                (
+                                                                    ElementId::from("account"),
+                                                                    row.account.clone(),
+                                                                ),
+                                                                cx,
+                                                            )
+                                                            .font_family(mono.clone())
+                                                            .when(row.level == 0, |this| {
+                                                                this.font_semibold()
+                                                            })
+                                                            .label(row.name.clone())
+                                                            .accessibility_label(
                                                                 row.account.clone(),
-                                                            ),
-                                                            cx,
-                                                        )
-                                                        .font_family(mono.clone())
-                                                        .when(row.level == 0, |this| {
-                                                            this.font_semibold()
-                                                        })
-                                                        .label(row.name.clone())
-                                                        .accessibility_label(row.account.clone())
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.open_account(
-                                                                    account.clone(),
-                                                                    cx,
-                                                                )
-                                                            },
-                                                        )),
-                                                    ),
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    this.open_account(
+                                                                        account.clone(),
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            )),
+                                                        ),
                                                 ),
                                         )
                                         .children(row.numbers.iter().enumerate().map(
                                             |(col_ix, number)| {
-                                                let col_width = presentation.column_widths[col_ix];
+                                                let col_width = currency_widths[col_ix];
                                                 TableCell::new()
                                                     .relative()
                                                     .w(col_width)
+                                                    .min_w(col_width)
+                                                    .flex_shrink_0()
                                                     .whitespace_nowrap()
                                                     .text_right()
                                                     .font_family(mono.clone())
@@ -501,46 +520,100 @@ impl TriePresentation {
             rows.first().is_none_or(|row| row.account.as_ref() == root),
             "the first row of a trie table is its root"
         );
-        let currencies: Vec<SharedString> = table
-            .currencies
-            .into_iter()
-            .map(SharedString::from)
-            .collect();
-        let column_widths = currencies
-            .iter()
-            .enumerate()
-            .map(|(col_ix, currency)| currency_column_width(currency, &rows, col_ix))
-            .collect();
         Self {
-            currencies,
-            column_widths,
+            currencies: table
+                .currencies
+                .into_iter()
+                .map(SharedString::from)
+                .collect(),
             rows,
         }
     }
 }
 
-fn currency_column_width(currency: &str, rows: &[TrieRow], col_ix: usize) -> Pixels {
-    const MIN_COL_WIDTH: f32 = 96.0;
-    const MONO_CHAR_ALLOWANCE: f32 = 8.5;
-    const CELL_HORIZONTAL_PADDING: f32 = 24.0;
+/// Measures the `Account` minimum width and each currency column's exact width
+/// against the active window's fonts so `TableRow` flex layout neither shrinks
+/// currency columns nor clips wide grouped balances.
+fn measure_table_columns(
+    presentation: &TriePresentation,
+    window: &Window,
+    cx: &App,
+) -> (Pixels, Vec<Pixels>) {
+    const MIN_CURRENCY_COL_WIDTH: Pixels = px(100.);
+    const CURRENCY_LEFT_BREATHING: Pixels = px(14.);
+    const ACCOUNT_BUTTON_EXTRA: Pixels = px(20.);
 
-    let gap_px = f32::from(DIGIT_GROUP_GAP);
-    let mut width = currency.len() as f32 * MONO_CHAR_ALLOWANCE + CELL_HORIZONTAL_PADDING;
-    for row in rows {
-        if let Some(number) = row.numbers.get(col_ix) {
-            let cell_width = number.ungrouped().len() as f32 * MONO_CHAR_ALLOWANCE
-                + number.group_breaks() as f32 * gap_px
-                + CELL_HORIZONTAL_PADDING;
-            width = width.max(cell_width);
-        }
+    let rem = window.rem_size();
+    let font_size = rems(0.875).to_pixels(rem);
+    let guide_width = rems(1.25).to_pixels(rem);
+    let min_account_width = rems(10.).to_pixels(rem);
+    let pad = Size::Small.table_cell_padding();
+    let cell_h_pad = pad.left + pad.right;
+
+    let theme = cx.theme();
+    let head_font = Font {
+        family: theme.font_family.clone(),
+        weight: FontWeight::MEDIUM,
+        ..Default::default()
+    };
+    let mono_regular = Font {
+        family: theme.mono_font_family.clone(),
+        weight: FontWeight::NORMAL,
+        ..Default::default()
+    };
+    let mono_semibold = Font {
+        family: theme.mono_font_family.clone(),
+        weight: FontWeight::SEMIBOLD,
+        ..Default::default()
+    };
+
+    let text_system = window.text_system();
+    let mut account_width =
+        shape_text_width(text_system, "Account".into(), head_font.clone(), font_size) + cell_h_pad;
+    for row in &presentation.rows {
+        let font = if row.level == 0 {
+            mono_semibold.clone()
+        } else {
+            mono_regular.clone()
+        };
+        let row_width = guide_width * row.level as f32
+            + shape_text_width(text_system, row.name.clone(), font, font_size)
+            + cell_h_pad
+            + ACCOUNT_BUTTON_EXTRA;
+        account_width = account_width.max(row_width);
     }
-    px(width.max(MIN_COL_WIDTH).ceil())
+    let account_min_width = px(f32::from(account_width.max(min_account_width)).ceil());
+
+    let currency_extra = cell_h_pad + CURRENCY_LEFT_BREATHING;
+    let currency_widths = presentation
+        .currencies
+        .iter()
+        .enumerate()
+        .map(|(col_ix, currency)| {
+            let mut max_text =
+                shape_text_width(text_system, currency.clone(), head_font.clone(), font_size);
+            for row in &presentation.rows {
+                if let Some(number) = row.numbers.get(col_ix) {
+                    let font = if row.level == 0 {
+                        mono_semibold.clone()
+                    } else {
+                        mono_regular.clone()
+                    };
+                    max_text = max_text.max(number.measure_width(font, font_size, window));
+                }
+            }
+            let total = (max_text + currency_extra).max(MIN_CURRENCY_COL_WIDTH);
+            px(f32::from(total).ceil())
+        })
+        .collect();
+
+    (account_min_width, currency_widths)
 }
 
 impl EventEmitter<ReportEvent> for TrieReport {}
 
 impl Render for TrieReport {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.page.clone();
         let mut tables = self.tables.iter();
         div()
@@ -583,7 +656,7 @@ impl Render for TrieReport {
                                     // ids.
                                     div()
                                         .id((ElementId::from("trie-table"), *root))
-                                        .child(self.render_table(root, table, cx))
+                                        .child(self.render_table(root, table, window, cx))
                                 }))
                         }),
                     )),
