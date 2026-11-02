@@ -5,9 +5,9 @@ use yew::context::ContextHandle;
 use yew::prelude::*;
 
 pub enum Msg {
-    GetErrors,
-    GetErrorsSuccess(LumiErrors),
-    GetErrorsFail(Error),
+    Fetch,
+    Success(LumiErrors),
+    Failure(Error),
 }
 
 pub struct ErrorTable {
@@ -22,9 +22,9 @@ impl Component for ErrorTable {
     fn create(ctx: &yew::Context<Self>) -> Self {
         let (_, handle) = ctx
             .link()
-            .context::<i64>(ctx.link().callback(|_| Msg::GetErrors))
+            .context::<i64>(ctx.link().callback(|_| Msg::Fetch))
             .expect("context to be set");
-        ctx.link().send_message(Msg::GetErrors);
+        ctx.link().send_message(Msg::Fetch);
         Self {
             fetch_state: FetchState::NotStarted,
             _handle: handle,
@@ -33,20 +33,20 @@ impl Component for ErrorTable {
 
     fn update(&mut self, ctx: &yew::Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::GetErrorsSuccess(errors) => {
+            Msg::Success(errors) => {
                 self.fetch_state = FetchState::Success(errors);
                 true
             }
 
-            Msg::GetErrorsFail(err) => {
+            Msg::Failure(err) => {
                 self.fetch_state = FetchState::Failed(err);
                 true
             }
-            Msg::GetErrors => {
+            Msg::Fetch => {
                 self.fetch_state = FetchState::Fetching;
                 api::get_errors(ctx, |result| match result {
-                    Ok(error_list) => Msg::GetErrorsSuccess(error_list),
-                    Err(err) => Msg::GetErrorsFail(err),
+                    Ok(error_list) => Msg::Success(error_list),
+                    Err(err) => Msg::Failure(err),
                 });
                 false
             }

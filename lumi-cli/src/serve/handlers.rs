@@ -213,7 +213,8 @@ async fn account_journal(
     data: Arc<RwLock<LedgerData>>,
 ) -> Response {
     let ledger = &data.read().await.ledger;
-    let mut filters: Vec<Box<dyn Fn(&Transaction) -> bool>> = Vec::new();
+    type TxnFilter<'a> = Box<dyn Fn(&Transaction) -> bool + 'a>;
+    let mut filters: Vec<TxnFilter<'_>> = Vec::new();
     if let Some(ref account) = account {
         filters.push(Box::new(move |txn: &Transaction| {
             filter_account(txn, account)
