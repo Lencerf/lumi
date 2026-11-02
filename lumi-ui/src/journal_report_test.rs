@@ -1590,3 +1590,102 @@ fn test_journal_and_account_tables_render_aligned_full_height_column_separators(
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_journal_and_account_views_group_numbers_with_narrow_gap_leaving_dates_intact(
+    cx: &mut TestAppContext,
+) {
+    let ledger_text = "\
+2024-01-01 open Assets:Bank
+2024-01-01 open Assets:Broker
+2024-01-01 open Equity:Opening
+
+2024-01-01 * \"Open\"
+  Assets:Bank              1123456.7891 USD
+  Equity:Opening          -1123456.7891 USD
+
+2024-03-01 * \"Buy\"
+  Assets:Broker              10000 VTI {2500.00 USD, 2024-03-01} @ 1200.50 EUR
+  Equity:Opening         -25000000.00 USD
+
+2024-03-15 balance Assets:Bank 1123456.7891 USD
+";
+    let temp_path =
+        std::env::temp_dir().join(format!("lumi-journal-grouping-{}.bean", std::process::id()));
+    std::fs::write(&temp_path, ledger_text).unwrap();
+
+    cx.update(crate::init);
+    let path_for_window = temp_path.clone();
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            move |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(path_for_window.to_str().unwrap())),
+                        "grouping.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        let report = app.read(cx).journal().expect("journal is shown");
+        report.update(cx, |report, cx| report.set_show_postings(true, cx));
+        window.render_frame(cx);
+
+        let delegate = report.read(cx).table.read(cx).delegate();
+        // Row 0: 2024-03-15 balance assertion `1 123 456.7891 USD`.
+        assert_eq!(delegate.cell_label(0, 3, cx).unwrap(), "1 123 456.7891 USD");
+        // Row 2: posting 0 of "Buy" — numbers are grouped while `2024-03-01` is intact.
+        assert_eq!(
+            delegate.cell_label(2, 3, cx).unwrap(),
+            "10 000 VTI {2 500.00 USD, 2024-03-01} @ 1 200.50 EUR"
+        );
+
+        let bal_cell = window.within("table-cell-0:3");
+        let g0 = bal_cell.find(("digit-group", 0usize)).bounds();
+        let g1 = bal_cell.find(("digit-group", 1usize)).bounds();
+        let g2 = bal_cell.find(("digit-group", 2usize)).bounds();
+        assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
+        assert_eq!(g2.origin.x - (g1.origin.x + g1.size.width), px(3.));
+
+        let focus = report.read(cx).table.read(cx).focus_handle(cx);
+        focus.focus(window, cx);
+        window.dispatch_action(
+            Box::new(crate::journal_report::OpenAccount("Assets:Bank".into())),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = app.read(cx).journal().expect("account journal is shown");
+        let delegate = report.read(cx).table.read(cx).delegate();
+        // Row 1 ("Open" on 2024-01-01): Change and Balance columns both group digits.
+        assert_eq!(delegate.cell_label(1, 4, cx).unwrap(), "1 123 456.7891 USD");
+        assert_eq!(delegate.cell_label(1, 5, cx).unwrap(), "1 123 456.7891 USD");
+        let change_cell = window.within("table-cell-1:4");
+        let g0 = change_cell.find(("digit-group", 0usize)).bounds();
+        let g1 = change_cell.find(("digit-group", 1usize)).bounds();
+        assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
+    })
+    .unwrap();
+
+    let _ = std::fs::remove_file(&temp_path);
+}

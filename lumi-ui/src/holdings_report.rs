@@ -20,6 +20,7 @@ use rust_decimal::Decimal;
 use crate::input_guard::EditDragGuard;
 use crate::journal_report::{ActivateRow, OpenAccount};
 use crate::navigation::ReportEvent;
+use crate::number::GroupedText;
 use crate::session::LedgerSession;
 use crate::source::{LedgerSource, Positions};
 use crate::style::{
@@ -46,10 +47,10 @@ pub struct HoldingsReport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Holding {
     account: SharedString,
-    units: SharedString,
-    cost: SharedString,
+    units: GroupedText,
+    cost: GroupedText,
     acquired: SharedString,
-    book_value: SharedString,
+    book_value: GroupedText,
 }
 
 struct HoldingsDelegate {
@@ -405,13 +406,18 @@ fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
     haystack.to_lowercase().contains(needle_lower)
 }
 
+fn grouped_matches(text: &GroupedText, term: &str) -> bool {
+    contains_ignore_case(text.as_str(), term)
+        || (text.group_breaks() > 0 && contains_ignore_case(text.ungrouped(), term))
+}
+
 fn holding_matches_terms(holding: &Holding, terms: &[String]) -> bool {
     terms.iter().all(|term| {
         contains_ignore_case(&holding.account, term)
-            || contains_ignore_case(&holding.units, term)
-            || contains_ignore_case(&holding.cost, term)
+            || grouped_matches(&holding.units, term)
+            || grouped_matches(&holding.cost, term)
             || contains_ignore_case(&holding.acquired, term)
-            || contains_ignore_case(&holding.book_value, term)
+            || grouped_matches(&holding.book_value, term)
     })
 }
 
@@ -443,25 +449,23 @@ fn holdings(positions: Positions) -> Vec<Holding> {
             if position.number.is_zero() {
                 continue;
             }
-            let units: SharedString = format!("{} {}", position.number, position.currency).into();
+            let units = GroupedText::from_decimal_currency(position.number, &position.currency);
             let holding = match &position.cost {
                 Some(cost) => Holding {
                     account: account.clone(),
                     units,
-                    cost: cost.amount.to_string().into(),
+                    cost: GroupedText::from_amount(&cost.amount),
                     acquired: cost.date.to_string().into(),
-                    book_value: format!(
-                        "{} {}",
+                    book_value: GroupedText::from_decimal_currency(
                         position.number * cost.amount.number,
-                        cost.amount.currency
-                    )
-                    .into(),
+                        &cost.amount.currency,
+                    ),
                 },
                 None => Holding {
                     account: account.clone(),
                     book_value: units.clone(),
                     units,
-                    cost: SharedString::default(),
+                    cost: GroupedText::default(),
                     acquired: SharedString::default(),
                 },
             };
@@ -577,22 +581,13 @@ impl TableDelegate for HoldingsDelegate {
                     )
                     .into_any_element()
             }
-            "units" => div()
-                .font_family(mono)
-                .child(holding.units.clone())
-                .into_any_element(),
-            "cost" => div()
-                .font_family(mono)
-                .child(holding.cost.clone())
-                .into_any_element(),
+            "units" => holding.units.render_mono_right(mono),
+            "cost" => holding.cost.render_mono_right(mono),
             "acquired" => div()
                 .font_family(mono)
                 .child(holding.acquired.clone())
                 .into_any_element(),
-            "book_value" => div()
-                .font_family(mono)
-                .child(holding.book_value.clone())
-                .into_any_element(),
+            "book_value" => holding.book_value.render_mono_right(mono),
             _ => div().into_any_element(),
         };
         data_table_td(row_ix, col_ix, columns_count, cell, cx)
@@ -602,10 +597,10 @@ impl TableDelegate for HoldingsDelegate {
         let holding = self.holdings.get(row_ix)?;
         Some(match self.columns.get(col_ix)?.key.as_ref() {
             "account" => holding.account.clone(),
-            "units" => holding.units.clone(),
-            "cost" => holding.cost.clone(),
+            "units" => holding.units.plain(),
+            "cost" => holding.cost.plain(),
             "acquired" => holding.acquired.clone(),
-            "book_value" => holding.book_value.clone(),
+            "book_value" => holding.book_value.plain(),
             _ => SharedString::default(),
         })
     }

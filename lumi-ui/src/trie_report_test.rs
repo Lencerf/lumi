@@ -471,3 +471,42 @@ fn test_balance_and_income_tables_render_aligned_full_height_column_separators(
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn test_trie_report_formats_and_renders_three_digit_groups_with_narrow_gap(
+    cx: &mut TestAppContext,
+) {
+    let table = TrieTable {
+        rows: vec![
+            TrieTableRow {
+                level: 0,
+                name: "Assets".to_string(),
+                numbers: vec!["1123456.7891".to_string()],
+            },
+            TrieTableRow {
+                level: 1,
+                name: "Debt".to_string(),
+                numbers: vec!["-123.45".to_string()],
+            },
+        ],
+        currencies: vec!["USD".to_string()],
+    };
+    let presentation = TriePresentation::new("Assets", table);
+    assert_eq!(presentation.rows[0].numbers[0].as_str(), "1 123 456.7891");
+    assert_eq!(presentation.rows[1].numbers[0].as_str(), "-123.45");
+    assert!(presentation.column_widths[0] > px(96.));
+
+    let (inc_handle, _inc_app) = open_app(Page::Income, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+    cx.update_window(inc_handle, |_, window, cx| {
+        window.render_frame(cx);
+        // `Income` root row has `-3000.00` -> `-3` + 3px gap + `000.00`.
+        let mut inc_table = window.within((ElementId::from("trie-table"), "Income"));
+        let mut body = inc_table.within(("table-body", 1usize));
+        let row0 = body.within(("table-row", 0usize));
+        let g0 = row0.find(("digit-group", 0usize)).bounds();
+        let g1 = row0.find(("digit-group", 1usize)).bounds();
+        assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
+    })
+    .unwrap();
+}

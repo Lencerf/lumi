@@ -18,6 +18,7 @@ mod input_guard;
 mod journal_report;
 mod menu;
 mod navigation;
+mod number;
 mod session;
 pub mod source;
 mod source_editor;

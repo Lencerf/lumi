@@ -8,12 +8,13 @@ use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, Context, ElementId, Entity, EventEmitter, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task,
+    IntoElement, ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task,
     TestSupportExt as _, Window, div, px, relative, rems,
 };
 use lumi::web::{TrieOptions, TrieTable};
 
 use crate::navigation::{Page, ReportEvent};
+use crate::number::{DIGIT_GROUP_GAP, GroupedText};
 use crate::session::LedgerSession;
 use crate::style::{
     interactive_button, table_card, table_row_bg, trie_cell_col_separator, trie_head_col_separator,
@@ -71,6 +72,7 @@ pub(crate) enum TreeGuide {
 /// One account hierarchy prepared for rendering.
 struct TriePresentation {
     currencies: Vec<SharedString>,
+    column_widths: Vec<Pixels>,
     rows: Vec<TrieRow>,
 }
 
@@ -83,7 +85,7 @@ struct TrieRow {
     /// The last segment of the account name.
     name: SharedString,
     /// One formatted balance per currency; empty for a zero balance.
-    numbers: Vec<SharedString>,
+    numbers: Vec<GroupedText>,
 }
 
 #[cfg(test)]
@@ -275,9 +277,11 @@ impl TrieReport {
                                         .child(TableHead::new().min_w_40().child("Account"))
                                         .children(presentation.currencies.iter().enumerate().map(
                                             |(col_ix, currency)| {
+                                                let col_width = presentation.column_widths[col_ix];
                                                 TableHead::new()
                                                     .relative()
-                                                    .w_24()
+                                                    .w(col_width)
+                                                    .whitespace_nowrap()
                                                     .text_right()
                                                     .child(currency.clone())
                                                     .child(trie_head_col_separator(
@@ -342,15 +346,17 @@ impl TrieReport {
                                         )
                                         .children(row.numbers.iter().enumerate().map(
                                             |(col_ix, number)| {
+                                                let col_width = presentation.column_widths[col_ix];
                                                 TableCell::new()
                                                     .relative()
-                                                    .w_24()
+                                                    .w(col_width)
+                                                    .whitespace_nowrap()
                                                     .text_right()
                                                     .font_family(mono.clone())
                                                     .when(row.level == 0, |this| {
                                                         this.font_semibold()
                                                     })
-                                                    .child(number.clone())
+                                                    .child(number.render())
                                                     .child(trie_cell_col_separator(
                                                         root,
                                                         row_ix,
@@ -486,8 +492,7 @@ impl TriePresentation {
                     numbers: row
                         .numbers
                         .iter()
-                        .cloned()
-                        .map(SharedString::from)
+                        .map(|n| GroupedText::from_number_str(n))
                         .collect(),
                 }
             })
@@ -496,15 +501,40 @@ impl TriePresentation {
             rows.first().is_none_or(|row| row.account.as_ref() == root),
             "the first row of a trie table is its root"
         );
+        let currencies: Vec<SharedString> = table
+            .currencies
+            .into_iter()
+            .map(SharedString::from)
+            .collect();
+        let column_widths = currencies
+            .iter()
+            .enumerate()
+            .map(|(col_ix, currency)| currency_column_width(currency, &rows, col_ix))
+            .collect();
         Self {
-            currencies: table
-                .currencies
-                .into_iter()
-                .map(SharedString::from)
-                .collect(),
+            currencies,
+            column_widths,
             rows,
         }
     }
+}
+
+fn currency_column_width(currency: &str, rows: &[TrieRow], col_ix: usize) -> Pixels {
+    const MIN_COL_WIDTH: f32 = 96.0;
+    const MONO_CHAR_ALLOWANCE: f32 = 8.5;
+    const CELL_HORIZONTAL_PADDING: f32 = 24.0;
+
+    let gap_px = f32::from(DIGIT_GROUP_GAP);
+    let mut width = currency.len() as f32 * MONO_CHAR_ALLOWANCE + CELL_HORIZONTAL_PADDING;
+    for row in rows {
+        if let Some(number) = row.numbers.get(col_ix) {
+            let cell_width = number.ungrouped().len() as f32 * MONO_CHAR_ALLOWANCE
+                + number.group_breaks() as f32 * gap_px
+                + CELL_HORIZONTAL_PADDING;
+            width = width.max(cell_width);
+        }
+    }
+    px(width.max(MIN_COL_WIDTH).ceil())
 }
 
 impl EventEmitter<ReportEvent> for TrieReport {}

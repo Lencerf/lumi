@@ -28,6 +28,7 @@ use serde::Deserialize;
 use crate::entry_editor::EntryEditor;
 use crate::input_guard::EditDragGuard;
 use crate::navigation::{Page, ReportEvent};
+use crate::number::{GroupedBuilder, GroupedText};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
 use crate::style::{
@@ -1079,30 +1080,46 @@ fn sync_focused_selection(
 }
 
 /// Non-zero amounts as `number currency`, joined by commas, by currency.
-fn amounts_text(amounts: &HashMap<String, Decimal>) -> String {
+fn amounts_text(amounts: &HashMap<String, Decimal>) -> GroupedText {
     let mut parts: Vec<_> = amounts
         .iter()
         .filter(|(_, number)| !number.is_zero())
         .collect();
     parts.sort_by(|a, b| a.0.cmp(b.0));
-    parts
-        .into_iter()
-        .map(|(currency, number)| format!("{number} {currency}"))
-        .collect::<Vec<_>>()
-        .join(", ")
+    let mut builder = GroupedBuilder::new();
+    for (ix, (currency, number)) in parts.into_iter().enumerate() {
+        if ix > 0 {
+            builder.push_str(", ");
+        }
+        builder.push_decimal(*number);
+        builder.push_str(" ");
+        builder.push_str(currency);
+    }
+    builder.finish()
 }
 
 /// A posting's amount with its cost and price, as beancount writes them:
 /// `10 VTI {250.00 USD, 2024-03-01} @ 1.20 EUR`.
-fn position_text(posting: &lumi::Posting) -> String {
-    let mut text = posting.amount.to_string();
+fn position_text(posting: &lumi::Posting) -> GroupedText {
+    let mut builder = GroupedBuilder::new();
+    builder.push_amount(&posting.amount);
     if let Some(cost) = &posting.cost {
-        text.push_str(&format!(" {{{}, {}}}", cost.amount, cost.date));
+        builder.push_str(" {");
+        builder.push_amount(&cost.amount);
+        builder.push_str(&format!(", {}}}", cost.date));
     }
     if let Some(price) = &posting.price {
-        text.push_str(&format!(" @ {price}"));
+        builder.push_str(" @ ");
+        builder.push_amount(price);
     }
-    text
+    builder.finish()
+}
+
+fn balance_position_text(txn: &lumi::Transaction) -> GroupedText {
+    txn.postings()
+        .first()
+        .map(|posting| GroupedText::from_amount(&posting.amount))
+        .unwrap_or_default()
 }
 
 fn flag_text(flag: TxnFlag) -> &'static str {
@@ -1382,23 +1399,11 @@ impl TableDelegate for JournalDelegate {
                                 .into_any_element()
                         }
                     }
-                    "position" if txn.flag() == TxnFlag::Balance => div()
-                        .font_family(mono)
-                        .child(
-                            txn.postings()
-                                .first()
-                                .map(|posting| posting.amount.to_string())
-                                .unwrap_or_default(),
-                        )
-                        .into_any_element(),
-                    "change" => div()
-                        .font_family(mono)
-                        .child(amounts_text(&entry.changes))
-                        .into_any_element(),
-                    "balance" => div()
-                        .font_family(mono)
-                        .child(amounts_text(&entry.balance))
-                        .into_any_element(),
+                    "position" if txn.flag() == TxnFlag::Balance => {
+                        balance_position_text(txn).render_mono_right(mono)
+                    }
+                    "change" => amounts_text(&entry.changes).render_mono_right(mono),
+                    "balance" => amounts_text(&entry.balance).render_mono_right(mono),
                     _ => div().into_any_element(),
                 }
             }
@@ -1432,10 +1437,7 @@ impl TableDelegate for JournalDelegate {
                             )
                             .into_any_element()
                     }
-                    "position" => div()
-                        .font_family(mono)
-                        .child(position_text(posting))
-                        .into_any_element(),
+                    "position" => position_text(posting).render_mono_right(mono),
                     _ => div().into_any_element(),
                 }
             }
@@ -1445,30 +1447,34 @@ impl TableDelegate for JournalDelegate {
 
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {
         let column = self.columns.get(col_ix)?.key.as_ref();
-        let text = match *self.rows.get(row_ix)? {
+        let text: SharedString = match *self.rows.get(row_ix)? {
             JournalRow::Transaction(entry_ix) => {
                 let entry = &self.entries[entry_ix];
                 match column {
-                    "date" => entry.txn.date().to_string(),
-                    "flag" => flag_text(entry.txn.flag()).to_string(),
+                    "date" => entry.txn.date().to_string().into(),
+                    "flag" => flag_text(entry.txn.flag()).into(),
                     "description" => format!("{} {}", entry.txn.payee(), entry.txn.narration())
                         .trim()
-                        .to_string(),
-                    "change" => amounts_text(&entry.changes),
-                    "balance" => amounts_text(&entry.balance),
-                    _ => String::new(),
+                        .to_string()
+                        .into(),
+                    "position" if entry.txn.flag() == TxnFlag::Balance => {
+                        balance_position_text(&entry.txn).plain()
+                    }
+                    "change" => amounts_text(&entry.changes).plain(),
+                    "balance" => amounts_text(&entry.balance).plain(),
+                    _ => SharedString::default(),
                 }
             }
             JournalRow::Posting(entry_ix, posting_ix) => {
                 let posting = &self.entries[entry_ix].txn.postings()[posting_ix];
                 match column {
-                    "description" => posting.account.to_string(),
-                    "position" => position_text(posting),
-                    _ => String::new(),
+                    "description" => posting.account.to_string().into(),
+                    "position" => position_text(posting).plain(),
+                    _ => SharedString::default(),
                 }
             }
         };
-        Some(text.into())
+        Some(text)
     }
 
     fn render_empty(

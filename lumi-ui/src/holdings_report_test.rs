@@ -79,7 +79,7 @@ fn test_holdings_rows() {
                 "10 VTI",
                 "250.00 USD",
                 "2024-03-01",
-                "2500.00 USD"
+                "2 500.00 USD"
             ),
             ("Assets:Cash", "10 CNY", "", "", "10 CNY"),
             ("Assets:Cash", "54.50 USD", "", "", "54.50 USD"),
@@ -430,4 +430,81 @@ fn test_holdings_table_renders_aligned_full_height_column_separators(cx: &mut Te
         }
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_holdings_renders_narrow_digit_group_gaps_and_matches_ungrouped_search(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Holdings,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        let delegate = report.read(cx).table.read(cx).delegate();
+        // Row 1 (`Assets:Bank:Checking` USD = `1 920.00 USD`) and row 3
+        // (`Assets:Investments:Brokerage` book value = `2 500.00 USD`).
+        assert_eq!(delegate.cell_label(1, 1, cx).unwrap(), "1 920.00 USD");
+        assert_eq!(delegate.cell_label(3, 3, cx).unwrap(), "2024-03-01");
+        assert_eq!(delegate.cell_label(3, 4, cx).unwrap(), "2 500.00 USD");
+
+        let cell = window.within("table-cell-3:4");
+        let g0 = cell.find(("digit-group", 0usize)).bounds();
+        let g1 = cell.find(("digit-group", 1usize)).bounds();
+        assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
+
+        // Searching without spaces ("2500") still matches `2 500.00 USD`.
+        report.update(cx, |report, cx| report.set_search_query("2500", window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        assert_eq!(
+            report.read(cx).accounts(cx),
+            ["Assets:Investments:Brokerage"]
+        );
+    });
+
+    // Searching with grouped digits ("2 500") also matches.
+    cx.update_window(handle, |_, window, cx| {
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        report.update(cx, |report, cx| {
+            report.set_search_query("2 500", window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let report = app.read(cx).holdings().expect("holdings report is shown");
+        assert_eq!(
+            report.read(cx).accounts(cx),
+            ["Assets:Investments:Brokerage"]
+        );
+    });
 }
