@@ -579,7 +579,7 @@ impl SourceEditor {
         }
         let matched_row = {
             let state = self.text.read(cx);
-            editor_viewport_geometry(state).and_then(
+            editor_painted_viewport_geometry(state).and_then(
                 |(input_bounds, line_height, scroll_offset)| {
                     if event.position.x < input_bounds.left()
                         || event.position.x >= input_bounds.right()
@@ -1243,16 +1243,43 @@ fn shift_error_row(row: usize, edit: &InputEdit) -> Option<usize> {
     }
 }
 
-fn editor_viewport_geometry(
+/// Viewport geometry during `prepaint` / `paint` of the current frame, after
+/// `Editor`'s `prepaint` has updated `prepaint_caret_geometry`.
+fn editor_render_viewport_geometry(
     state: &EditorState,
 ) -> Option<(Bounds<Pixels>, Pixels, Point<Pixels>)> {
     if let Some(geom) = state.prepaint_caret_geometry() {
         let input_bounds = geom.input_bounds();
         let line_height = geom.line_height();
         if input_bounds.size.height > px(0.) && line_height > px(0.) {
-            return Some((input_bounds, line_height, geom.scroll_offset()));
+            // `PrepaintCaretGeometry::scroll_offset` is clamped to the scroll
+            // range and omits macOS elastic overscroll (`stretch`), whereas
+            // `cursor_bounds` is laid out from `input_bounds.top() + stretch`
+            // before `scroll_offset.y` is applied. Recover `stretch` from the
+            // active caret so error backgrounds and hovers move with elastic
+            // bounce at the top and bottom of the file.
+            let cursor_bounds = geom.cursor_bounds();
+            let cursor_row = state
+                .display_map()
+                .buffer_line_to_display_row(state.cursor_position().line as usize);
+            let cursor_line_top =
+                cursor_bounds.origin.y - (line_height - cursor_bounds.size.height) * 0.5;
+            let stretch_y =
+                cursor_line_top - input_bounds.origin.y - line_height * cursor_row as f32;
+            let mut scroll_offset = geom.scroll_offset();
+            scroll_offset.y += stretch_y;
+            return Some((input_bounds, line_height, scroll_offset));
         }
     }
+    editor_painted_viewport_geometry(state)
+}
+
+/// Viewport geometry from the most recently painted frame (`text_bounds`
+/// includes both clamped scroll and any active elastic overscroll stretch),
+/// used for mouse hit-testing between frames.
+fn editor_painted_viewport_geometry(
+    state: &EditorState,
+) -> Option<(Bounds<Pixels>, Pixels, Point<Pixels>)> {
     let line_height = state.line_height().filter(|&h| h > px(0.))?;
     let input_bounds = state.input_bounds();
     if input_bounds.size.height <= px(0.) {
@@ -1285,7 +1312,8 @@ fn paint_error_line_backgrounds(
         return;
     }
     let state = editor.read(cx);
-    let Some((input_bounds, line_height, scroll_offset)) = editor_viewport_geometry(state) else {
+    let Some((input_bounds, line_height, scroll_offset)) = editor_render_viewport_geometry(state)
+    else {
         return;
     };
     let lines_len = state.text().lines_len();
@@ -1395,14 +1423,14 @@ impl Element for ErrorHoverPopover {
             .join("\n")
             .into();
 
+        let font_size = theme.mono_font_size;
         let rows = self.messages.iter().map(|msg| {
             h_flex()
                 .items_start()
                 .gap_1p5()
                 .child(
                     Icon::new(AssetIconName::TriangleAlert)
-                        .xsmall()
-                        .mt(px(2.))
+                        .mt(px(3.))
                         .flex_shrink_0()
                         .text_color(red),
                 )
@@ -1419,7 +1447,7 @@ impl Element for ErrorHoverPopover {
                 .gap_1()
                 .px_2p5()
                 .py_1p5()
-                .text_xs()
+                .text_size(font_size)
                 .rounded(theme.radius)
                 .bg(hover_bg)
                 .border_1()
@@ -1454,7 +1482,7 @@ impl Element for ErrorHoverPopover {
         const ROW_GAP: Pixels = px(4.);
 
         let state = self.editor.read(cx);
-        let (input_bounds, line_height, scroll_offset) = editor_viewport_geometry(state)?;
+        let (input_bounds, line_height, scroll_offset) = editor_render_viewport_geometry(state)?;
         if self.row >= state.text().lines_len() {
             return None;
         }

@@ -9,8 +9,8 @@ use gpui_kit::test::{
 };
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, ClipboardItem, Entity, EntityInputHandler as _,
-    Modifiers, MouseButton, MouseDownEvent, PlatformInput, TestAppContext, WindowBounds,
-    WindowOptions, point, px, size,
+    Modifiers, MouseButton, MouseDownEvent, PlatformInput, ScrollDelta, ScrollEvent,
+    TestAppContext, TouchPhase, WindowBounds, WindowOptions, point, px, size,
 };
 
 use crate::LumiApp;
@@ -1572,6 +1572,153 @@ fn test_source_editor_error_line_edits_enter_col0_vs_eol_delete_undo_and_same_li
         assert!(!editor.read(cx).is_changed(cx));
         assert_eq!(editor.read(cx).error_lines(cx).len(), 1);
         assert_eq!(editor.read(cx).error_lines(cx)[0].0, 1);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_source_editor_error_highlight_and_hover_follow_elastic_overscroll_near_eof(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("error-elastic-overscroll-eof");
+    // Build a 60-line file with an error near EOF (line 58) so scrolling past
+    // the end stretches the text upward via elastic overscroll (`scroll_bounce`).
+    let mut lines: Vec<String> = (1..=57).map(|i| format!("; comment line {i}")).collect();
+    lines.push("2025-01-15 balance Assets:Cash 999.00 USD".to_string()); // line 58 (error)
+    lines.push("; trailing comment 59".to_string());
+    lines.push("; trailing comment 60".to_string());
+    fs::write(&ledger.expenses_path, format!("{}\n", lines.join("\n"))).unwrap();
+
+    let (handle, app) = open_editor(&ledger, cx);
+    let editor = cx.read(|cx| app.read(cx).editor().expect("editor page is open"));
+    let expenses_path = ledger.expenses_str();
+
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |ed, cx| ed.select_file(&expenses_path, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        let state = editor.read(cx).editor_state().clone();
+        state.update(cx, |state, cx| state.set_scroll_bounce(true, cx));
+        window.render_frame(cx);
+        window.render_frame(cx);
+
+        // First scroll to the clamped EOF without overscroll (MouseWheel / Ended)
+        // to measure the resting y of line 58 at the bottom of the file.
+        let scroll_pt = {
+            let b = state.read(cx).input_bounds();
+            point(b.origin.x + px(120.), b.origin.y + px(120.))
+        };
+        state.update(cx, |state, cx| {
+            state.set_scroll_offset(point(px(0.), px(-100_000.)), cx);
+        });
+        window.render_frame(cx);
+
+        let resting_painted_y = {
+            let painted = editor.read(cx).painted_error_lines();
+            assert_eq!(painted.len(), 1);
+            assert_eq!(painted[0].0, 58);
+            painted[0].1.origin.y
+        };
+        let resting_glyph_y = state.update(cx, |state, cx| {
+            let tb = state.text_bounds().unwrap();
+            let off = state.text().line_start_offset(57);
+            state
+                .bounds_for_range(off..off + 4, tb, window, cx)
+                .unwrap()
+                .origin
+                .y
+        });
+        assert!((resting_painted_y - resting_glyph_y).abs() < px(1.));
+
+        // Now perform a trackpad swipe upward past EOF (`TouchPhase::Started` +
+        // `TouchPhase::Moved`), pulling line 58 further up via elastic stretch.
+        for (phase, dy) in [(TouchPhase::Started, -20.0), (TouchPhase::Moved, -5000.0)] {
+            window.dispatch_event(
+                PlatformInput::Scroll(ScrollEvent {
+                    position: scroll_pt,
+                    delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+                    touch_phase: phase,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        }
+        window.render_frame(cx);
+
+        let stretched_painted = editor.read(cx).painted_error_lines();
+        assert_eq!(stretched_painted.len(), 1);
+        let stretched_painted_y = stretched_painted[0].1.origin.y;
+        let stretched_glyph_y = state.update(cx, |state, cx| {
+            let tb = state.text_bounds().unwrap();
+            let off = state.text().line_start_offset(57);
+            state
+                .bounds_for_range(off..off + 4, tb, window, cx)
+                .unwrap()
+                .origin
+                .y
+        });
+
+        // Elastic overscroll actually pulled the text upward past the resting EOF:
+        assert!(
+            stretched_glyph_y < resting_glyph_y - px(10.),
+            "expected elastic stretch upward: stretched={stretched_glyph_y:?}, resting={resting_glyph_y:?}"
+        );
+        // And the light-red error background moved up by the exact same stretch!
+        assert!(
+            (stretched_painted_y - stretched_glyph_y).abs() < px(1.),
+            "error background {stretched_painted_y:?} did not follow stretched glyph {stretched_glyph_y:?}"
+        );
+
+        // Hovering over the stretched error line hits line 58 at its stretched position.
+        window.pointer_move(
+            point(
+                stretched_painted[0].1.origin.x + px(100.),
+                stretched_painted_y + stretched_painted[0].1.size.height * 0.5,
+            ),
+            None,
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(window.try_find("source-editor-error-hover").is_some());
+
+        // Release the trackpad gesture (`TouchPhase::Ended`) and let the bounce
+        // spring back to rest.
+        window.dispatch_event(
+            PlatformInput::Scroll(ScrollEvent {
+                position: scroll_pt,
+                delta: ScrollDelta::Pixels(point(px(0.), px(0.))),
+                touch_phase: TouchPhase::Ended,
+                ..Default::default()
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+
+    for _ in 0..120 {
+        cx.executor().advance_clock(Duration::from_millis(16));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    cx.update_window(handle, |_, window, cx| {
+        let state = editor.read(cx).editor_state().clone();
+        let final_painted_y = editor.read(cx).painted_error_lines()[0].1.origin.y;
+        let final_glyph_y = state.update(cx, |state, cx| {
+            let tb = state.text_bounds().unwrap();
+            let off = state.text().line_start_offset(57);
+            state
+                .bounds_for_range(off..off + 4, tb, window, cx)
+                .unwrap()
+                .origin
+                .y
+        });
+        assert!((final_painted_y - final_glyph_y).abs() < px(1.));
     })
     .unwrap();
 }
