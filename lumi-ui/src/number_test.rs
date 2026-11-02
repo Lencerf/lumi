@@ -1,9 +1,11 @@
+use gpui_kit::px;
 use rust_decimal::Decimal;
 
-use crate::number::{GroupedBuilder, GroupedText};
+use crate::number::{DIGIT_GROUP_GAP, GroupedBuilder, GroupedText};
 
 #[test]
 fn test_groups_integer_part_every_three_digits_leaving_fraction_and_sign_intact() {
+    assert_eq!(DIGIT_GROUP_GAP, px(2.));
     let cases = [
         ("", "", 0),
         ("0", "0", 0),

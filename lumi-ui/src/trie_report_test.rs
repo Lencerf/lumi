@@ -499,13 +499,16 @@ fn test_trie_report_formats_and_renders_three_digit_groups_with_narrow_gap(
     cx.run_until_parked();
     cx.update_window(inc_handle, |_, window, cx| {
         window.render_frame(cx);
-        // `Income` root row has `-3000.00` -> `-3` + 3px gap + `000.00`.
+        // `Income` root row has `-3000.00` -> `-3` + DIGIT_GROUP_GAP + `000.00`.
         let mut inc_table = window.within((ElementId::from("trie-table"), "Income"));
         let mut body = inc_table.within(("table-body", 1usize));
         let row0 = body.within(("table-row", 0usize));
         let g0 = row0.find(("digit-group", 0usize)).bounds();
         let g1 = row0.find(("digit-group", 1usize)).bounds();
-        assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
+        assert_eq!(
+            g1.origin.x - (g0.origin.x + g0.size.width),
+            crate::number::DIGIT_GROUP_GAP
+        );
     })
     .unwrap();
 }
@@ -615,8 +618,14 @@ fn test_income_statement_wide_multi_currency_balances_never_shrink_or_overlap(
             usd_g0.origin.x >= sep_usd_row0.origin.x + px(12.),
             "USD left group (`-2`) must stay well right of USD separator: usd_g0={usd_g0:?}, sep_usd={sep_usd_row0:?}"
         );
-        assert_eq!(usd_g1.origin.x - (usd_g0.origin.x + usd_g0.size.width), px(3.));
-        assert_eq!(usd_g2.origin.x - (usd_g1.origin.x + usd_g1.size.width), px(3.));
+        assert_eq!(
+            usd_g1.origin.x - (usd_g0.origin.x + usd_g0.size.width),
+            crate::number::DIGIT_GROUP_GAP
+        );
+        assert_eq!(
+            usd_g2.origin.x - (usd_g1.origin.x + usd_g1.size.width),
+            crate::number::DIGIT_GROUP_GAP
+        );
         assert!(
             usd_g2.origin.x + usd_g2.size.width <= usd_cell_bounds.origin.x + usd_cell_bounds.size.width,
             "USD right group must fit inside USD cell: usd_g2={usd_g2:?}, cell={usd_cell_bounds:?}"

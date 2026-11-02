@@ -476,7 +476,10 @@ fn test_holdings_renders_narrow_digit_group_gaps_and_matches_ungrouped_search(
         let cell = window.within("table-cell-3:4");
         let g0 = cell.find(("digit-group", 0usize)).bounds();
         let g1 = cell.find(("digit-group", 1usize)).bounds();
-        assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
+        assert_eq!(
+            g1.origin.x - (g0.origin.x + g0.size.width),
+            crate::number::DIGIT_GROUP_GAP
+        );
 
         // Searching without spaces ("2500") still matches `2 500.00 USD`.
         report.update(cx, |report, cx| report.set_search_query("2500", window, cx));

@@ -11,9 +11,9 @@ use gpui_kit::{InteractiveElement as _, TestSupportExt as _};
 use lumi::Amount;
 use rust_decimal::Decimal;
 
-/// Narrow horizontal gap between 3-digit integer groups (~3px), visually
+/// Narrow horizontal gap between 3-digit integer groups (`2px`), visually
 /// tighter than a full monospace space before currency codes like `USD`.
-pub(crate) const DIGIT_GROUP_GAP: Pixels = px(3.);
+pub(crate) const DIGIT_GROUP_GAP: Pixels = px(2.);
 
 /// Formatted text whose 3-digit integer groups render with [`DIGIT_GROUP_GAP`]
 /// between groups and format with ASCII `' '` in plain text / accessibility labels.

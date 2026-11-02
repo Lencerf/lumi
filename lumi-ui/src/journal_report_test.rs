@@ -1660,8 +1660,14 @@ fn test_journal_and_account_views_group_numbers_with_narrow_gap_leaving_dates_in
         let g0 = bal_cell.find(("digit-group", 0usize)).bounds();
         let g1 = bal_cell.find(("digit-group", 1usize)).bounds();
         let g2 = bal_cell.find(("digit-group", 2usize)).bounds();
-        assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
-        assert_eq!(g2.origin.x - (g1.origin.x + g1.size.width), px(3.));
+        assert_eq!(
+            g1.origin.x - (g0.origin.x + g0.size.width),
+            crate::number::DIGIT_GROUP_GAP
+        );
+        assert_eq!(
+            g2.origin.x - (g1.origin.x + g1.size.width),
+            crate::number::DIGIT_GROUP_GAP
+        );
 
         let focus = report.read(cx).table.read(cx).focus_handle(cx);
         focus.focus(window, cx);
@@ -1683,7 +1689,10 @@ fn test_journal_and_account_views_group_numbers_with_narrow_gap_leaving_dates_in
         let change_cell = window.within("table-cell-1:4");
         let g0 = change_cell.find(("digit-group", 0usize)).bounds();
         let g1 = change_cell.find(("digit-group", 1usize)).bounds();
-        assert_eq!(g1.origin.x - (g0.origin.x + g0.size.width), px(3.));
+        assert_eq!(
+            g1.origin.x - (g0.origin.x + g0.size.width),
+            crate::number::DIGIT_GROUP_GAP
+        );
     })
     .unwrap();
 
