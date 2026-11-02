@@ -1,4 +1,4 @@
-use crate::align::{adjusted_cursor_for_alignment, diff_summary};
+use crate::align::{adjust_offset_for_deletions, adjusted_cursor_for_alignment, diff_summary};
 
 #[test]
 fn test_diff_summary_identifies_prefix_suffix_and_space_only_deletion() {
@@ -39,4 +39,18 @@ fn test_adjusted_cursor_for_alignment_preserves_caret_in_account_whitespace_and_
     // Deleting a non-space character at the start of the number (e.g. `-12` -> `12`)
     // keeps the caret at the number's new start.
     assert_eq!(adjusted_cursor_for_alignment(46, 31..46, 17, false), 48);
+}
+
+#[test]
+fn test_adjust_offset_for_deletions_clamps_inside_and_shifts_after_ranges() {
+    // `"abc   \ndef  \n"`: deleted trailing ranges `3..6` and `10..12` -> `"abc\ndef\n"`.
+    let ranges = [3..6, 10..12];
+    assert_eq!(adjust_offset_for_deletions(2, &ranges), 2);
+    assert_eq!(adjust_offset_for_deletions(3, &ranges), 3);
+    assert_eq!(adjust_offset_for_deletions(5, &ranges), 3);
+    assert_eq!(adjust_offset_for_deletions(6, &ranges), 3);
+    assert_eq!(adjust_offset_for_deletions(7, &ranges), 4);
+    assert_eq!(adjust_offset_for_deletions(11, &ranges), 7);
+    assert_eq!(adjust_offset_for_deletions(12, &ranges), 7);
+    assert_eq!(adjust_offset_for_deletions(13, &ranges), 8);
 }

@@ -69,7 +69,7 @@ pub fn file_text(path: &str) -> Result<String, EditError> {
 }
 
 /// Replaces the full text of the ledger source file at `path` with
-/// `replacement`.
+/// `replacement`, stripping trailing horizontal whitespace from every line.
 ///
 /// `original` must be the text [`file_text`] returned. If the file on disk has
 /// changed since, nothing is written and [`EditError::FileChanged`] is
@@ -82,7 +82,7 @@ pub fn replace_file_text(path: &str, original: &str, replacement: &str) -> Resul
             path: path.to_string(),
         });
     }
-    let normalized = replacement.replace("\r\n", "\n");
+    let normalized = trim_trailing_whitespace(&replacement.replace("\r\n", "\n"));
     let out = if file.newline == "\r\n" {
         normalized.replace('\n', "\r\n")
     } else {
@@ -126,6 +126,8 @@ pub fn replace_entry_text(
             line,
         });
     }
+    let trimmed = trim_trailing_whitespace(replacement);
+    let replacement = trimmed.trim_end_matches(['\r', '\n']);
     let start = line - 1;
     let end = start + lines.len();
     let mut text = String::with_capacity(file.text.len() + replacement.len());
@@ -190,10 +192,12 @@ pub fn delete_entry_text(path: &str, line: usize, original: &str) -> Result<(), 
 }
 
 /// Appends `entry` to the file at `path`, separated from any preceding
-/// content by one blank line, keeping the file's own line breaks.
+/// content by one blank line, stripping trailing whitespace and keeping the
+/// file's own line breaks.
 pub fn append_entry_text(path: &str, entry: &str) -> Result<(), EditError> {
     let file = read(path)?;
-    let entry = entry.trim_end_matches(['\r', '\n']);
+    let trimmed = trim_trailing_whitespace(entry);
+    let entry = trimmed.trim_end_matches(['\r', '\n']);
     let mut text = String::with_capacity(file.text.len() + entry.len() + 4);
     let has_content = file.lines.iter().any(|line| !line.trim().is_empty());
     if has_content {
@@ -217,6 +221,62 @@ pub fn append_entry_text(path: &str, entry: &str) -> Result<(), EditError> {
         path: path.to_string(),
         error,
     })
+}
+
+/// Non-empty byte ranges of horizontal whitespace immediately before each line
+/// break (`\r\n` or `\n`) or at the end of `text`.
+pub fn trailing_whitespace_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut line_start = 0;
+    for chunk in text.split_inclusive('\n') {
+        let chunk_end = line_start + chunk.len();
+        let line_end = if chunk.ends_with("\r\n") {
+            chunk_end - 2
+        } else if chunk.ends_with('\n') {
+            chunk_end - 1
+        } else {
+            chunk_end
+        };
+        let line = &text[line_start..line_end];
+        let trimmed_len = line
+            .trim_end_matches(|c: char| c.is_whitespace() && c != '\r')
+            .len();
+        let ws_start = line_start + trimmed_len;
+        if ws_start < line_end {
+            ranges.push(ws_start..line_end);
+        }
+        line_start = chunk_end;
+    }
+    ranges
+}
+
+/// Non-empty byte ranges of trailing horizontal whitespace on each line of
+/// `entry`, plus any trailing blank lines at the end of `entry`.
+pub fn entry_trailing_whitespace_ranges(entry: &str) -> Vec<Range<usize>> {
+    let content_end = entry.trim_end().len();
+    let mut ranges = trailing_whitespace_ranges(&entry[..content_end]);
+    if content_end < entry.len() {
+        ranges.push(content_end..entry.len());
+    }
+    ranges
+}
+
+/// `text` with trailing horizontal whitespace removed from every line, keeping
+/// existing `\n` and `\r\n` line breaks intact.
+pub fn trim_trailing_whitespace(text: &str) -> String {
+    let ranges = trailing_whitespace_ranges(text);
+    if ranges.is_empty() {
+        return text.to_string();
+    }
+    let removed: usize = ranges.iter().map(Range::len).sum();
+    let mut out = String::with_capacity(text.len() - removed);
+    let mut cursor = 0;
+    for range in ranges {
+        out.push_str(&text[cursor..range.start]);
+        cursor = range.end;
+    }
+    out.push_str(&text[cursor..]);
+    out
 }
 
 /// `entry` with the `YYYY-MM-DD` date at the start of its first line replaced

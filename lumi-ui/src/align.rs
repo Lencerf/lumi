@@ -1,10 +1,12 @@
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::Rc;
 
 use gpui_kit::component::input::{EditorState, Redo, RopeExt as _, Undo};
 use gpui_kit::{App, Context, Entity, Subscription, Window};
 use lumi::edit::{
-    PostingAlignment, align_posting_line, ends_in_string, parse_decimal_point_column_in_text,
+    PostingAlignment, align_posting_line, ends_in_string, entry_trailing_whitespace_ranges,
+    parse_decimal_point_column_in_text, trailing_whitespace_ranges,
 };
 
 use crate::completion::BeancountCompletionProvider;
@@ -197,6 +199,43 @@ impl PostingAligner {
         *self.prev_text.borrow_mut() = text.read(cx).value().to_string();
         self.aligning.set(false);
     }
+
+    /// Removes trailing whitespace in `text` without triggering posting
+    /// re-alignment, keeping the selection/cursor anchored across removed bytes.
+    ///
+    /// When `trim_trailing_blank_lines` is `true` (used for single-entry
+    /// dialogs), trailing blank lines at the end of the buffer are also removed.
+    pub(crate) fn trim_trailing_whitespace(
+        &self,
+        text: &Entity<EditorState>,
+        trim_trailing_blank_lines: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let cur_str = text.read(cx).value().to_string();
+        let ranges = if trim_trailing_blank_lines {
+            entry_trailing_whitespace_ranges(&cur_str)
+        } else {
+            trailing_whitespace_ranges(&cur_str)
+        };
+        if ranges.is_empty() {
+            return;
+        }
+
+        self.aligning.set(true);
+        text.update(cx, |state, cx| {
+            let selected = state.selected_range();
+            let adj_start = adjust_offset_for_deletions(selected.start, &ranges);
+            let adj_end = adjust_offset_for_deletions(selected.end, &ranges);
+            for range in ranges.iter().rev() {
+                state.set_selected_range(range.clone(), cx);
+                state.replace("", window, cx);
+            }
+            state.set_selected_range(adj_start..adj_end, cx);
+        });
+        *self.prev_text.borrow_mut() = text.read(cx).value().to_string();
+        self.aligning.set(false);
+    }
 }
 
 fn arm_history_skip(skip: &Rc<Cell<bool>>, cx: &mut App) {
@@ -246,9 +285,20 @@ pub(crate) fn diff_summary(prev: &str, cur: &str) -> (usize, usize, bool) {
     (prefix, suffix, only_deleted_spaces)
 }
 
+pub(crate) fn adjust_offset_for_deletions(mut offset: usize, ranges: &[Range<usize>]) -> usize {
+    for range in ranges.iter().rev() {
+        if offset >= range.end {
+            offset -= range.len();
+        } else if offset > range.start {
+            offset = range.start;
+        }
+    }
+    offset
+}
+
 pub(crate) fn adjusted_cursor_for_alignment(
     cursor: usize,
-    abs_ws: std::ops::Range<usize>,
+    abs_ws: Range<usize>,
     desired_spaces: usize,
     only_deleted_spaces: bool,
 ) -> usize {

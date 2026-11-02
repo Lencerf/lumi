@@ -434,12 +434,24 @@ impl EntryEditor {
         cx.notify();
     }
 
-    /// Writes the text to the ledger — replacing the entry or appending its
-    /// duplicate — then reloads the ledger and closes the dialog.
+    /// Writes the text to the ledger — stripping trailing whitespace and
+    /// replacing the entry or appending its duplicate — then reloads the ledger
+    /// and closes the dialog.
     pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending.is_some() || !self.can_save(cx) {
+        if self.pending.is_some() {
             return;
         }
+        let has_trailing_ws =
+            !lumi::edit::entry_trailing_whitespace_ranges(&self.text.read(cx).value()).is_empty();
+        if self.duplicating {
+            if !self.can_save(cx) {
+                return;
+            }
+        } else if !self.can_save(cx) && !has_trailing_ws {
+            return;
+        }
+        self.aligner
+            .trim_trailing_whitespace(&self.text, true, window, cx);
         let text = self.text.read(cx).value().to_string();
         let ledger = self.session.read(cx).source().clone();
         let task = if self.duplicating {

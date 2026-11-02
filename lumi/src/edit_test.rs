@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use chrono::NaiveDate;
 
 use crate::edit::{
-    EditError, align_posting_line, append_entry_text, delete_entry_text, entry_text, file_text,
-    parse_decimal_point_column_in_text, replace_entry_text, replace_file_text, with_date,
+    EditError, align_posting_line, append_entry_text, delete_entry_text, entry_text,
+    entry_trailing_whitespace_ranges, file_text, parse_decimal_point_column_in_text,
+    replace_entry_text, replace_file_text, trailing_whitespace_ranges, trim_trailing_whitespace,
+    with_date,
 };
 use crate::{Ledger, TxnFlag};
 
@@ -403,5 +405,60 @@ end\"
     assert_eq!(
         parse_decimal_point_column_in_text("2024-01-01 open Assets:Cash\n"),
         None
+    );
+}
+
+#[test]
+fn test_trim_trailing_whitespace_and_write_operations_strip_trailing_spaces_and_tabs() {
+    assert_eq!(trailing_whitespace_ranges(""), Vec::new());
+    assert_eq!(
+        trim_trailing_whitespace("2024-01-01 open Assets:Cash   \n  \t \n2024-01-02 * \"Hi\"\t  "),
+        "2024-01-01 open Assets:Cash\n\n2024-01-02 * \"Hi\""
+    );
+    assert_eq!(
+        trim_trailing_whitespace("2024-01-01 open Assets:Cash  \r\n   \r\n"),
+        "2024-01-01 open Assets:Cash\r\n\r\n"
+    );
+    assert_eq!(
+        entry_trailing_whitespace_ranges("2024-01-01 * \"Hi\"  \n  Assets:Cash  1 USD  \n   \n"),
+        vec![17..19, 40..47]
+    );
+
+    // `replace_file_text` strips trailing spaces/tabs while preserving CRLF.
+    let crlf = TempFile::new("trim-file-crlf", "2024-01-01 open Assets:Cash\r\n");
+    let orig = file_text(crlf.path()).unwrap();
+    replace_file_text(
+        crlf.path(),
+        &orig,
+        "2024-01-01 open Assets:Cash   \n   \t\n2024-01-02 open Equity:Opening\t \n",
+    )
+    .unwrap();
+    assert_eq!(
+        crlf.text(),
+        "2024-01-01 open Assets:Cash\r\n\r\n2024-01-02 open Equity:Opening\r\n"
+    );
+
+    // `replace_entry_text` and `append_entry_text` strip per-line trailing
+    // spaces/tabs and trailing blank lines on the saved entry.
+    let lf = TempFile::new(
+        "trim-entry-lf",
+        "2024-01-01 * \"One\"\n  Assets:Cash  1 USD\n  Equity:Opening\n\n2024-01-02 * \"Two\"\n  Assets:Cash  2 USD\n  Equity:Opening\n",
+    );
+    let one = entry_text(lf.path(), 1).unwrap();
+    replace_entry_text(
+        lf.path(),
+        1,
+        &one,
+        "2024-01-01 * \"One\"   \n  Assets:Cash  1 USD\t \n  Equity:Opening  \n   \n",
+    )
+    .unwrap();
+    append_entry_text(
+        lf.path(),
+        "2024-01-03 * \"Three\"  \n  Assets:Cash  3 USD \t\n  Equity:Opening   \n  \n",
+    )
+    .unwrap();
+    assert_eq!(
+        lf.text(),
+        "2024-01-01 * \"One\"\n  Assets:Cash  1 USD\n  Equity:Opening\n\n2024-01-02 * \"Two\"\n  Assets:Cash  2 USD\n  Equity:Opening\n\n2024-01-03 * \"Three\"\n  Assets:Cash  3 USD\n  Equity:Opening\n"
     );
 }

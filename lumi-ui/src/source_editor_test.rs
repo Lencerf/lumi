@@ -1722,3 +1722,64 @@ fn test_source_editor_error_highlight_and_hover_follow_elastic_overscroll_near_e
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn test_source_editor_save_removes_trailing_whitespace_and_preserves_cursor_line(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("trim-trailing-ws");
+    // Pre-populate `2025/expenses.bean` with existing trailing whitespace on line 1.
+    fs::write(
+        &ledger.expenses_path,
+        "2025-01-10 * \"Blue Bottle\" \"Latte\" #coffee   \n  Expenses:Food:Coffee   6.50 USD\n  Assets:Cash           -6.50 USD\n",
+    )
+    .unwrap();
+
+    let (handle, app) = open_editor(&ledger, cx);
+    let editor = cx.read(|cx| app.read(cx).editor().expect("editor page is open"));
+
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.select_file(ledger.expenses_str(), window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Edit line 3 to add trailing spaces and a whitespace-only blank line, with
+    // the cursor sitting in trailing spaces on line 3.
+    cx.update_window(handle, |_, window, cx| {
+        let state = editor.read(cx).editor_state().clone();
+        state.update(cx, |state, cx| {
+            state.set_value(
+                "2025-01-10 * \"Blue Bottle\" \"Latte\" #coffee   \n  Expenses:Food:Coffee   6.50 USD\t \n  Assets:Cash           -6.50 USD   \n   \t \n",
+                window,
+                cx,
+            );
+            // Place cursor inside the trailing spaces at the end of line 3 (row 2).
+            let row2_end = state.text().line_end_offset(2);
+            state.set_selected_range(row2_end..row2_end, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        assert_eq!(editor.read(cx).cursor_line(cx), 3);
+        window.click("save-source", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle, Duration::from_secs(5), |_, cx| {
+        app.read(cx).session().read(cx).revision() == 2
+    })
+    .await;
+    cx.run_until_parked();
+
+    let expected_clean = "2025-01-10 * \"Blue Bottle\" \"Latte\" #coffee\n  Expenses:Food:Coffee   6.50 USD\n  Assets:Cash           -6.50 USD\n\n";
+    let saved_disk = fs::read_to_string(&ledger.expenses_path).unwrap();
+    assert_eq!(saved_disk, expected_clean);
+    cx.read(|cx| {
+        let ed = editor.read(cx);
+        assert_eq!(ed.value(cx).as_ref(), expected_clean);
+        assert!(!ed.is_changed(cx));
+        assert_eq!(ed.cursor_line(cx), 3);
+    });
+}

@@ -933,3 +933,96 @@ fn test_edited_or_duplicated_entry_editor_does_not_auto_close_on_outside_click(
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn test_entry_editor_save_removes_trailing_whitespace_in_edit_and_duplicate_modes(
+    cx: &mut TestAppContext,
+) {
+    let ledger = TempLedger::new("trim-trailing-ws");
+    let (handle, app) = open_journal(&ledger, cx);
+    let session = cx.read(|cx| app.read(cx).session().clone());
+
+    // 1. Editing an entry with trailing spaces, tabs, and trailing blank lines
+    // strips all trailing whitespace upon Save.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let editor = app.read(cx).journal().expect("journal is shown");
+        let _ = editor;
+        window.press("end", cx);
+        window.input(" #trimmed   ", cx);
+        window.press("down", cx);
+        window.press("end", cx);
+        window.input("  \t ", cx);
+        window.press("down", cx);
+        window.press("end", cx);
+        window.input("   \n   ", cx);
+        window.click("save-entry", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle, Duration::from_secs(5), |_, cx| {
+        session.read(cx).revision() == 2
+    })
+    .await;
+    cx.run_until_parked();
+
+    let saved = ledger.text();
+    assert!(
+        saved.ends_with(
+            "2025-06-01 * \"Pay card\" #trimmed\n  Liabilities:CreditCard     80.00 USD\n  Assets:Bank:Checking      -80.00 USD\n"
+        ),
+        "unexpected saved ledger:\n{saved}"
+    );
+
+    // 2. Duplicating an entry and adding trailing spaces on lines also strips
+    // all trailing whitespace upon Save.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("edit", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-entry", cx);
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("end", cx);
+        window.input("   ", cx);
+        window.click("save-entry", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle, Duration::from_secs(5), |_, cx| {
+        session.read(cx).revision() == 3
+    })
+    .await;
+    cx.run_until_parked();
+
+    let expected_dup = lumi::edit::with_today(
+        "2025-06-01 * \"Pay card\" #trimmed\n  Liabilities:CreditCard     80.00 USD\n  Assets:Bank:Checking      -80.00 USD",
+    );
+    let saved_after_dup = ledger.text();
+    assert!(
+        saved_after_dup.ends_with(&format!("{expected_dup}\n")),
+        "unexpected saved ledger after duplicate:\n{saved_after_dup}"
+    );
+    for line in saved_after_dup.lines() {
+        assert_eq!(
+            line,
+            line.trim_end(),
+            "line still had trailing ws: {line:?}"
+        );
+    }
+}

@@ -778,16 +778,26 @@ impl SourceEditor {
         cx.notify();
     }
 
-    /// Writes the active file to disk and reloads the ledger so reports and
-    /// completion candidates reflect the saved changes.
+    /// Strips trailing whitespace, writes the active file to disk, and reloads
+    /// the ledger so reports and completion candidates reflect the saved changes.
     pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving || self.loading_file || !self.is_changed(cx) {
+        if self.saving || self.loading_file {
+            return;
+        }
+        let has_trailing_ws =
+            !lumi::edit::trailing_whitespace_ranges(&self.text.read(cx).value()).is_empty();
+        if !self.is_changed(cx) && !has_trailing_ws {
             return;
         }
         let (Some(path), Some(original)) = (self.selected_file.clone(), self.original.clone())
         else {
             return;
         };
+        self.aligner
+            .trim_trailing_whitespace(&self.text, false, window, cx);
+        if self.search_open {
+            self.sync_search_query(false, cx);
+        }
         let new_text = self.text.read(cx).value();
         let source = self.session.read(cx).source().clone();
         let task = source.replace_file_text(&path, original.to_string(), new_text.to_string(), cx);
