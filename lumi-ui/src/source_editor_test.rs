@@ -1168,3 +1168,410 @@ include \"2025/expenses.bean\"
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn test_source_editor_highlights_error_lines_shows_hover_shifts_on_edits_and_clears_on_save(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("error-highlights-and-hover");
+    // `main.bean` has a `plugin` directive (`ErrorLevel::Info` on line 3), which
+    // must NOT be highlighted as an error.
+    fs::write(
+        &ledger.main_path,
+        "\
+option \"title\" \"Error highlights ledger\"
+option \"operating_currency\" \"USD\"
+plugin \"beancount.plugins.auto_accounts\"
+
+include \"accounts.bean\"
+include \"2025/expenses.bean\"
+",
+    )
+    .unwrap();
+    // `2025/expenses.bean` has:
+    // - Lines 1..=3: valid transaction
+    // - Lines 5..=7: unbalanced transaction (`ErrorLevel::Error` at start line 5 only)
+    // - Line 9: failed balance assertion (`ErrorLevel::Error` at line 9)
+    fs::write(
+        &ledger.expenses_path,
+        "\
+2025-01-10 * \"Blue Bottle\" \"Latte\"
+  Expenses:Food:Coffee   6.50 USD
+  Assets:Cash           -6.50 USD
+
+2025-01-12 * \"Tartine\" \"Unbalanced pastry\"
+  Expenses:Food:Coffee   5.00 USD
+  Assets:Cash           -4.00 USD
+
+2025-01-15 balance Assets:Cash 0.00 USD
+",
+    )
+    .unwrap();
+
+    let (handle, app) = open_editor(&ledger, cx);
+    let editor = cx.read(|cx| app.read(cx).editor().expect("editor page is open"));
+
+    // Render `main.bean` and verify `ErrorLevel::Info` on line 3 is NOT highlighted.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.read(|cx| {
+        assert!(editor.read(cx).error_lines(cx).is_empty());
+        assert!(editor.read(cx).painted_error_lines().is_empty());
+    });
+
+    // Switch to `2025/expenses.bean`.
+    let expenses_path = ledger.expenses_str();
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |ed, cx| ed.select_file(&expenses_path, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Render two frames so editor layout and backdrop painting settle.
+    for _ in 0..2 {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    // Only starting lines 5 and 9 (`ErrorLevel::Error`) are highlighted — NOT
+    // lines 6 or 7 of the multi-line unbalanced transaction.
+    let (line5_center, line6_center, line9_right_whitespace) = cx
+        .update_window(handle, |_, window, cx| {
+            let ed = editor.read(cx);
+            let error_lines = ed.error_lines(cx);
+            let line_numbers: Vec<usize> = error_lines.iter().map(|(line, _)| *line).collect();
+            assert_eq!(line_numbers, [5, 9]);
+            assert!(
+                error_lines[0].1[0].contains("balance")
+                    || error_lines[0].1[0].contains("USD")
+                    || !error_lines[0].1[0].is_empty()
+            );
+
+            let painted = ed.painted_error_lines();
+            let painted_lines: Vec<usize> = painted.iter().map(|(line, _)| *line).collect();
+            assert_eq!(painted_lines, [5, 9]);
+            for (_, rect) in &painted {
+                // Full-width light-red band across the editor card.
+                assert!(
+                    rect.size.width > px(800.),
+                    "rect width = {:?}",
+                    rect.size.width
+                );
+                assert!(rect.size.height > px(10.));
+            }
+
+            let state = ed.editor_state().clone();
+            let (line5_glyph, line6_glyph, input_bounds) = state.update(cx, |state, cx| {
+                let text_bounds = state.text_bounds().expect("text bounds");
+                let l5_start = state.text().line_start_offset(4);
+                let l6_start = state.text().line_start_offset(5);
+                let b5 = state
+                    .bounds_for_range(l5_start..l5_start + 4, text_bounds, window, cx)
+                    .expect("line 5 glyph bounds");
+                let b6 = state
+                    .bounds_for_range(l6_start..l6_start + 4, text_bounds, window, cx)
+                    .expect("line 6 glyph bounds");
+                (b5, b6, state.input_bounds())
+            });
+            // Painted row 5 background aligns vertically with line 5's glyphs.
+            assert!((painted[0].1.origin.y - line5_glyph.origin.y).abs() < px(1.));
+
+            let p5 = point(
+                line5_glyph.origin.x + px(10.),
+                line5_glyph.origin.y + line5_glyph.size.height * 0.5,
+            );
+            let p6 = point(
+                line6_glyph.origin.x + px(10.),
+                line6_glyph.origin.y + line6_glyph.size.height * 0.5,
+            );
+            // Far right whitespace on line 9 (well past the end of text on line 9).
+            let p9_right = point(
+                input_bounds.right() - px(40.),
+                painted[1].1.origin.y + painted[1].1.size.height * 0.5,
+            );
+            (p5, p6, p9_right)
+        })
+        .unwrap();
+
+    // Hovering over line 5 shows the error detail hover for line 5.
+    let expected_line5_msg = cx.read(|cx| editor.read(cx).error_lines(cx)[0].1[0].to_string());
+    let expected_line9_msg = cx.read(|cx| editor.read(cx).error_lines(cx)[1].1[0].to_string());
+
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.try_find("source-editor-error-hover").is_none());
+        window.pointer_move(line5_center, None, cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("source-editor-error-hover").label(),
+            Some(expected_line5_msg.as_str())
+        );
+
+        // Moving to line 6 (posting of the unbalanced transaction) hides the hover.
+        window.pointer_move(line6_center, None, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("source-editor-error-hover").is_none());
+
+        // Hovering over empty space to the right of text on line 9 shows line 9's error detail.
+        window.pointer_move(line9_right_whitespace, None, cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("source-editor-error-hover").label(),
+            Some(expected_line9_msg.as_str())
+        );
+
+        // Moving outside the editor body (into the top toolbar) hides the hover.
+        window.pointer_move(point(px(400.), px(20.)), None, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("source-editor-error-hover").is_none());
+    })
+    .unwrap();
+
+    // Insert two comment lines at the very start of `2025/expenses.bean`:
+    // error lines shift `[5, 9] -> [7, 11]` before saving, and switching files
+    // preserves the shifted lines on the unsaved draft.
+    cx.update_window(handle, |_, window, cx| {
+        let state = editor.read(cx).editor_state().clone();
+        state.update(cx, |state, cx| {
+            state.set_selected_range(0..0, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.input("; header 1\n; header 2\n", cx);
+        window.render_frame(cx);
+
+        let shifted: Vec<usize> = editor
+            .read(cx)
+            .painted_error_lines()
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect();
+        assert_eq!(shifted, [7, 11]);
+
+        // Old line 5 is no longer an error line; shifted line 7 shows the hover.
+        window.pointer_move(line5_center, None, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("source-editor-error-hover").is_none());
+
+        let line7_rect = editor.read(cx).painted_error_lines()[0].1;
+        window.pointer_move(
+            point(
+                line5_center.x,
+                line7_rect.origin.y + line7_rect.size.height * 0.5,
+            ),
+            None,
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("source-editor-error-hover").label(),
+            Some(expected_line5_msg.as_str())
+        );
+    })
+    .unwrap();
+
+    // Switch to `main.bean` and back to `2025/expenses.bean`: unsaved draft keeps `[7, 11]`.
+    let main_path = ledger.main_str();
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |ed, cx| ed.select_file(&main_path, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |ed, cx| ed.select_file(&expenses_path, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let lines: Vec<usize> = editor
+            .read(cx)
+            .error_lines(cx)
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect();
+        assert_eq!(lines, [7, 11]);
+    });
+
+    // Clicking Revert restores `[5, 9]`.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("revert-source", cx);
+        window.render_frame(cx);
+        let reverted: Vec<usize> = editor
+            .read(cx)
+            .painted_error_lines()
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect();
+        assert_eq!(reverted, [5, 9]);
+    })
+    .unwrap();
+
+    // Fix both errors in `2025/expenses.bean` and save -> ledger reloads and
+    // error highlights + hover clear completely.
+    #[cfg(target_os = "macos")]
+    let save_shortcut = "cmd-s";
+    #[cfg(not(target_os = "macos"))]
+    let save_shortcut = "ctrl-s";
+
+    cx.update_window(handle, |_, window, cx| {
+        let state = editor.read(cx).editor_state().clone();
+        state.update(cx, |state, cx| {
+            let fixed = state.value().replace("-4.00 USD", "-5.00 USD").replace(
+                "balance Assets:Cash 0.00 USD",
+                "balance Assets:Cash -11.50 USD",
+            );
+            state.set_value(fixed, window, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.press(save_shortcut, cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle, Duration::from_secs(5), |_, cx| {
+        app.read(cx).session().read(cx).revision() == 2
+    })
+    .await;
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(editor.read(cx).error_lines(cx).is_empty());
+        assert!(editor.read(cx).painted_error_lines().is_empty());
+        window.pointer_move(line5_center, None, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("source-editor-error-hover").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_source_editor_error_line_edits_enter_col0_vs_eol_delete_undo_and_same_line_errors(
+    cx: &mut TestAppContext,
+) {
+    let ledger = MultiFileLedger::new("error-line-edit-edge-cases");
+    // Line 1 of `2025/expenses.bean` is `2025-01-05 pad Assets:Missing1 Assets:Missing2`,
+    // which triggers TWO `ErrorLevel::Error` diagnostics on line 1 (both unknown accounts).
+    fs::write(
+        &ledger.expenses_path,
+        "2025-01-05 pad Assets:Missing1 Assets:Missing2\n",
+    )
+    .unwrap();
+
+    let (handle, app) = open_editor(&ledger, cx);
+    let editor = cx.read(|cx| app.read(cx).editor().expect("editor page is open"));
+    let expenses_path = ledger.expenses_str();
+
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |ed, cx| ed.select_file(&expenses_path, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    for _ in 0..2 {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    // Multiple errors on line 1 merge into a single highlighted row (never double-painted),
+    // and hovering line 1 displays both error messages.
+    cx.update_window(handle, |_, window, cx| {
+        let ed = editor.read(cx);
+        let errors = ed.error_lines(cx);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, 1);
+        assert!(
+            errors[0].1.len() >= 2,
+            "expected >= 2 errors on line 1, got {:?}",
+            errors[0].1
+        );
+        let painted = ed.painted_error_lines();
+        assert_eq!(painted.len(), 1);
+        assert_eq!(painted[0].0, 1);
+
+        let hover_pt = point(
+            painted[0].1.origin.x + px(80.),
+            painted[0].1.origin.y + painted[0].1.size.height * 0.5,
+        );
+        window.pointer_move(hover_pt, None, cx);
+        window.render_frame(cx);
+        let hover_label = window
+            .find("source-editor-error-hover")
+            .label()
+            .expect("hover label")
+            .to_string();
+        for msg in &errors[0].1 {
+            assert!(
+                hover_label.contains(msg.as_ref()),
+                "hover label {hover_label:?} missing {msg:?}"
+            );
+        }
+    })
+    .unwrap();
+
+    #[cfg(target_os = "macos")]
+    let undo_shortcut = "cmd-z";
+    #[cfg(not(target_os = "macos"))]
+    let undo_shortcut = "ctrl-z";
+
+    // 1. Pressing Enter at the END of line 1 (`column > 0`) keeps the error on line 1.
+    cx.update_window(handle, |_, window, cx| {
+        let state = editor.read(cx).editor_state().clone();
+        state.update(cx, |state, cx| {
+            let line1_end = state.text().line_end_offset(0);
+            state.set_selected_range(line1_end..line1_end, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert_eq!(editor.read(cx).error_lines(cx)[0].0, 1);
+
+        // Undo back to clean.
+        window.press(undo_shortcut, cx);
+        window.render_frame(cx);
+        assert!(!editor.read(cx).is_changed(cx));
+        assert_eq!(editor.read(cx).error_lines(cx)[0].0, 1);
+
+        // 2. Pressing Enter at COLUMN 0 of line 1 shifts the error down to line 2,
+        // and Backspace pulls it back to line 1.
+        state.update(cx, |state, cx| {
+            state.set_selected_range(0..0, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert_eq!(editor.read(cx).error_lines(cx)[0].0, 2);
+
+        window.press("backspace", cx);
+        window.render_frame(cx);
+        assert_eq!(editor.read(cx).error_lines(cx)[0].0, 1);
+
+        // 3. Selecting all and deleting line 1 drops the highlight; Undo back to
+        // original restores it.
+        state.update(cx, |state, cx| {
+            let len = state.text().len();
+            state.set_selected_range(0..len, cx);
+            state.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.press("backspace", cx);
+        window.render_frame(cx);
+        assert!(editor.read(cx).error_lines(cx).is_empty());
+        assert!(editor.read(cx).painted_error_lines().is_empty());
+
+        window.press(undo_shortcut, cx);
+        window.render_frame(cx);
+        assert!(!editor.read(cx).is_changed(cx));
+        assert_eq!(editor.read(cx).error_lines(cx).len(), 1);
+        assert_eq!(editor.read(cx).error_lines(cx)[0].0, 1);
+    })
+    .unwrap();
+}

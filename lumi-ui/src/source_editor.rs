@@ -1,11 +1,13 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use gpui_kit::assets::IconName as AssetIconName;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
-    Editor, EditorState, Enter, Escape, Input, InputEvent, InputState, Position, RopeExt as _,
-    Search,
+    Editor, EditorState, Enter, Escape, Input, InputEdit, InputEvent, InputState, Position,
+    RopeExt as _, Search,
 };
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::spinner::Spinner;
@@ -15,17 +17,21 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window,
-    actions, div, point, px,
+    AnyElement, App, AppContext as _, AvailableSpace, Bounds, ContentMask, Context, Element,
+    ElementId, Entity, Focusable as _, GlobalElementId, InspectorElementId,
+    InteractiveElement as _, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent,
+    ParentElement as _, Pixels, Point, Render, ScrollEvent, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _,
+    WeakEntity, Window, actions, canvas, deferred, div, fill, point, px, size,
 };
+use lumi::ErrorLevel;
 
 use crate::align::PostingAligner;
 use crate::completion::BeancountCompletionProvider;
 use crate::errors_report::common_dir;
 use crate::input_guard::EditDragGuard;
 use crate::session::LedgerSession;
-use crate::style::table_card;
+use crate::style::{editor_bg, editor_error_line_bg, table_card};
 use crate::{completion, highlight};
 
 actions!(lumi_ui, [SaveSource]);
@@ -63,9 +69,34 @@ impl SelectItem for SourceFileItem {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ErrorLineEntry {
+    /// 0-based line index in the buffer (`error.src.start.line - 1`).
+    row: usize,
+    /// Error messages reported on this line, in column order.
+    messages: Vec<SharedString>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HoveredError {
+    row: usize,
+    anchor_x: Pixels,
+}
+
+#[derive(Default)]
+struct ActiveFileErrors {
+    original: Option<SharedString>,
+    ledger_entries: Vec<ErrorLineEntry>,
+    entries: Vec<ErrorLineEntry>,
+}
+
+#[cfg(test)]
+type PaintedErrorLines = Rc<RefCell<Vec<(usize, Bounds<Pixels>)>>>;
+
 struct Draft {
     original: SharedString,
     text: SharedString,
+    error_lines: Vec<ErrorLineEntry>,
 }
 
 /// Built-in multi-file Beancount source editor, modeled on Fava's Editor view.
@@ -91,6 +122,15 @@ pub struct SourceEditor {
     original: Option<SharedString>,
     /// Unsaved buffers for non-active files when switching files in the dropdown.
     drafts: HashMap<SharedString, Draft>,
+    /// `ErrorLevel::Error` diagnostics from the last loaded ledger, grouped by
+    /// source file path and starting line.
+    ledger_errors: HashMap<SharedString, Vec<ErrorLineEntry>>,
+    /// Active error lines for `selected_file`, shifted across unsaved buffer edits.
+    active_errors: Rc<RefCell<ActiveFileErrors>>,
+    /// Error line currently under the mouse pointer, if any.
+    hovered_error: Option<HoveredError>,
+    #[cfg(test)]
+    painted_error_lines: PaintedErrorLines,
     /// 1-based line number to place the cursor on once `selected_file` loads.
     pending_line: Option<usize>,
     loading_file: bool,
@@ -112,6 +152,8 @@ impl SourceEditor {
     ) -> Self {
         let provider = BeancountCompletionProvider::new();
         let provider_for_state = provider.clone();
+        let active_errors = Rc::new(RefCell::new(ActiveFileErrors::default()));
+        let active_errors_for_edits = active_errors.clone();
         // Pass `.searchable(false)` (`EditorState::new` enables `searchable` by
         // default) so `gpui-component`'s built-in `SearchPanel` overlay—which
         // re-selects the query when `anchor_offset` transitions from `None` to
@@ -126,7 +168,26 @@ impl SourceEditor {
             state.set_line_number(true, window, cx);
             state.set_folding(false, window, cx);
             state.set_scroll_beyond_last_line(Some(0), window, cx);
-            state.set_highlighter_factory(highlight::highlighter_factory(), cx);
+            state.set_highlighter_factory(
+                highlight::highlighter_factory_with_edit_listener(Rc::new(move |edit, text| {
+                    let mut active = active_errors_for_edits.borrow_mut();
+                    apply_edit_to_error_lines(&mut active.entries, edit);
+                    if active
+                        .original
+                        .as_ref()
+                        .is_some_and(|orig| orig.len() == text.len() && text == orig.as_ref())
+                    {
+                        let lines_len = text.lines_len();
+                        active.entries = active
+                            .ledger_entries
+                            .iter()
+                            .filter(|entry| entry.row < lines_len)
+                            .cloned()
+                            .collect();
+                    }
+                })),
+                cx,
+            );
             let lsp = state.lsp_mut();
             lsp.completion_provider = Some(provider_for_state);
             lsp.completion_menu.max_width = px(480.);
@@ -144,12 +205,22 @@ impl SourceEditor {
                 this.on_session_changed(window, cx)
             }),
             cx.subscribe_in(&file_select, window, Self::on_select_event),
+            cx.subscribe(&text, |this, _, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.hovered_error = None;
+                    this.drag_guard.cancel();
+                    if !this.is_changed(cx)
+                        && let Some(path) = this.selected_file.clone()
+                    {
+                        this.reset_active_errors_from_ledger(&path, cx);
+                    }
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&text, window, |this, _, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
-                    this.drag_guard.cancel();
                     this.aligner
                         .on_change(&this.text, &this.provider, window, cx);
-                    cx.notify();
                 }
             }),
             cx.subscribe(&search_input, |this, _, event, cx| {
@@ -175,6 +246,11 @@ impl SourceEditor {
             selected_file: None,
             original: None,
             drafts: HashMap::new(),
+            ledger_errors: HashMap::new(),
+            active_errors,
+            hovered_error: None,
+            #[cfg(test)]
+            painted_error_lines: Rc::new(RefCell::new(Vec::new())),
             pending_line: None,
             loading_file: false,
             saving: false,
@@ -240,6 +316,19 @@ impl SourceEditor {
         self.search_input.read(cx).value()
     }
 
+    /// 1-based line numbers and error messages currently highlighted in the
+    /// active source file.
+    pub fn error_lines(&self, cx: &App) -> Vec<(usize, Vec<SharedString>)> {
+        let lines_len = self.text.read(cx).text().lines_len();
+        self.active_errors
+            .borrow()
+            .entries
+            .iter()
+            .filter(|entry| entry.row < lines_len)
+            .map(|entry| (entry.row + 1, entry.messages.clone()))
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn editor_state(&self) -> &Entity<EditorState> {
         &self.text
@@ -248,6 +337,11 @@ impl SourceEditor {
     #[cfg(test)]
     pub(crate) fn search_input_state(&self) -> &Entity<InputState> {
         &self.search_input
+    }
+
+    #[cfg(test)]
+    pub(crate) fn painted_error_lines(&self) -> Vec<(usize, Bounds<Pixels>)> {
+        self.painted_error_lines.borrow().clone()
     }
 
     /// Opens the in-file search bar, focuses its input, and selects any
@@ -401,6 +495,8 @@ impl SourceEditor {
             return;
         }
 
+        self.hovered_error = None;
+
         // Preserve any unsaved edits on the file we are leaving.
         if let (Some(prev_path), Some(orig)) = (&self.selected_file, &self.original) {
             let current = self.text.read(cx).value();
@@ -410,6 +506,7 @@ impl SourceEditor {
                     Draft {
                         original: orig.clone(),
                         text: current,
+                        error_lines: self.active_errors.borrow().entries.clone(),
                     },
                 );
             } else {
@@ -424,9 +521,15 @@ impl SourceEditor {
             self.file_generation += 1;
             self._file_task = None;
             self.loading_file = false;
-            self.original = Some(draft.original);
+            self.original = Some(draft.original.clone());
             self.text
                 .update(cx, |state, cx| state.set_value(draft.text, window, cx));
+            {
+                let mut active = self.active_errors.borrow_mut();
+                active.original = Some(draft.original);
+                active.ledger_entries = self.ledger_errors.get(&path).cloned().unwrap_or_default();
+                active.entries = draft.error_lines;
+            }
             if self.search_open {
                 self.sync_search_query(false, cx);
             }
@@ -440,7 +543,84 @@ impl SourceEditor {
         }
 
         self.original = None;
+        *self.active_errors.borrow_mut() = ActiveFileErrors::default();
         self.load_file_text(path, focus_editor, window, cx);
+    }
+
+    fn reset_active_errors_from_ledger(&self, path: &SharedString, cx: &App) {
+        let lines_len = self.text.read(cx).text().lines_len();
+        let ledger_entries = self.ledger_errors.get(path).cloned().unwrap_or_default();
+        let entries = ledger_entries
+            .iter()
+            .filter(|entry| entry.row < lines_len)
+            .cloned()
+            .collect();
+        let mut active = self.active_errors.borrow_mut();
+        active.original = self.original.clone();
+        active.ledger_entries = ledger_entries;
+        active.entries = entries;
+    }
+
+    fn clear_hovered_error(&mut self, cx: &mut Context<Self>) {
+        if self.hovered_error.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn on_editor_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.original.is_none() || self.saving || event.pressed_button.is_some() {
+            self.clear_hovered_error(cx);
+            return;
+        }
+        let matched_row = {
+            let state = self.text.read(cx);
+            editor_viewport_geometry(state).and_then(
+                |(input_bounds, line_height, scroll_offset)| {
+                    if event.position.x < input_bounds.left()
+                        || event.position.x >= input_bounds.right()
+                        || event.position.y < input_bounds.top()
+                        || event.position.y >= input_bounds.bottom()
+                    {
+                        return None;
+                    }
+                    let origin_y = input_bounds.origin.y + scroll_offset.y;
+                    let rel_y = event.position.y - origin_y;
+                    if rel_y < px(0.) {
+                        return None;
+                    }
+                    let row = (rel_y / line_height).floor() as usize;
+                    (row < state.text().lines_len()
+                        && self
+                            .active_errors
+                            .borrow()
+                            .entries
+                            .binary_search_by_key(&row, |entry| entry.row)
+                            .is_ok())
+                    .then_some(row)
+                },
+            )
+        };
+        match matched_row {
+            Some(row) => {
+                if self
+                    .hovered_error
+                    .as_ref()
+                    .is_none_or(|hovered| hovered.row != row)
+                {
+                    self.hovered_error = Some(HoveredError {
+                        row,
+                        anchor_x: event.position.x,
+                    });
+                    cx.notify();
+                }
+            }
+            None => self.clear_hovered_error(cx),
+        }
     }
 
     fn on_session_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -459,14 +639,19 @@ impl SourceEditor {
         let generation = self.meta_generation;
         let files_task = source.files(cx);
         let completions_task = source.completions(cx);
+        let errors_task = source.errors(cx);
         self._meta_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let (files_res, completions_res) = (files_task.await, completions_task.await);
+            let (files_res, completions_res, errors_res) =
+                (files_task.await, completions_task.await, errors_task.await);
             this.update_in(cx, |this, window, cx| {
                 if this.meta_generation != generation {
                     return;
                 }
                 if let Ok(completions) = completions_res {
                     this.provider.set_completions(completions);
+                }
+                if let Ok(errors) = errors_res {
+                    this.ledger_errors = group_errors_by_file(errors);
                 }
                 match files_res {
                     Ok(raw_files) => {
@@ -496,12 +681,18 @@ impl SourceEditor {
                             if !same_file || !this.is_changed(cx) {
                                 if !same_file {
                                     this.original = None;
+                                    *this.active_errors.borrow_mut() = ActiveFileErrors::default();
+                                } else if this.original.is_some() {
+                                    this.reset_active_errors_from_ledger(&target, cx);
                                 }
+                                this.hovered_error = None;
                                 this.load_file_text(target, false, window, cx);
                             }
                         } else {
                             this.selected_file = None;
                             this.original = None;
+                            *this.active_errors.borrow_mut() = ActiveFileErrors::default();
+                            this.hovered_error = None;
                             this.pending_line = None;
                         }
                     }
@@ -544,6 +735,8 @@ impl SourceEditor {
                                 this.sync_search_query(false, cx);
                             }
                         }
+                        this.hovered_error = None;
+                        this.reset_active_errors_from_ledger(&path, cx);
                         if let Some(line) = this.pending_line.take() {
                             move_cursor_to_line(&this.text, line, window, cx);
                         } else if focus_editor {
@@ -571,10 +764,14 @@ impl SourceEditor {
             self.drafts.remove(path);
         }
         self.error = None;
+        self.hovered_error = None;
         self.text.update(cx, |state, cx| {
             state.set_value(original, window, cx);
             state.focus(window, cx);
         });
+        if let Some(path) = self.selected_file.clone() {
+            self.reset_active_errors_from_ledger(&path, cx);
+        }
         if self.search_open {
             self.sync_search_query(false, cx);
         }
@@ -605,7 +802,8 @@ impl SourceEditor {
                     Ok(()) => {
                         this.drafts.remove(&path);
                         if this.selected_file.as_ref() == Some(&path) {
-                            this.original = Some(new_text);
+                            this.original = Some(new_text.clone());
+                            this.active_errors.borrow_mut().original = Some(new_text);
                         }
                         this.session.update(cx, |session, cx| session.reload(cx));
                     }
@@ -875,22 +1073,81 @@ impl Render for SourceEditor {
                                     ),
                             )
                         })
-                        .child(
+                        .child({
+                            let editor_bg = editor_bg(cx);
+                            let error_line_bg = editor_error_line_bg(cx);
+                            let text_for_backdrop = self.text.clone();
+                            let errors_for_backdrop = self.active_errors.clone();
+                            #[cfg(test)]
+                            let painted_for_backdrop = self.painted_error_lines.clone();
+                            let hovered_popover = self
+                                .hovered_error
+                                .filter(|_| loaded && !saving)
+                                .and_then(|hovered| {
+                                    let lines_len = self.text.read(cx).text().lines_len();
+                                    if hovered.row >= lines_len {
+                                        return None;
+                                    }
+                                    let active = self.active_errors.borrow();
+                                    let ix = active
+                                        .entries
+                                        .binary_search_by_key(&hovered.row, |e| e.row)
+                                        .ok()?;
+                                    Some(ErrorHoverPopover {
+                                        editor: self.text.clone(),
+                                        source_editor: cx.entity().downgrade(),
+                                        row: hovered.row,
+                                        anchor_x: hovered.anchor_x,
+                                        messages: active.entries[ix].messages.clone(),
+                                    })
+                                });
+
                             div()
+                                .id("source-editor-body")
                                 .relative()
                                 .flex_1()
                                 .min_h_0()
+                                .bg(editor_bg)
+                                .on_mouse_move(cx.listener(Self::on_editor_mouse_move))
+                                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                    if !*hovered {
+                                        this.clear_hovered_error(cx);
+                                    }
+                                }))
                                 .capture_action(self.drag_guard.paste_capture())
                                 .capture_action(self.aligner.undo_capture())
                                 .capture_action(self.aligner.redo_capture())
                                 .child(self.drag_guard.element())
+                                .when(loaded, |this| {
+                                    this.child(
+                                        canvas(
+                                            |_, _, _| (),
+                                            move |backdrop_bounds, _, window, cx| {
+                                                paint_error_line_backgrounds(
+                                                    backdrop_bounds,
+                                                    &text_for_backdrop,
+                                                    &errors_for_backdrop,
+                                                    error_line_bg,
+                                                    #[cfg(test)]
+                                                    &painted_for_backdrop,
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )
+                                        .absolute()
+                                        .inset_0(),
+                                    )
+                                })
                                 .child(
                                     Editor::new(&self.text)
                                         .size_full()
+                                        .appearance(false)
                                         .bordered(false)
                                         .aria_label("Source text")
                                         .disabled(!loaded || saving),
                                 )
+                                .when_some(hovered_popover, |this, popover| this.child(popover))
                                 .when(!loaded && self.error.is_none(), |this| {
                                     this.child(
                                         div()
@@ -901,10 +1158,354 @@ impl Render for SourceEditor {
                                             .justify_center()
                                             .child(Spinner::new()),
                                     )
-                                }),
-                        ),
+                                })
+                        }),
                 ),
             )
+    }
+}
+
+fn group_errors_by_file(
+    mut errors: Vec<lumi::Error>,
+) -> HashMap<SharedString, Vec<ErrorLineEntry>> {
+    errors.retain(|error| error.level == ErrorLevel::Error && error.src.start.line >= 1);
+    errors.sort_by(|a, b| {
+        a.src
+            .file
+            .cmp(&b.src.file)
+            .then_with(|| a.src.start.line.cmp(&b.src.start.line))
+            .then_with(|| a.src.start.col.cmp(&b.src.start.col))
+    });
+    let mut by_file: HashMap<SharedString, Vec<ErrorLineEntry>> = HashMap::new();
+    for error in errors {
+        let row = error.src.start.line - 1;
+        let msg: SharedString = error.msg.into();
+        let entries = by_file.entry(error.src.file.as_str().into()).or_default();
+        if let Some(last) = entries.last_mut().filter(|last| last.row == row) {
+            if !last.messages.contains(&msg) {
+                last.messages.push(msg);
+            }
+        } else {
+            entries.push(ErrorLineEntry {
+                row,
+                messages: vec![msg],
+            });
+        }
+    }
+    by_file
+}
+
+fn apply_edit_to_error_lines(entries: &mut Vec<ErrorLineEntry>, edit: &InputEdit) {
+    if edit.start_byte == edit.old_end_byte && edit.start_byte == edit.new_end_byte {
+        return;
+    }
+    let mut updated: Vec<ErrorLineEntry> = Vec::with_capacity(entries.len());
+    for entry in entries.drain(..) {
+        let Some(next_row) = shift_error_row(entry.row, edit) else {
+            continue;
+        };
+        if let Some(prev) = updated.last_mut().filter(|prev| prev.row == next_row) {
+            for msg in entry.messages {
+                if !prev.messages.contains(&msg) {
+                    prev.messages.push(msg);
+                }
+            }
+        } else {
+            updated.push(ErrorLineEntry {
+                row: next_row,
+                messages: entry.messages,
+            });
+        }
+    }
+    *entries = updated;
+}
+
+fn shift_error_row(row: usize, edit: &InputEdit) -> Option<usize> {
+    let old_start = edit.start_position.row;
+    let old_end = edit.old_end_position.row;
+    let new_end = edit.new_end_position.row;
+    if row < old_start {
+        Some(row)
+    } else if row > old_end {
+        Some((row as isize + (new_end as isize - old_end as isize)) as usize)
+    } else if old_start == old_end {
+        if new_end > old_end && edit.start_position.column == 0 {
+            Some(row + (new_end - old_end))
+        } else {
+            Some(row)
+        }
+    } else if row == old_start && edit.start_position.column > 0 {
+        Some(old_start)
+    } else if row == old_end && edit.old_end_position.column == 0 {
+        Some(new_end)
+    } else {
+        None
+    }
+}
+
+fn editor_viewport_geometry(
+    state: &EditorState,
+) -> Option<(Bounds<Pixels>, Pixels, Point<Pixels>)> {
+    if let Some(geom) = state.prepaint_caret_geometry() {
+        let input_bounds = geom.input_bounds();
+        let line_height = geom.line_height();
+        if input_bounds.size.height > px(0.) && line_height > px(0.) {
+            return Some((input_bounds, line_height, geom.scroll_offset()));
+        }
+    }
+    let line_height = state.line_height().filter(|&h| h > px(0.))?;
+    let input_bounds = state.input_bounds();
+    if input_bounds.size.height <= px(0.) {
+        return None;
+    }
+    let text_bounds = state.text_bounds()?;
+    let scroll_offset = point(
+        text_bounds.origin.x - input_bounds.origin.x,
+        text_bounds.origin.y - input_bounds.origin.y,
+    );
+    Some((input_bounds, line_height, scroll_offset))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_error_line_backgrounds(
+    backdrop_bounds: Bounds<Pixels>,
+    editor: &Entity<EditorState>,
+    active_errors: &Rc<RefCell<ActiveFileErrors>>,
+    error_bg: gpui_kit::Hsla,
+    #[cfg(test)] painted_out: &PaintedErrorLines,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    #[cfg(test)]
+    painted_out.borrow_mut().clear();
+
+    let active = active_errors.borrow();
+    let entries = &active.entries;
+    if entries.is_empty() {
+        return;
+    }
+    let state = editor.read(cx);
+    let Some((input_bounds, line_height, scroll_offset)) = editor_viewport_geometry(state) else {
+        return;
+    };
+    let lines_len = state.text().lines_len();
+    if lines_len == 0 {
+        return;
+    }
+
+    let clip_top = input_bounds.top().max(backdrop_bounds.top());
+    let clip_bottom = input_bounds.bottom().min(backdrop_bounds.bottom());
+    if clip_bottom <= clip_top || backdrop_bounds.size.width <= px(0.) {
+        return;
+    }
+    let clip_bounds = Bounds::new(
+        point(backdrop_bounds.left(), clip_top),
+        size(backdrop_bounds.size.width, clip_bottom - clip_top),
+    );
+    let origin_y = input_bounds.origin.y + scroll_offset.y;
+    let first_visible_row = (((clip_top - origin_y) / line_height).floor().max(0.)) as usize;
+    let start_ix = entries.partition_point(|entry| entry.row < first_visible_row);
+
+    window.with_content_mask(
+        Some(ContentMask {
+            bounds: clip_bounds,
+        }),
+        |window| {
+            for entry in &entries[start_ix..] {
+                if entry.row >= lines_len {
+                    break;
+                }
+                let row_top = origin_y + line_height * entry.row as f32;
+                if row_top >= clip_bottom {
+                    break;
+                }
+                let row_bottom = row_top + line_height;
+                if row_bottom <= clip_top {
+                    continue;
+                }
+                let rect = Bounds::new(
+                    point(backdrop_bounds.left(), row_top),
+                    size(backdrop_bounds.size.width, line_height),
+                );
+                window.paint_quad(fill(rect, error_bg));
+                #[cfg(test)]
+                painted_out.borrow_mut().push((entry.row + 1, rect));
+            }
+        },
+    );
+}
+
+struct ErrorHoverPopover {
+    editor: Entity<EditorState>,
+    source_editor: WeakEntity<SourceEditor>,
+    row: usize,
+    anchor_x: Pixels,
+    messages: Vec<SharedString>,
+}
+
+struct ErrorHoverLayoutState {
+    size: gpui_kit::Size<Pixels>,
+    element: AnyElement,
+}
+
+impl IntoElement for ErrorHoverPopover {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for ErrorHoverPopover {
+    type PrepaintState = Option<Point<Pixels>>;
+    type RequestLayoutState = ErrorHoverLayoutState;
+
+    fn id(&self) -> Option<ElementId> {
+        Some("source-editor-error-hover-anchor".into())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        const EDGE_MARGIN: Pixels = px(8.);
+        let max_width = (window.bounds().size.width - EDGE_MARGIN * 2.)
+            .min(px(560.))
+            .max(px(200.));
+        let theme = cx.theme();
+        let hover_bg =
+            theme
+                .popover
+                .blend(theme.red.opacity(if theme.is_dark() { 0.16 } else { 0.08 }));
+        let hover_border = theme.red.opacity(if theme.is_dark() { 0.6 } else { 0.45 });
+        let fg = theme.popover_foreground;
+        let red = theme.red;
+        let combined_label: SharedString = self
+            .messages
+            .iter()
+            .map(SharedString::as_ref)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into();
+
+        let rows = self.messages.iter().map(|msg| {
+            h_flex()
+                .items_start()
+                .gap_1p5()
+                .child(
+                    Icon::new(AssetIconName::TriangleAlert)
+                        .xsmall()
+                        .mt(px(2.))
+                        .flex_shrink_0()
+                        .text_color(red),
+                )
+                .child(div().flex_1().min_w_0().text_color(fg).child(msg.clone()))
+        });
+
+        let mut popover = deferred(
+            div()
+                .id("source-editor-error-hover")
+                .test_support()
+                .aria_label(combined_label)
+                .flex_none()
+                .v_flex()
+                .gap_1()
+                .px_2p5()
+                .py_1p5()
+                .text_xs()
+                .rounded(theme.radius)
+                .bg(hover_bg)
+                .border_1()
+                .border_color(hover_border)
+                .shadow_md()
+                .max_w(max_width)
+                .children(rows),
+        )
+        .into_any_element();
+
+        let popover_size = popover.layout_as_root(AvailableSpace::min_size(), window, cx);
+        let layout_id = div().into_any_element().request_layout(window, cx);
+        (
+            layout_id,
+            ErrorHoverLayoutState {
+                size: popover_size,
+                element: popover,
+            },
+        )
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        const EDGE_MARGIN: Pixels = px(8.);
+        const ROW_GAP: Pixels = px(4.);
+
+        let state = self.editor.read(cx);
+        let (input_bounds, line_height, scroll_offset) = editor_viewport_geometry(state)?;
+        if self.row >= state.text().lines_len() {
+            return None;
+        }
+        let origin_y = input_bounds.origin.y + scroll_offset.y;
+        let line_top = origin_y + line_height * self.row as f32;
+        let line_bottom = line_top + line_height;
+        if line_bottom <= input_bounds.top() || line_top >= input_bounds.bottom() {
+            return None;
+        }
+
+        let popover_size = request_layout.size;
+        let y = if line_top - EDGE_MARGIN >= popover_size.height + ROW_GAP {
+            line_top - popover_size.height - ROW_GAP
+        } else {
+            line_bottom + ROW_GAP
+        };
+        let min_x = (input_bounds.left() + px(36.)).max(EDGE_MARGIN);
+        let max_x =
+            (window.bounds().size.width - popover_size.width - EDGE_MARGIN).max(EDGE_MARGIN);
+        let x = (self.anchor_x - px(12.)).max(min_x).min(max_x);
+        let origin = point(x, y);
+
+        window.with_absolute_element_offset(origin, |window| {
+            request_layout.element.prepaint(window, cx);
+        });
+        Some(origin)
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if prepaint.is_none() {
+            return;
+        }
+        request_layout.element.paint(window, cx);
+
+        let source_editor = self.source_editor.clone();
+        window.on_mouse_event(move |_: &MouseDownEvent, _, _, cx| {
+            let _ = source_editor.update(cx, |this, cx| this.clear_hovered_error(cx));
+        });
+        let source_editor = self.source_editor.clone();
+        window.on_mouse_event(move |_: &ScrollEvent, _, _, cx| {
+            let _ = source_editor.update(cx, |this, cx| this.clear_hovered_error(cx));
+        });
     }
 }
 

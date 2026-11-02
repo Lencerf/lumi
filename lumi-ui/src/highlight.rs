@@ -34,10 +34,29 @@ pub(crate) fn highlighter_factory() -> InputHighlighterFactory {
     })
 }
 
+pub(crate) type EditListener = Rc<dyn Fn(&InputEdit, &Rope)>;
+
+/// Builds an [`InputHighlighterFactory`] that highlights [`LANGUAGE`] buffers
+/// and notifies `on_edit` for each incremental [`InputEdit`] applied to the
+/// buffer.
+pub(crate) fn highlighter_factory_with_edit_listener(
+    on_edit: EditListener,
+) -> InputHighlighterFactory {
+    Rc::new(move |language| {
+        language.eq_ignore_ascii_case(LANGUAGE).then(|| {
+            Box::new(BeancountHighlighter {
+                spans: Vec::new(),
+                on_edit: Some(on_edit.clone()),
+            }) as Box<dyn InputHighlighter>
+        })
+    })
+}
+
 /// Line-oriented Beancount syntax highlighter backed by [`lumi::parse::tokenize`].
 #[derive(Default)]
 pub(crate) struct BeancountHighlighter {
     spans: Vec<(Range<usize>, &'static str)>,
+    on_edit: Option<EditListener>,
 }
 
 impl BeancountHighlighter {
@@ -107,12 +126,15 @@ impl InputHighlighter for BeancountHighlighter {
 
     fn update(
         &mut self,
-        _edit: Option<InputEdit>,
+        edit: Option<InputEdit>,
         text: &Rope,
         _folding: bool,
         _window: &mut Window,
         _cx: &mut Context<EditorState>,
     ) {
+        if let (Some(edit), Some(on_edit)) = (edit.as_ref(), self.on_edit.as_ref()) {
+            on_edit(edit, text);
+        }
         self.spans = Self::lex_rope(text);
     }
 
@@ -123,6 +145,11 @@ impl InputHighlighter for BeancountHighlighter {
         _window: &mut Window,
         _cx: &mut Context<EditorState>,
     ) {
+        if let Some(on_edit) = self.on_edit.as_ref() {
+            for (edit, text) in edits {
+                on_edit(edit, text);
+            }
+        }
         if let Some((_, text)) = edits.last() {
             self.spans = Self::lex_rope(text);
         }

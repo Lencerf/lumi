@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::table::Column;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, Size, StyledExt as _, Theme};
@@ -9,7 +11,8 @@ use gpui_kit::{
 #[cfg(test)]
 use gpui_kit::{SharedString, TestSupportExt as _};
 
-/// Customizes the global GPUI Kit theme tokens for lumi's report tables.
+/// Customizes the global GPUI Kit theme tokens for lumi's report tables and
+/// editors.
 pub(crate) fn configure_theme(cx: &mut App) {
     Theme::update(cx, |theme| {
         // Alternating row backgrounds already separate rows, so omit the thin
@@ -26,7 +29,34 @@ pub(crate) fn configure_theme(cx: &mut App) {
         theme.table_active = theme
             .blue
             .opacity(if theme.is_dark() { 0.22 } else { 0.14 });
+        // Use a translucent active-line tint so non-error lines match the
+        // default neutral highlight while light-red error backgrounds remain
+        // visible when the cursor sits on an error line.
+        let active_line = theme
+            .foreground
+            .opacity(if theme.is_dark() { 0.06 } else { 0.04 });
+        Arc::make_mut(&mut theme.highlight_theme)
+            .style
+            .editor_active_line = Some(active_line);
     });
+}
+
+/// Background surface of the code editor, matching GPUI Kit's internal
+/// `Theme::editor_background`.
+pub(crate) fn editor_bg(cx: &App) -> Hsla {
+    let theme = cx.theme();
+    theme
+        .highlight_theme
+        .style
+        .editor_background
+        .unwrap_or(theme.background)
+}
+
+/// Soft red row highlight painted behind lines with `ErrorLevel::Error` in the
+/// source editor.
+pub(crate) fn editor_error_line_bg(cx: &App) -> Hsla {
+    let theme = cx.theme();
+    theme.red.opacity(if theme.is_dark() { 0.18 } else { 0.12 })
 }
 
 /// A sharp-cornered paper-card container for report tables.
