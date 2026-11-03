@@ -7,7 +7,7 @@ use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, Pixels, ScrollDelta, Size,
     TestAppContext, WindowBounds, WindowOptions, point, px, size,
 };
-use lumi::web::{TrieTable, TrieTableRow};
+use lumi::web::{TimeInterval, TrieTable, TrieTableRow};
 
 use crate::LumiApp;
 use crate::navigation::Page;
@@ -299,7 +299,7 @@ fn test_sibling_tables_have_distinct_paths(cx: &mut TestAppContext) {
 /// hierarchy and too narrow for the two columns of the balance sheet.
 #[gpui_kit::test]
 fn test_report_scrolls_both_ways(cx: &mut TestAppContext) {
-    let (handle, _app) = open_app(Page::BalanceSheet, size(px(600.), px(240.)), cx);
+    let (handle, _app) = open_app(Page::BalanceSheet, size(px(600.), px(460.)), cx);
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -634,4 +634,127 @@ fn test_income_statement_wide_multi_currency_balances_never_shrink_or_overlap(
     .unwrap();
 
     let _ = std::fs::remove_file(&temp_path);
+}
+
+#[gpui_kit::test]
+fn test_balance_sheet_chart_renders_and_filters_currencies(cx: &mut TestAppContext) {
+    let (handle, app) = open_app(Page::BalanceSheet, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+
+        let chart_bounds = window
+            .find((ElementId::from("chart-card"), "balance-sheet"))
+            .bounds();
+        let assets_bounds = window
+            .find((ElementId::from("account"), "Assets"))
+            .bounds();
+        assert!(
+            chart_bounds.origin.y + chart_bounds.size.height <= assets_bounds.origin.y,
+            "balance sheet chart card sits above the Assets table: chart={chart_bounds:?}, assets={assets_bounds:?}"
+        );
+        assert!(window.try_find("balance-sheet-plot-area").is_some());
+
+        let eur_checkbox = (ElementId::from("chart-currency"), "EUR");
+        let usd_checkbox = (ElementId::from("chart-currency"), "USD");
+        assert_eq!(window.find(eur_checkbox.clone()).checked(), Some(true));
+        assert_eq!(window.find(usd_checkbox.clone()).checked(), Some(true));
+
+        let report = app.read(cx).trie_report().expect("balance sheet shown");
+        assert_eq!(report.read(cx).selected_chart_currencies(), ["EUR", "USD"]);
+
+        // Hovering over the plot area renders the crosshair/tooltip cleanly.
+        window.hover("balance-sheet-plot-area", cx);
+        window.render_frame(cx);
+
+        // Deselect EUR: USD remains active and the plot stays rendered.
+        window.click(eur_checkbox.clone(), cx);
+        window.render_frame(cx);
+        assert_eq!(window.find(eur_checkbox).checked(), Some(false));
+        assert_eq!(window.find(usd_checkbox.clone()).checked(), Some(true));
+        assert_eq!(report.read(cx).selected_chart_currencies(), ["USD"]);
+        assert!(window.try_find("balance-sheet-plot-area").is_some());
+
+        // Deselect USD too: plot area is replaced by the empty-selection prompt.
+        window.click(usd_checkbox.clone(), cx);
+        window.render_frame(cx);
+        assert_eq!(window.find(usd_checkbox.clone()).checked(), Some(false));
+        assert!(report.read(cx).selected_chart_currencies().is_empty());
+        assert!(window.try_find("balance-sheet-plot-area").is_none());
+
+        // Re-selecting USD restores the line plot.
+        window.click(usd_checkbox, cx);
+        window.render_frame(cx);
+        assert_eq!(report.read(cx).selected_chart_currencies(), ["USD"]);
+        assert!(window.try_find("balance-sheet-plot-area").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_income_statement_bar_chart_switches_intervals_and_filters_currencies(
+    cx: &mut TestAppContext,
+) {
+    let (handle, app) = open_app(Page::Income, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+
+    let initial_table_gen = cx.read(|cx| {
+        let report = app.read(cx).trie_report().expect("income report shown");
+        assert_eq!(report.read(cx).income_interval(), TimeInterval::Monthly);
+        assert_eq!(report.read(cx).selected_chart_currencies(), ["EUR", "USD"]);
+        report.read(cx).generation
+    });
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let chart_bounds = window
+            .find((ElementId::from("chart-card"), "income"))
+            .bounds();
+        let income_bounds = window
+            .find((ElementId::from("account"), "Income"))
+            .bounds();
+        assert!(
+            chart_bounds.origin.y + chart_bounds.size.height <= income_bounds.origin.y,
+            "income bar chart sits above the Income table: chart={chart_bounds:?}, income={income_bounds:?}"
+        );
+        assert!(window.try_find("income-expense-plot-area").is_some());
+
+        // Deselect EUR in the checklist and hover the bar chart.
+        window.click((ElementId::from("chart-currency"), "EUR"), cx);
+        window.render_frame(cx);
+        window.hover("income-expense-plot-area", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+
+    // Switch across Daily -> Quarterly -> Yearly; verify currency selection
+    // persists and hierarchy tables are not needlessly re-queried.
+    for (short_id, expected) in [
+        ("daily", TimeInterval::Daily),
+        ("quarterly", TimeInterval::Quarterly),
+        ("yearly", TimeInterval::Yearly),
+    ] {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click((ElementId::from("income-interval"), short_id), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let report = app.read(cx).trie_report().expect("income report shown");
+            assert_eq!(report.read(cx).income_interval(), expected);
+            assert_eq!(report.read(cx).selected_chart_currencies(), ["USD"]);
+            assert_eq!(
+                report.read(cx).generation,
+                initial_table_gen,
+                "changing chart interval should not re-query hierarchy tables"
+            );
+            assert!(window.try_find("income-expense-plot-area").is_some());
+            window.hover("income-expense-plot-area", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
 }

@@ -11,8 +11,9 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
     Styled as _, Subscription, Task, TestSupportExt as _, Window, div, px, relative, rems,
 };
-use lumi::web::{TrieOptions, TrieTable};
+use lumi::web::{BalanceSheetSeries, IncomeExpenseSeries, TimeInterval, TrieOptions, TrieTable};
 
+use crate::chart::{CurrencySelection, render_balance_sheet_chart, render_income_expense_chart};
 use crate::navigation::{Page, ReportEvent};
 use crate::number::{GroupedText, shape_text_width};
 use crate::session::LedgerSession;
@@ -38,6 +39,12 @@ pub struct TrieReport {
     /// Counts requests so that a late result for an earlier one is dropped.
     generation: u64,
     _load_task: Option<Task<()>>,
+    chart: ReportChart,
+    chart_currencies: CurrencySelection,
+    income_interval: TimeInterval,
+    chart_requested: Option<ChartLoadKey>,
+    chart_generation: u64,
+    _chart_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -46,6 +53,18 @@ pub struct TrieReport {
 struct LoadKey {
     revision: u64,
     show_closed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ChartLoadKey {
+    revision: u64,
+    interval: TimeInterval,
+}
+
+enum ReportChart {
+    None,
+    BalanceSheet(BalanceSheetSeries),
+    Income(IncomeExpenseSeries),
 }
 
 enum TrieLoad {
@@ -129,6 +148,12 @@ impl TrieReport {
             requested: None,
             generation: 0,
             _load_task: None,
+            chart: ReportChart::None,
+            chart_currencies: CurrencySelection::default(),
+            income_interval: TimeInterval::default(),
+            chart_requested: None,
+            chart_generation: 0,
+            _chart_task: None,
             _subscriptions,
         };
         this.load(cx);
@@ -141,6 +166,23 @@ impl TrieReport {
 
     pub fn is_showing_closed(&self) -> bool {
         self.show_closed
+    }
+
+    pub fn income_interval(&self) -> TimeInterval {
+        self.income_interval
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_chart_currencies(&self) -> Vec<&str> {
+        match &self.chart {
+            ReportChart::None => Vec::new(),
+            ReportChart::BalanceSheet(series) => self
+                .chart_currencies
+                .selected_currencies(&series.currencies),
+            ReportChart::Income(series) => self
+                .chart_currencies
+                .selected_currencies(&series.currencies),
+        }
     }
 
     /// The account names of every row currently shown, in order.
@@ -163,9 +205,29 @@ impl TrieReport {
         }
     }
 
-    /// Queries the tables for the current ledger revision and options, unless
-    /// that exact request has already been made.
+    fn set_income_interval(&mut self, interval: TimeInterval, cx: &mut Context<Self>) {
+        if self.income_interval != interval {
+            self.income_interval = interval;
+            self.load_chart(cx);
+            cx.notify();
+        }
+    }
+
+    fn set_currency_selected(
+        &mut self,
+        currency: SharedString,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chart_currencies.set_selected(currency, selected) {
+            cx.notify();
+        }
+    }
+
+    /// Queries the tables and chart for the current ledger revision and options,
+    /// unless those exact requests have already been made.
     fn load(&mut self, cx: &mut Context<Self>) {
+        self.load_chart(cx);
         let (revision, source) = {
             let session = self.session.read(cx);
             if !session.is_loaded() {
@@ -216,9 +278,103 @@ impl TrieReport {
         cx.notify();
     }
 
+    fn load_chart(&mut self, cx: &mut Context<Self>) {
+        let (revision, source) = {
+            let session = self.session.read(cx);
+            if !session.is_loaded() {
+                return;
+            }
+            (session.revision(), session.source().clone())
+        };
+        let key = ChartLoadKey {
+            revision,
+            interval: self.income_interval,
+        };
+        if self.chart_requested == Some(key) {
+            return;
+        }
+        self.chart_requested = Some(key);
+        self.chart_generation += 1;
+        let generation = self.chart_generation;
+        match self.page {
+            Page::Income => {
+                let task = source.income_expense_series(self.income_interval, cx);
+                self._chart_task = Some(cx.spawn(async move |this, cx| {
+                    let Ok(series) = task.await else {
+                        return;
+                    };
+                    this.update(cx, |this, cx| {
+                        if this.chart_generation != generation {
+                            return;
+                        }
+                        this.chart = ReportChart::Income(series);
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+            _ => {
+                let task = source.balance_sheet_series(cx);
+                self._chart_task = Some(cx.spawn(async move |this, cx| {
+                    let Ok(series) = task.await else {
+                        return;
+                    };
+                    this.update(cx, |this, cx| {
+                        if this.chart_generation != generation {
+                            return;
+                        }
+                        this.chart = ReportChart::BalanceSheet(series);
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+        }
+    }
+
     fn retry(&mut self, cx: &mut Context<Self>) {
         self.requested = None;
+        self.chart_requested = None;
         self.load(cx);
+    }
+
+    fn render_chart(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        match &self.chart {
+            ReportChart::None => None,
+            ReportChart::BalanceSheet(series) => {
+                let entity = cx.entity().downgrade();
+                render_balance_sheet_chart(
+                    series,
+                    &self.chart_currencies,
+                    move |currency, selected, _, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.set_currency_selected(currency, selected, cx);
+                        });
+                    },
+                    cx,
+                )
+            }
+            ReportChart::Income(series) => {
+                let interval_entity = cx.entity().downgrade();
+                let currency_entity = cx.entity().downgrade();
+                render_income_expense_chart(
+                    series,
+                    self.income_interval,
+                    &self.chart_currencies,
+                    move |interval, _, cx| {
+                        let _ = interval_entity.update(cx, |this, cx| {
+                            this.set_income_interval(interval, cx);
+                        });
+                    },
+                    move |currency, selected, _, cx| {
+                        let _ = currency_entity.update(cx, |this, cx| {
+                            this.set_currency_selected(currency, selected, cx);
+                        });
+                    },
+                    cx,
+                )
+            }
+        }
     }
 
     fn open_account(&mut self, account: SharedString, cx: &mut Context<Self>) {
@@ -615,6 +771,7 @@ impl EventEmitter<ReportEvent> for TrieReport {}
 impl Render for TrieReport {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.page.clone();
+        let chart = self.render_chart(cx);
         let mut tables = self.tables.iter();
         div()
             .v_flex()
@@ -642,24 +799,32 @@ impl Render for TrieReport {
                     // leave nothing to scroll to vertically.
                     .self_start()
                     .overflow_scrollbar()
-                    .child(div().h_flex().items_start().gap_6().p_6().children(
-                        columns(&page).iter().map(|column| {
-                            div()
-                                .v_flex()
-                                .flex_none()
-                                .gap_6()
-                                .children(column.iter().map(|root| {
-                                    let table = tables.next().unwrap_or(&TrieLoad::Pending);
-                                    // `Table` has no id of its own, so without
-                                    // this scope sibling tables would share
-                                    // element paths and so accessibility node
-                                    // ids.
+                    .child(
+                        div()
+                            .v_flex()
+                            .w_full()
+                            .gap_6()
+                            .p_6()
+                            .when_some(chart, |this, chart| this.child(chart))
+                            .child(div().h_flex().items_start().gap_6().children(
+                                columns(&page).iter().map(|column| {
                                     div()
-                                        .id((ElementId::from("trie-table"), *root))
-                                        .child(self.render_table(root, table, window, cx))
-                                }))
-                        }),
-                    )),
+                                        .v_flex()
+                                        .flex_none()
+                                        .gap_6()
+                                        .children(column.iter().map(|root| {
+                                            let table = tables.next().unwrap_or(&TrieLoad::Pending);
+                                            // `Table` has no id of its own, so without
+                                            // this scope sibling tables would share
+                                            // element paths and so accessibility node
+                                            // ids.
+                                            div()
+                                                .id((ElementId::from("trie-table"), *root))
+                                                .child(self.render_table(root, table, window, cx))
+                                        }))
+                                }),
+                            )),
+                    ),
             )
     }
 }

@@ -7,14 +7,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::Datelike;
+use chrono::{Datelike, NaiveDate};
 use rust_decimal::Decimal;
 
 use crate::web::{
-    Completions, DEFAULT_ENTRIES_PER_PAGE, FilterOptions, JournalItem, Position, TrieNode,
-    TrieOptions, TrieTable, TrieTableRow,
+    AccountBalancePoint, AccountBalanceSeries, BalanceSheetPoint, BalanceSheetSeries, Completions,
+    DEFAULT_ENTRIES_PER_PAGE, FilterOptions, IncomeExpenseBucket, IncomeExpenseSeries, JournalItem,
+    Position, TimeInterval, TrieNode, TrieOptions, TrieTable, TrieTableRow,
 };
-use crate::{BalanceSheet, Ledger, Source, Transaction, TxnFlag};
+use crate::{BalanceSheet, Ledger, Posting, Source, Transaction, TxnFlag};
 
 /// Flattens a balance sheet into the list of positions held by each account.
 ///
@@ -479,6 +480,334 @@ pub fn source_files(ledger: &Ledger) -> Vec<String> {
     std::iter::once((**root).clone())
         .chain(included.into_iter().map(str::to_string))
         .collect()
+}
+
+fn account_matches_prefix(account: &str, prefix: &str) -> bool {
+    account == prefix
+        || (account.starts_with(prefix) && account.as_bytes().get(prefix.len()) == Some(&b':'))
+}
+
+fn posting_cost_amount(posting: &Posting) -> (&str, Decimal) {
+    if let Some(unit_cost) = &posting.cost {
+        (
+            unit_cost.amount.currency.as_str(),
+            unit_cost.amount.number * posting.amount.number,
+        )
+    } else {
+        (posting.amount.currency.as_str(), posting.amount.number)
+    }
+}
+
+/// Computes cumulative end-of-day `Assets` and `Liabilities` balances over time
+/// across all non-`balance` transactions in `ledger`, counting positions held
+/// at cost in their cost currency (matching [`trie`]).
+///
+/// Postings to later-closed accounts are included on the dates they occurred so
+/// transfers out of accounts prior to closure never create phantom balance
+/// jumps.
+pub fn balance_sheet_series(ledger: &Ledger) -> BalanceSheetSeries {
+    struct DailyDelta<'a> {
+        date: NaiveDate,
+        assets: HashMap<&'a str, Decimal>,
+        liabilities: HashMap<&'a str, Decimal>,
+    }
+
+    let mut currencies_set: HashSet<&str> = HashSet::new();
+    let mut daily: Vec<DailyDelta<'_>> = Vec::new();
+
+    for txn in ledger.txns() {
+        if txn.flag() == TxnFlag::Balance {
+            continue;
+        }
+        let mut touched = false;
+        let mut assets_delta: HashMap<&str, Decimal> = HashMap::new();
+        let mut liabilities_delta: HashMap<&str, Decimal> = HashMap::new();
+        for posting in txn.postings() {
+            let (currency, amount) = posting_cost_amount(posting);
+            if amount.is_zero() {
+                continue;
+            }
+            if account_matches_prefix(&posting.account, "Assets") {
+                currencies_set.insert(currency);
+                *assets_delta.entry(currency).or_default() += amount;
+                touched = true;
+            } else if account_matches_prefix(&posting.account, "Liabilities") {
+                currencies_set.insert(currency);
+                *liabilities_delta.entry(currency).or_default() += amount;
+                touched = true;
+            }
+        }
+        if !touched {
+            continue;
+        }
+        if let Some(last) = daily.last_mut().filter(|d| d.date == txn.date()) {
+            for (currency, amount) in assets_delta {
+                *last.assets.entry(currency).or_default() += amount;
+            }
+            for (currency, amount) in liabilities_delta {
+                *last.liabilities.entry(currency).or_default() += amount;
+            }
+        } else {
+            daily.push(DailyDelta {
+                date: txn.date(),
+                assets: assets_delta,
+                liabilities: liabilities_delta,
+            });
+        }
+    }
+
+    if currencies_set.is_empty() {
+        return BalanceSheetSeries::default();
+    }
+
+    let mut currencies: Vec<&str> = currencies_set.into_iter().collect();
+    currencies.sort_unstable();
+    let currency_index: HashMap<&str, usize> = currencies
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(ix, c)| (c, ix))
+        .collect();
+
+    let mut running_assets = vec![Decimal::ZERO; currencies.len()];
+    let mut running_liabilities = vec![Decimal::ZERO; currencies.len()];
+    let mut points = Vec::with_capacity(daily.len());
+
+    for entry in daily {
+        for (currency, delta) in entry.assets {
+            running_assets[currency_index[currency]] += delta;
+        }
+        for (currency, delta) in entry.liabilities {
+            running_liabilities[currency_index[currency]] += delta;
+        }
+        points.push(BalanceSheetPoint {
+            date: entry.date,
+            assets: running_assets.clone(),
+            liabilities: running_liabilities.clone(),
+        });
+    }
+
+    BalanceSheetSeries {
+        currencies: currencies.into_iter().map(str::to_string).collect(),
+        points,
+    }
+}
+
+/// Computes cumulative end-of-day balances for `account` (and its sub-accounts)
+/// across matching non-`balance` transactions in `ledger`, counting positions
+/// held at cost in their cost currency.
+///
+/// Query, flag, time, and extra account filters on `options` apply; pagination
+/// and sort-direction fields (`entries`, `page`, `old_first`) are ignored.
+pub fn account_balance_series(
+    ledger: &Ledger,
+    account: &str,
+    options: &FilterOptions,
+) -> AccountBalanceSeries {
+    struct DailyDelta<'a> {
+        date: NaiveDate,
+        deltas: HashMap<&'a str, Decimal>,
+    }
+
+    let txns = matching_txns(ledger, Some(account), options);
+    let mut currencies_set: HashSet<&str> = HashSet::new();
+    let mut daily: Vec<DailyDelta<'_>> = Vec::new();
+
+    for txn in txns {
+        if txn.flag() == TxnFlag::Balance {
+            continue;
+        }
+        let mut touched = false;
+        let mut deltas: HashMap<&str, Decimal> = HashMap::new();
+        for posting in txn.postings() {
+            if !account_matches_prefix(&posting.account, account) {
+                continue;
+            }
+            let (currency, amount) = posting_cost_amount(posting);
+            if amount.is_zero() {
+                continue;
+            }
+            currencies_set.insert(currency);
+            *deltas.entry(currency).or_default() += amount;
+            touched = true;
+        }
+        if !touched {
+            continue;
+        }
+        if let Some(last) = daily.last_mut().filter(|d| d.date == txn.date()) {
+            for (currency, amount) in deltas {
+                *last.deltas.entry(currency).or_default() += amount;
+            }
+        } else {
+            daily.push(DailyDelta {
+                date: txn.date(),
+                deltas,
+            });
+        }
+    }
+
+    if currencies_set.is_empty() {
+        return AccountBalanceSeries::default();
+    }
+
+    let mut currencies: Vec<&str> = currencies_set.into_iter().collect();
+    currencies.sort_unstable();
+    let currency_index: HashMap<&str, usize> = currencies
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(ix, c)| (c, ix))
+        .collect();
+
+    let mut running = vec![Decimal::ZERO; currencies.len()];
+    let mut points = Vec::with_capacity(daily.len());
+
+    for entry in daily {
+        for (currency, delta) in entry.deltas {
+            running[currency_index[currency]] += delta;
+        }
+        points.push(AccountBalancePoint {
+            date: entry.date,
+            balances: running.clone(),
+        });
+    }
+
+    AccountBalanceSeries {
+        currencies: currencies.into_iter().map(str::to_string).collect(),
+        points,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum BucketKey {
+    Daily(NaiveDate),
+    Monthly { year: i32, month: u32 },
+    Quarterly { year: i32, quarter: u32 },
+    Yearly(i32),
+}
+
+impl BucketKey {
+    fn from_date(date: NaiveDate, interval: TimeInterval) -> Self {
+        match interval {
+            TimeInterval::Daily => Self::Daily(date),
+            TimeInterval::Monthly => Self::Monthly {
+                year: date.year(),
+                month: date.month(),
+            },
+            TimeInterval::Quarterly => Self::Quarterly {
+                year: date.year(),
+                quarter: (date.month() - 1) / 3 + 1,
+            },
+            TimeInterval::Yearly => Self::Yearly(date.year()),
+        }
+    }
+
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Daily(date) => date.succ_opt().map(Self::Daily),
+            Self::Monthly { year, month: 12 } => year
+                .checked_add(1)
+                .map(|year| Self::Monthly { year, month: 1 }),
+            Self::Monthly { year, month } => Some(Self::Monthly {
+                year,
+                month: month + 1,
+            }),
+            Self::Quarterly { year, quarter: 4 } => year
+                .checked_add(1)
+                .map(|year| Self::Quarterly { year, quarter: 1 }),
+            Self::Quarterly { year, quarter } => Some(Self::Quarterly {
+                year,
+                quarter: quarter + 1,
+            }),
+            Self::Yearly(year) => year.checked_add(1).map(Self::Yearly),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::Daily(date) => date.format("%Y-%m-%d").to_string(),
+            Self::Monthly { year, month } => format!("{year:04}-{month:02}"),
+            Self::Quarterly { year, quarter } => format!("{year:04}-Q{quarter}"),
+            Self::Yearly(year) => format!("{year:04}"),
+        }
+    }
+}
+
+/// Aggregates `Income` and `Expenses` postings into contiguous calendar buckets
+/// for `interval`, counting positions held at cost in their cost currency.
+///
+/// Earned income (`Income` postings, negative in Beancount) is negated so
+/// positive earned income can be compared directly alongside positive expenses.
+pub fn income_expense_series(ledger: &Ledger, interval: TimeInterval) -> IncomeExpenseSeries {
+    let mut currencies_set: HashSet<&str> = HashSet::new();
+    let mut by_bucket: HashMap<(BucketKey, &str), (Decimal, Decimal)> = HashMap::new();
+    let mut min_key: Option<BucketKey> = None;
+    let mut max_key: Option<BucketKey> = None;
+
+    for txn in ledger.txns() {
+        if txn.flag() == TxnFlag::Balance {
+            continue;
+        }
+        let key = BucketKey::from_date(txn.date(), interval);
+        for posting in txn.postings() {
+            let (currency, amount) = posting_cost_amount(posting);
+            if amount.is_zero() {
+                continue;
+            }
+            let is_income = account_matches_prefix(&posting.account, "Income");
+            let is_expense = !is_income && account_matches_prefix(&posting.account, "Expenses");
+            if !is_income && !is_expense {
+                continue;
+            }
+            currencies_set.insert(currency);
+            let slot = by_bucket.entry((key, currency)).or_default();
+            if is_income {
+                slot.0 -= amount;
+            } else {
+                slot.1 += amount;
+            }
+            min_key = Some(min_key.map_or(key, |cur| cur.min(key)));
+            max_key = Some(max_key.map_or(key, |cur| cur.max(key)));
+        }
+    }
+
+    let (Some(start), Some(end)) = (min_key, max_key) else {
+        return IncomeExpenseSeries {
+            interval,
+            currencies: Vec::new(),
+            buckets: Vec::new(),
+        };
+    };
+
+    let mut currencies: Vec<&str> = currencies_set.into_iter().collect();
+    currencies.sort_unstable();
+
+    let mut buckets = Vec::new();
+    let mut current = Some(start);
+    while let Some(key) = current {
+        let mut income = Vec::with_capacity(currencies.len());
+        let mut expenses = Vec::with_capacity(currencies.len());
+        for &currency in &currencies {
+            let (inc, exp) = by_bucket.get(&(key, currency)).copied().unwrap_or_default();
+            income.push(inc);
+            expenses.push(exp);
+        }
+        buckets.push(IncomeExpenseBucket {
+            label: key.label(),
+            income,
+            expenses,
+        });
+        if key >= end {
+            break;
+        }
+        current = key.next();
+    }
+
+    IncomeExpenseSeries {
+        interval,
+        currencies: currencies.into_iter().map(str::to_string).collect(),
+        buckets,
+    }
 }
 
 #[cfg(test)]

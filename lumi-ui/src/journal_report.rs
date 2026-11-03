@@ -15,16 +15,17 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, App, AppContext as _, ClickEvent, Context, Div, ElementId, Entity, EventEmitter,
-    Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    TestSupportExt as _, Window, div, px,
+    Action, AnyElement, App, AppContext as _, ClickEvent, Context, Div, ElementId, Entity,
+    EventEmitter, Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, TestSupportExt as _, Window, div, px,
 };
-use lumi::web::{DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
+use lumi::web::{AccountBalanceSeries, DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
 use lumi::{Source, TxnFlag};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+use crate::chart::{CurrencySelection, render_account_balance_chart};
 use crate::entry_editor::EntryEditor;
 use crate::input_guard::EditDragGuard;
 use crate::navigation::{Page, ReportEvent};
@@ -108,6 +109,10 @@ pub struct JournalReport {
     search_drag_guard: EditDragGuard,
     /// The ledger revision the table was last reset for.
     requested_revision: Option<u64>,
+    account_chart: Option<AccountBalanceSeries>,
+    chart_currencies: CurrencySelection,
+    chart_generation: u64,
+    _chart_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -172,6 +177,10 @@ impl JournalReport {
             search_input,
             search_drag_guard,
             requested_revision: None,
+            account_chart: None,
+            chart_currencies: CurrencySelection::default(),
+            chart_generation: 0,
+            _chart_task: None,
             _subscriptions,
         };
         this.load(cx);
@@ -180,6 +189,17 @@ impl JournalReport {
 
     pub fn page(&self) -> &Page {
         &self.page
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_chart_currencies(&self) -> Vec<&str> {
+        self.account_chart
+            .as_ref()
+            .map(|series| {
+                self.chart_currencies
+                    .selected_currencies(&series.currencies)
+            })
+            .unwrap_or_default()
     }
 
     /// The transactions on the page shown, in table order.
@@ -249,13 +269,19 @@ impl JournalReport {
     }
 
     fn apply_search_query(&mut self, query: SharedString, cx: &mut Context<Self>) {
-        self.table.update(cx, |table, cx| {
+        let changed = self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
             if delegate.query != query {
                 delegate.query = query;
                 delegate.load_filtered_page(cx);
+                true
+            } else {
+                false
             }
         });
+        if changed {
+            self.load_account_chart(cx);
+        }
     }
 
     fn on_search_input_event(
@@ -283,13 +309,19 @@ impl JournalReport {
         cx: &mut Context<Self>,
     ) {
         let next: HashSet<TxnFlag> = flags.into_iter().collect();
-        self.table.update(cx, |table, cx| {
+        let changed = self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
             if delegate.visible_flags != next {
                 delegate.visible_flags = next;
                 delegate.load_filtered_page(cx);
+                true
+            } else {
+                false
             }
         });
+        if changed {
+            self.load_account_chart(cx);
+        }
     }
 
     fn toggle_visible_flag(&mut self, flag: TxnFlag, cx: &mut Context<Self>) {
@@ -300,6 +332,7 @@ impl JournalReport {
             }
             delegate.load_filtered_page(cx);
         });
+        self.load_account_chart(cx);
     }
 
     fn render_record_type_selector(
@@ -375,6 +408,65 @@ impl JournalReport {
             delegate.source = source;
             delegate.load_page(cx);
         });
+        self.load_account_chart(cx);
+    }
+
+    fn load_account_chart(&mut self, cx: &mut Context<Self>) {
+        let Some(account) = self.page.account().cloned() else {
+            return;
+        };
+        let source = {
+            let session = self.session.read(cx);
+            if !session.is_loaded() {
+                return;
+            }
+            session.source().clone()
+        };
+        let options = self.table.read(cx).delegate().filter_options(None);
+        self.chart_generation += 1;
+        let generation = self.chart_generation;
+        let task = source.account_balance_series(&account, &options, cx);
+        self._chart_task = Some(cx.spawn(async move |this, cx| {
+            let Ok(series) = task.await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if this.chart_generation != generation {
+                    return;
+                }
+                this.account_chart = Some(series);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn set_currency_selected(
+        &mut self,
+        currency: SharedString,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chart_currencies.set_selected(currency, selected) {
+            cx.notify();
+        }
+    }
+
+    fn render_account_chart(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let account = self.page.account()?;
+        let series = self.account_chart.as_ref()?;
+        let entity = cx.entity().downgrade();
+        render_account_balance_chart(
+            account,
+            series,
+            &self.chart_currencies,
+            move |currency, selected, _, cx| {
+                let _ = entity.update(cx, |this, cx| {
+                    this.set_currency_selected(currency, selected, cx);
+                });
+            },
+            cx,
+        )
     }
 
     fn open_page_number(&mut self, page: usize, cx: &mut Context<Self>) {
@@ -528,6 +620,7 @@ impl JournalReport {
             delegate.visible_flags = RECORD_TYPES.iter().map(|(flag, _, _)| *flag).collect();
             delegate.load_filtered_page(cx);
         });
+        self.load_account_chart(cx);
         self.search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
         let table_focus = self.table.read(cx).focus_handle(cx);
@@ -616,6 +709,7 @@ impl JournalReport {
     fn retry(&mut self, cx: &mut Context<Self>) {
         self.table
             .update(cx, |table, cx| table.delegate_mut().load_page(cx));
+        self.load_account_chart(cx);
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -784,6 +878,9 @@ impl Render for JournalReport {
                                 .on_click(cx.listener(|this, _, _, cx| this.retry(cx))),
                         ),
                 )
+            })
+            .when_some(self.render_account_chart(cx), |this, chart| {
+                this.child(div().flex_shrink_0().px_6().pt_3().child(chart))
             })
             .child(
                 div().flex_1().min_h_0().px_6().py_3().child(

@@ -246,6 +246,17 @@ impl LumiApp {
         &self.session
     }
 
+    /// The hierarchy report shown, if the page is [`Page::BalanceSheet`] or
+    /// [`Page::Income`].
+    pub fn trie_report(&self) -> Option<Entity<TrieReport>> {
+        self.reports
+            .get(&self.page)?
+            .view
+            .clone()
+            .downcast::<TrieReport>()
+            .ok()
+    }
+
     /// The journal shown, if the page is one.
     pub fn journal(&self) -> Option<Entity<JournalReport>> {
         self.reports

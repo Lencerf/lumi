@@ -5,7 +5,10 @@ use gpui_kit::{App, AppContext as _, Task};
 use lumi::web::{FilterOptions, JournalItem, TrieOptions, TrieTable, TrieTableRow};
 use lumi::{ErrorLevel, Ledger, Source, edit, query};
 
-use crate::source::{Completions, JournalPage, LedgerSource, Positions};
+use crate::source::{
+    AccountBalanceSeries, BalanceSheetSeries, Completions, IncomeExpenseSeries, JournalPage,
+    LedgerSource, Positions, TimeInterval,
+};
 
 /// A ledger parsed in this process from a file on disk.
 ///
@@ -94,6 +97,33 @@ impl LedgerSource for LocalLedger {
         let options = options.clone();
         self.query(cx, move |loaded| {
             query::trie_table(&loaded.ledger, &root_account, &options).map(owned_trie_table)
+        })
+    }
+
+    fn balance_sheet_series(&self, cx: &mut App) -> Task<Result<BalanceSheetSeries>> {
+        self.query(cx, |loaded| query::balance_sheet_series(&loaded.ledger))
+    }
+
+    fn account_balance_series(
+        &self,
+        account: &str,
+        options: &FilterOptions,
+        cx: &mut App,
+    ) -> Task<Result<AccountBalanceSeries>> {
+        let account = account.to_string();
+        let options = options.clone();
+        self.query(cx, move |loaded| {
+            query::account_balance_series(&loaded.ledger, &account, &options)
+        })
+    }
+
+    fn income_expense_series(
+        &self,
+        interval: TimeInterval,
+        cx: &mut App,
+    ) -> Task<Result<IncomeExpenseSeries>> {
+        self.query(cx, move |loaded| {
+            query::income_expense_series(&loaded.ledger, interval)
         })
     }
 

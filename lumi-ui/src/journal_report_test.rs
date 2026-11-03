@@ -4,9 +4,9 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::table::TableDelegate as _;
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, Focusable as _, Modifiers, MouseButton,
-    MouseDownEvent, PlatformInput, Styled as _, TestAppContext, WindowBounds, WindowOptions, point,
-    px, size,
+    AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, Focusable as _, Modifiers,
+    MouseButton, MouseDownEvent, PlatformInput, Styled as _, TestAppContext, WindowBounds,
+    WindowOptions, point, px, size,
 };
 use lumi::TxnFlag;
 
@@ -1697,4 +1697,111 @@ fn test_journal_and_account_views_group_numbers_with_narrow_gap_leaving_dates_in
     .unwrap();
 
     let _ = std::fs::remove_file(&temp_path);
+}
+
+#[gpui_kit::test]
+fn test_account_view_renders_balance_line_chart_with_currency_checklist_and_journal_omits_it(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Journal,
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    // Global Journal omits the account balance chart.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("account-balance-plot-area").is_none());
+        assert!(window.try_find("chart-currency-checklist").is_none());
+    })
+    .unwrap();
+
+    // Navigate to `Assets:Bank:Checking` (via Balance Sheet -> account button)
+    // which holds both EUR and USD transactions in the fixture.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("lumi-sidebar").click("0-0-0", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((ElementId::from("account"), "Assets:Bank:Checking"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let chart_bounds = window
+            .find((ElementId::from("chart-card"), "Assets:Bank:Checking"))
+            .bounds();
+        let plot_bounds = window.find("account-balance-plot-area").bounds();
+        assert!(plot_bounds.origin.y >= chart_bounds.origin.y);
+
+        let eur_checkbox = (ElementId::from("chart-currency"), "EUR");
+        let usd_checkbox = (ElementId::from("chart-currency"), "USD");
+        assert_eq!(window.find(eur_checkbox.clone()).checked(), Some(true));
+        assert_eq!(window.find(usd_checkbox.clone()).checked(), Some(true));
+
+        let report = app.read(cx).journal().expect("account journal shown");
+        assert_eq!(report.read(cx).selected_chart_currencies(), ["EUR", "USD"]);
+
+        // Hover over the line plot and toggle EUR off.
+        window.hover("account-balance-plot-area", cx);
+        window.render_frame(cx);
+        window.click(eur_checkbox.clone(), cx);
+        window.render_frame(cx);
+        assert_eq!(window.find(eur_checkbox).checked(), Some(false));
+        assert_eq!(report.read(cx).selected_chart_currencies(), ["USD"]);
+        assert!(window.try_find("account-balance-plot-area").is_some());
+
+        // Filtering by search query ("Paris" matches only the EUR flight)
+        // updates the account chart to EUR only; since EUR was unchecked,
+        // re-checking EUR renders the filtered single-currency chart.
+        report.update(cx, |report, cx| {
+            report.set_search_query("Paris", window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = app.read(cx).journal().expect("account journal shown");
+        assert!(report.read(cx).selected_chart_currencies().is_empty());
+        assert!(window.try_find("account-balance-plot-area").is_none());
+        assert!(
+            window
+                .try_find((ElementId::from("chart-currency"), "USD"))
+                .is_none()
+        );
+
+        window.click((ElementId::from("chart-currency"), "EUR"), cx);
+        window.render_frame(cx);
+        assert_eq!(report.read(cx).selected_chart_currencies(), ["EUR"]);
+        assert!(window.try_find("account-balance-plot-area").is_some());
+    })
+    .unwrap();
 }

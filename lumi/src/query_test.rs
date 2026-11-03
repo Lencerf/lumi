@@ -4,9 +4,10 @@ use rust_decimal::Decimal;
 
 use crate::Ledger;
 use crate::query::{
-    completions, journal, journal_page_of, positions, source_files, trie, trie_table,
+    account_balance_series, balance_sheet_series, completions, income_expense_series, journal,
+    journal_page_of, positions, source_files, trie, trie_table,
 };
-use crate::web::{FilterOptions, TrieOptions};
+use crate::web::{FilterOptions, TimeInterval, TrieOptions};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/query_test.bean");
 
@@ -597,4 +598,178 @@ fn test_source_files_keeps_root_first_and_lists_included_files() {
             shared_path.to_str().unwrap(),
         ]
     );
+}
+
+#[test]
+fn test_balance_sheet_series_tracks_assets_and_liabilities_at_cost() {
+    let ledger = fixture();
+    let series = balance_sheet_series(&ledger);
+    assert_eq!(series.currencies, ["EUR", "USD"]);
+
+    let snapshots: Vec<(String, Vec<Decimal>, Vec<Decimal>)> = series
+        .points
+        .iter()
+        .map(|p| (p.date.to_string(), p.assets.clone(), p.liabilities.clone()))
+        .collect();
+    assert_eq!(
+        snapshots,
+        [
+            (
+                "2024-01-01".to_string(),
+                vec![dec("0"), dec("1600.00")],
+                vec![dec("0"), dec("0")],
+            ),
+            (
+                "2024-01-15".to_string(),
+                vec![dec("0"), dec("4600.00")],
+                vec![dec("0"), dec("0")],
+            ),
+            (
+                "2024-02-03".to_string(),
+                vec![dec("0"), dec("4600.00")],
+                vec![dec("0"), dec("-80.00")],
+            ),
+            (
+                "2024-02-10".to_string(),
+                vec![dec("0"), dec("4554.50")],
+                vec![dec("0"), dec("-80.00")],
+            ),
+            // Buying 10 VTI {250.00 USD} for -2500.00 USD keeps cost-basis Assets steady.
+            (
+                "2024-03-01".to_string(),
+                vec![dec("0"), dec("4554.50")],
+                vec![dec("0"), dec("-80.00")],
+            ),
+            // 2024-03-15 balance assertion is skipped; 2024-04-01 internal transfer
+            // out of later-closed Assets:Old:Savings causes no phantom jump.
+            (
+                "2024-04-01".to_string(),
+                vec![dec("0"), dec("4554.50")],
+                vec![dec("0"), dec("-80.00")],
+            ),
+            (
+                "2025-05-20".to_string(),
+                vec![dec("-300.00"), dec("4554.50")],
+                vec![dec("0"), dec("-80.00")],
+            ),
+            (
+                "2025-06-01".to_string(),
+                vec![dec("-300.00"), dec("4474.50")],
+                vec![dec("0"), dec("0.00")],
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_account_balance_series_aggregates_sub_accounts_and_respects_filters() {
+    let ledger = fixture();
+
+    // Cash account skips the 2024-03-15 balance assertion.
+    let cash = account_balance_series(&ledger, "Assets:Cash", &FilterOptions::default());
+    assert_eq!(cash.currencies, ["USD"]);
+    let cash_pts: Vec<(String, Decimal)> = cash
+        .points
+        .iter()
+        .map(|p| (p.date.to_string(), p.balances[0]))
+        .collect();
+    assert_eq!(
+        cash_pts,
+        [
+            ("2024-01-01".to_string(), dec("100.00")),
+            ("2024-02-10".to_string(), dec("54.50")),
+        ]
+    );
+
+    // Multi-currency checking account.
+    let checking =
+        account_balance_series(&ledger, "Assets:Bank:Checking", &FilterOptions::default());
+    assert_eq!(checking.currencies, ["EUR", "USD"]);
+    let last = checking.points.last().unwrap();
+    assert_eq!(last.date.to_string(), "2025-06-01");
+    assert_eq!(last.balances, [dec("-300.00"), dec("1920.00")]);
+
+    // Brokerage account held at cost is valued in its cost currency (USD).
+    let brokerage = account_balance_series(
+        &ledger,
+        "Assets:Investments:Brokerage",
+        &FilterOptions::default(),
+    );
+    assert_eq!(brokerage.currencies, ["USD"]);
+    assert_eq!(brokerage.points.len(), 1);
+    assert_eq!(brokerage.points[0].balances, [dec("2500.00")]);
+
+    // Search filter narrows matching transactions.
+    let filtered = account_balance_series(
+        &ledger,
+        "Assets:Bank:Checking",
+        &FilterOptions {
+            query: Some("Paris".to_string()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(filtered.currencies, ["EUR"]);
+    assert_eq!(filtered.points.len(), 1);
+    assert_eq!(filtered.points[0].balances, [dec("-300.00")]);
+}
+
+#[test]
+fn test_income_expense_series_buckets_daily_monthly_quarterly_yearly() {
+    let ledger = fixture();
+
+    let yearly = income_expense_series(&ledger, TimeInterval::Yearly);
+    assert_eq!(yearly.currencies, ["EUR", "USD"]);
+    let yearly_rows: Vec<(&str, &[Decimal], &[Decimal])> = yearly
+        .buckets
+        .iter()
+        .map(|b| (b.label.as_str(), b.income.as_slice(), b.expenses.as_slice()))
+        .collect();
+    assert_eq!(
+        yearly_rows,
+        [
+            (
+                "2024",
+                &[dec("0"), dec("3000.00")][..],
+                &[dec("0"), dec("125.50")][..]
+            ),
+            (
+                "2025",
+                &[dec("0"), dec("0")][..],
+                &[dec("300.00"), dec("0")][..]
+            ),
+        ]
+    );
+
+    let quarterly = income_expense_series(&ledger, TimeInterval::Quarterly);
+    let q_labels: Vec<&str> = quarterly.buckets.iter().map(|b| b.label.as_str()).collect();
+    assert_eq!(
+        q_labels,
+        [
+            "2024-Q1", "2024-Q2", "2024-Q3", "2024-Q4", "2025-Q1", "2025-Q2"
+        ]
+    );
+    assert_eq!(quarterly.buckets[0].income, [dec("0"), dec("3000.00")]);
+    assert_eq!(quarterly.buckets[0].expenses, [dec("0"), dec("125.50")]);
+    assert_eq!(quarterly.buckets[2].income, [dec("0"), dec("0")]);
+    assert_eq!(quarterly.buckets[2].expenses, [dec("0"), dec("0")]);
+    assert_eq!(quarterly.buckets[5].expenses, [dec("300.00"), dec("0")]);
+
+    let monthly = income_expense_series(&ledger, TimeInterval::Monthly);
+    assert_eq!(monthly.buckets.len(), 17);
+    assert_eq!(monthly.buckets.first().unwrap().label, "2024-01");
+    assert_eq!(monthly.buckets[0].income, [dec("0"), dec("3000.00")]);
+    assert_eq!(monthly.buckets[1].label, "2024-02");
+    assert_eq!(monthly.buckets[1].expenses, [dec("0"), dec("125.50")]);
+    assert_eq!(monthly.buckets.last().unwrap().label, "2025-05");
+    assert_eq!(
+        monthly.buckets.last().unwrap().expenses,
+        [dec("300.00"), dec("0")]
+    );
+
+    let daily = income_expense_series(&ledger, TimeInterval::Daily);
+    // 2024-01-15 through 2025-05-20 inclusive (2024 is a leap year):
+    // (366 - 14) + (31 + 28 + 31 + 30 + 20) = 352 + 140 = 492 days.
+    assert_eq!(daily.buckets.len(), 492);
+    assert_eq!(daily.buckets.first().unwrap().label, "2024-01-15");
+    assert_eq!(daily.buckets.last().unwrap().label, "2025-05-20");
 }

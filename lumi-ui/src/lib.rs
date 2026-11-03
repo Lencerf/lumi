@@ -9,6 +9,7 @@
 mod align;
 mod app;
 mod assets;
+mod chart;
 mod completion;
 mod entry_editor;
 mod errors_report;

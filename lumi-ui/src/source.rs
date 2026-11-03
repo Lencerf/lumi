@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use gpui_kit::{App, Task};
-pub use lumi::web::Completions;
+pub use lumi::web::{
+    AccountBalanceSeries, BalanceSheetSeries, Completions, IncomeExpenseSeries, TimeInterval,
+};
 use lumi::web::{FilterOptions, JournalItem, Position, TrieOptions, TrieTable};
 use lumi::{Source, Transaction};
 
@@ -52,6 +54,27 @@ pub trait LedgerSource: 'static {
         options: &TrieOptions,
         cx: &mut App,
     ) -> Task<Result<Option<TrieTable<String>>>>;
+
+    /// Cumulative `Assets` and `Liabilities` balances over time, grouped by
+    /// currency.
+    fn balance_sheet_series(&self, cx: &mut App) -> Task<Result<BalanceSheetSeries>>;
+
+    /// Cumulative balance of `account` (and its sub-accounts) over time across
+    /// matching transactions, grouped by currency.
+    fn account_balance_series(
+        &self,
+        account: &str,
+        options: &FilterOptions,
+        cx: &mut App,
+    ) -> Task<Result<AccountBalanceSeries>>;
+
+    /// Periodic `Income` and `Expenses` totals grouped by `interval` and
+    /// currency.
+    fn income_expense_series(
+        &self,
+        interval: TimeInterval,
+        cx: &mut App,
+    ) -> Task<Result<IncomeExpenseSeries>>;
 
     /// One page of the journal. With `account`, only transactions touching
     /// that account or its sub-accounts, each with the account's running
