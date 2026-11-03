@@ -8,8 +8,8 @@ use gpui_kit::{
 };
 
 use crate::app::{
-    CloseWindow, LumiApp, Quit, ShowBalanceSheet, ShowEditor, ShowErrors, ShowHoldings, ShowIncome,
-    ShowJournal,
+    CloseWindow, GoBack, GoForward, LumiApp, Quit, ShowBalanceSheet, ShowEditor, ShowErrors,
+    ShowHoldings, ShowIncome, ShowJournal,
 };
 use crate::navigation::Page;
 use crate::source::LocalLedger;
@@ -47,6 +47,9 @@ fn test_init_installs_application_menus_and_quit_binding(cx: &mut TestAppContext
             assert!(app_items.contains(&"Hide Lumi"));
             let edit_items = action_names(&menus[2]);
             assert!(edit_items.contains(&"Find…"));
+            let view_items = action_names(&menus[3]);
+            assert!(view_items.contains(&"Back"));
+            assert!(view_items.contains(&"Forward"));
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -57,12 +60,16 @@ fn test_init_installs_application_menus_and_quit_binding(cx: &mut TestAppContext
             assert!(file_items.contains(&"Quit Lumi"));
             let edit_items = action_names(&menus[1]);
             assert!(edit_items.contains(&"Find…"));
+            let view_items = action_names(&menus[2]);
+            assert!(view_items.contains(&"Back"));
+            assert!(view_items.contains(&"Forward"));
         }
 
         #[cfg(target_os = "macos")]
-        let (quit_key, close_key) = ("cmd-q", "cmd-w");
+        let (quit_key, close_key, back_key, forward_key) = ("cmd-q", "cmd-w", "cmd-[", "cmd-]");
         #[cfg(not(target_os = "macos"))]
-        let (quit_key, close_key) = ("ctrl-q", "ctrl-w");
+        let (quit_key, close_key, back_key, forward_key) =
+            ("ctrl-q", "ctrl-w", "alt-left", "alt-right");
 
         let quit_bindings = cx.all_bindings_for_input(&[Keystroke::parse(quit_key).unwrap()]);
         assert_eq!(quit_bindings.len(), 1);
@@ -71,6 +78,14 @@ fn test_init_installs_application_menus_and_quit_binding(cx: &mut TestAppContext
         let close_bindings = cx.all_bindings_for_input(&[Keystroke::parse(close_key).unwrap()]);
         assert_eq!(close_bindings.len(), 1);
         assert!(close_bindings[0].action().partial_eq(&CloseWindow));
+
+        let back_bindings = cx.all_bindings_for_input(&[Keystroke::parse(back_key).unwrap()]);
+        assert_eq!(back_bindings.len(), 1);
+        assert!(back_bindings[0].action().partial_eq(&GoBack));
+
+        let forward_bindings = cx.all_bindings_for_input(&[Keystroke::parse(forward_key).unwrap()]);
+        assert_eq!(forward_bindings.len(), 1);
+        assert!(forward_bindings[0].action().partial_eq(&GoForward));
     });
 
     cx.update(|cx| {

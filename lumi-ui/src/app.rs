@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants as _};
 use gpui_kit::component::input::Search;
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::sidebar::{
@@ -16,14 +16,14 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    TestSupportExt as _, Window, actions, div,
+    Focusable, InteractiveElement as _, IntoElement, MouseButton, NavigationDirection,
+    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, TestSupportExt as _, Window, actions, div, px,
 };
 #[cfg(not(target_family = "wasm"))]
 use gpui_kit::{
     TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions,
-    px, size,
+    size,
 };
 
 use crate::entry_editor::{EntryEditorLayer, OpenSource};
@@ -41,6 +41,7 @@ actions!(
     [
         CloseWindow,
         GoBack,
+        GoForward,
         Hide,
         HideOthers,
         Minimize,
@@ -61,6 +62,9 @@ actions!(
 
 /// The key context of the application view; its key bindings apply within it.
 pub(crate) const KEY_CONTEXT: &str = "LumiApp";
+
+/// Maximum number of previously visited views remembered by Back/Forward history.
+pub(crate) const MAX_HISTORY: usize = 10;
 
 const SHOW_TITLE_BAR: bool = !cfg!(target_os = "macos") && !cfg!(target_family = "wasm");
 
@@ -101,9 +105,10 @@ pub struct LumiApp {
     path_opener: Option<PathOpener>,
     open_error: Option<SharedString>,
     page: Page,
-    /// Pages left behind when opening an account view, so "Go back" returns to
-    /// the previous view.
-    back_stack: Vec<Page>,
+    /// Up to [`MAX_HISTORY`] previously visited views, oldest first.
+    back_stack: VecDeque<Page>,
+    /// Views stepped back from, ready to revisit via `GoForward`.
+    forward_stack: Vec<Page>,
     /// Reports are created the first time they are opened and kept, so that
     /// returning to one does not query the ledger again; cleared when
     /// switching to another root file.
@@ -191,7 +196,8 @@ impl LumiApp {
             path_opener: default_path_opener(),
             open_error: None,
             page,
-            back_stack: Vec::new(),
+            back_stack: VecDeque::new(),
+            forward_stack: Vec::new(),
             reports: HashMap::new(),
             editor_layer,
             menu_bar,
@@ -318,6 +324,7 @@ impl LumiApp {
         self.ledger_path = ledger_path;
         self.open_error = None;
         self.back_stack.clear();
+        self.forward_stack.clear();
         self.reports.clear();
         self.editor_layer
             .update(cx, |layer, cx| layer.close(window, cx));
@@ -425,13 +432,7 @@ impl LumiApp {
     ) {
         match event {
             ReportEvent::OpenAccount(account) => {
-                let next = Page::Account(account.clone());
-                if self.page != next {
-                    let prev = std::mem::replace(&mut self.page, next);
-                    self.back_stack.push(prev);
-                    self.focus_handle.focus(window, cx);
-                    cx.notify();
-                }
+                self.navigate_to(Page::Account(account.clone()), window, cx);
             }
             ReportEvent::OpenAccountEntry { account, source } => {
                 self.open_account_entry(account.clone(), source.clone(), window, cx);
@@ -453,11 +454,7 @@ impl LumiApp {
         cx: &mut Context<Self>,
     ) {
         let next = Page::Account(account);
-        if self.page != next {
-            let prev = std::mem::replace(&mut self.page, next.clone());
-            self.back_stack.push(prev);
-            cx.notify();
-        }
+        self.navigate_to(next.clone(), window, cx);
         if let Ok(journal) = self.report(&next, window, cx).downcast::<JournalReport>() {
             journal.update(cx, |journal, cx| {
                 journal.show_entry_in_context(source, window, cx)
@@ -471,7 +468,7 @@ impl LumiApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_page(Page::Journal, window, cx);
+        self.navigate_to(Page::Journal, window, cx);
         if let Ok(journal) = self
             .report(&Page::Journal, window, cx)
             .downcast::<JournalReport>()
@@ -499,7 +496,7 @@ impl LumiApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_page(Page::Editor, window, cx);
+        self.navigate_to(Page::Editor, window, cx);
         if let Ok(editor) = self
             .report(&Page::Editor, window, cx)
             .downcast::<SourceEditor>()
@@ -511,17 +508,48 @@ impl LumiApp {
     }
 
     fn open_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
-        self.back_stack.clear();
-        if self.page != page {
-            self.page = page;
+        self.navigate_to(page, window, cx);
+    }
+
+    fn navigate_to(&mut self, next: Page, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page == next {
+            return;
+        }
+        let has_source = self.session.read(cx).has_source();
+        let prev = std::mem::replace(&mut self.page, next);
+        if has_source {
+            self.forward_stack.clear();
+            if self.back_stack.len() == MAX_HISTORY {
+                self.back_stack.pop_front();
+            }
+            self.back_stack.push_back(prev);
+        }
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    fn go_back(&mut self, _: &GoBack, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_layer.read(cx).is_open() || !self.session.read(cx).has_source() {
+            return;
+        }
+        if let Some(prev) = self.back_stack.pop_back() {
+            let current = std::mem::replace(&mut self.page, prev);
+            self.forward_stack.push(current);
             self.focus_handle.focus(window, cx);
             cx.notify();
         }
     }
 
-    fn go_back(&mut self, _: &GoBack, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(prev) = self.back_stack.pop() {
-            self.page = prev;
+    fn go_forward(&mut self, _: &GoForward, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_layer.read(cx).is_open() || !self.session.read(cx).has_source() {
+            return;
+        }
+        if let Some(next) = self.forward_stack.pop() {
+            let current = std::mem::replace(&mut self.page, next);
+            if self.back_stack.len() == MAX_HISTORY {
+                self.back_stack.pop_front();
+            }
+            self.back_stack.push_back(current);
             self.focus_handle.focus(window, cx);
             cx.notify();
         }
@@ -681,16 +709,69 @@ impl LumiApp {
             )
     }
 
+    fn render_history_buttons(&self, has_source: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let prev_title = has_source
+            .then(|| self.back_stack.back().map(Page::title))
+            .flatten();
+        let next_title = has_source
+            .then(|| self.forward_stack.last().map(Page::title))
+            .flatten();
+
+        div()
+            .id("history-nav")
+            .h_flex()
+            .items_center()
+            .flex_shrink_0()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .overflow_hidden()
+            .child(
+                Button::new("go-back")
+                    .ghost()
+                    .small()
+                    .compact()
+                    .rounded(ButtonRounded::None)
+                    .icon(IconName::ArrowLeft)
+                    .accessibility_label("Back")
+                    .disabled(prev_title.is_none())
+                    .when_some(prev_title, |btn, title| {
+                        btn.tooltip_with_action(
+                            format!("Back to {title}"),
+                            &GoBack,
+                            Some(KEY_CONTEXT),
+                        )
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| this.go_back(&GoBack, window, cx))),
+            )
+            .child(div().w(px(1.)).self_stretch().bg(cx.theme().border))
+            .child(
+                Button::new("go-forward")
+                    .ghost()
+                    .small()
+                    .compact()
+                    .rounded(ButtonRounded::None)
+                    .icon(IconName::ArrowRight)
+                    .accessibility_label("Forward")
+                    .disabled(next_title.is_none())
+                    .when_some(next_title, |btn, title| {
+                        btn.tooltip_with_action(
+                            format!("Forward to {title}"),
+                            &GoForward,
+                            Some(KEY_CONTEXT),
+                        )
+                    })
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.go_forward(&GoForward, window, cx)),
+                    ),
+            )
+    }
+
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (has_source, reloading) = {
             let session = self.session.read(cx);
             (session.has_source(), session.is_reloading())
         };
-        let previous = self
-            .page
-            .account()
-            .and_then(|_| self.back_stack.last())
-            .map(|page| page.title());
         div()
             .h_flex()
             .items_center()
@@ -706,23 +787,7 @@ impl LumiApp {
                     .items_center()
                     .gap_3()
                     .min_w_0()
-                    .when_some(previous, |this, prev_title| {
-                        this.child(
-                            Button::new("go-back")
-                                .outline()
-                                .small()
-                                .icon(IconName::ArrowLeft)
-                                .label("Go back")
-                                .tooltip_with_action(
-                                    format!("Back to {prev_title}"),
-                                    &GoBack,
-                                    Some(KEY_CONTEXT),
-                                )
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.go_back(&GoBack, window, cx)
-                                })),
-                        )
-                    })
+                    .child(self.render_history_buttons(has_source, cx))
                     .child(
                         div()
                             .text_lg()
@@ -882,6 +947,15 @@ impl Render for LumiApp {
             .on_action(|_: &Zoom, window, _| window.zoom_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(Self::go_back))
+            .on_action(cx.listener(Self::go_forward))
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| this.go_back(&GoBack, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| this.go_forward(&GoForward, window, cx)),
+            )
             .on_action(cx.listener(Self::on_open_ledger))
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::on_search))

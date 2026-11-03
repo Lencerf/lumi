@@ -5,7 +5,7 @@ use gpui_kit::component::input::{Copy, Cut, Paste, Redo, Search, SelectAll, Undo
 use gpui_kit::{AnyWindowHandle, App, Menu, MenuItem, OsAction};
 
 use crate::app::{
-    CloseWindow, GoBack, Hide, HideOthers, Minimize, OpenLedger, Quit, Refresh, ShowAll,
+    CloseWindow, GoBack, GoForward, Hide, HideOthers, Minimize, OpenLedger, Quit, Refresh, ShowAll,
     ShowBalanceSheet, ShowEditor, ShowErrors, ShowHoldings, ShowIncome, ShowJournal,
     ToggleFullScreen, Zoom,
 };
@@ -115,6 +115,7 @@ fn view_menu() -> Menu {
         MenuItem::action("Editor", ShowEditor),
         MenuItem::separator(),
         MenuItem::action("Back", GoBack),
+        MenuItem::action("Forward", GoForward),
         MenuItem::separator(),
         MenuItem::action("Toggle Full Screen", ToggleFullScreen),
     ])

@@ -26,8 +26,8 @@ mod style;
 mod trie_report;
 
 pub use app::{
-    CloseWindow, GoBack, Hide, HideOthers, LumiApp, Minimize, OpenLedger, PathOpener, Quit,
-    Refresh, ShowAll, ShowBalanceSheet, ShowEditor, ShowErrors, ShowHoldings, ShowIncome,
+    CloseWindow, GoBack, GoForward, Hide, HideOthers, LumiApp, Minimize, OpenLedger, PathOpener,
+    Quit, Refresh, ShowAll, ShowBalanceSheet, ShowEditor, ShowErrors, ShowHoldings, ShowIncome,
     ShowJournal, ToggleFullScreen, Zoom, ledger_name_for_path,
 };
 pub use assets::ExtraIcons;
@@ -71,6 +71,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-f", Search, Some(holdings_report::KEY_CONTEXT)),
         KeyBinding::new("cmd-f", Search, Some(source_editor::KEY_CONTEXT)),
         KeyBinding::new("cmd-[", GoBack, Some(app::KEY_CONTEXT)),
+        KeyBinding::new("cmd-]", GoForward, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-o", OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-r", Refresh, Some(app::KEY_CONTEXT)),
         KeyBinding::new("cmd-1", ShowBalanceSheet, Some(app::KEY_CONTEXT)),
@@ -93,6 +94,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-f", Search, Some(holdings_report::KEY_CONTEXT)),
         KeyBinding::new("ctrl-f", Search, Some(source_editor::KEY_CONTEXT)),
         KeyBinding::new("alt-left", GoBack, Some(app::KEY_CONTEXT)),
+        KeyBinding::new("alt-right", GoForward, Some(app::KEY_CONTEXT)),
         KeyBinding::new("ctrl-o", OpenLedger, Some(app::KEY_CONTEXT)),
         KeyBinding::new("ctrl-r", Refresh, Some(app::KEY_CONTEXT)),
         KeyBinding::new("alt-1", ShowBalanceSheet, Some(app::KEY_CONTEXT)),

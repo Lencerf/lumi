@@ -7,8 +7,11 @@ use gpui_kit::{
     WindowBounds, WindowOptions, px, size,
 };
 
-use crate::app::{LumiApp, ledger_name_for_path};
-use crate::navigation::Page;
+use crate::app::{
+    LumiApp, ShowBalanceSheet, ShowEditor, ShowErrors, ShowHoldings, ShowIncome, ShowJournal,
+    ledger_name_for_path,
+};
+use crate::navigation::{Page, ReportEvent};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../lumi/src/query_test.bean");
 
@@ -252,10 +255,11 @@ fn test_clicking_the_root_file_in_the_sidebar_switches_ledgers(cx: &mut TestAppC
 fn test_go_back_returns_from_account_view_to_the_last_view(cx: &mut TestAppContext) {
     let (handle, app) = open_app(Some(Path::new(FIXTURE)), Page::Income, cx);
 
-    // Top-level report views do not show a Go back button.
+    // Universal Back/Forward buttons start disabled before any navigation.
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("go-back").is_none());
+        assert_eq!(window.find("go-back").disabled(), Some(true));
+        assert_eq!(window.find("go-forward").disabled(), Some(true));
         window.click((ElementId::from("account"), "Expenses:Food"), cx);
     })
     .unwrap();
@@ -265,7 +269,8 @@ fn test_go_back_returns_from_account_view_to_the_last_view(cx: &mut TestAppConte
     // Expand the first transaction in Expenses:Food and open its counter-account.
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("go-back").is_some());
+        assert_eq!(window.find("go-back").disabled(), None);
+        assert_eq!(window.find("go-forward").disabled(), Some(true));
         window.click(("postings", 0usize), cx);
     })
     .unwrap();
@@ -277,7 +282,7 @@ fn test_go_back_returns_from_account_view_to_the_last_view(cx: &mut TestAppConte
     cx.run_until_parked();
     cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into())));
 
-    // First Go back returns to Expenses:Food; second returns to Income statement.
+    // First Back returns to Expenses:Food; second returns to Income statement.
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.click("go-back", cx);
@@ -288,6 +293,8 @@ fn test_go_back_returns_from_account_view_to_the_last_view(cx: &mut TestAppConte
 
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        assert_eq!(window.find("go-back").disabled(), None);
+        assert_eq!(window.find("go-forward").disabled(), None);
         window.click("go-back", cx);
     })
     .unwrap();
@@ -295,7 +302,213 @@ fn test_go_back_returns_from_account_view_to_the_last_view(cx: &mut TestAppConte
     cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Income));
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("go-back").is_none());
+        assert_eq!(window.find("go-back").disabled(), Some(true));
+        assert_eq!(window.find("go-forward").disabled(), None);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_universal_back_forward_across_views_and_forward_branch_clearing(cx: &mut TestAppContext) {
+    let vault = TempLedger::new("history-vault", VAULT_LEDGER);
+    let (handle, app) = open_app(Some(Path::new(FIXTURE)), Page::BalanceSheet, cx);
+
+    // Navigate across sidebar reports and an account view:
+    // BalanceSheet -> Income -> Account(Expenses:Food) -> Journal -> Editor
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(ShowIncome), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((ElementId::from("account"), "Expenses:Food"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(ShowJournal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(ShowEditor), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Editor));
+
+    let (back_key, forward_key) = if cfg!(target_os = "macos") {
+        ("cmd-[", "cmd-]")
+    } else {
+        ("alt-left", "alt-right")
+    };
+
+    // Step back twice: Editor -> Journal -> Account(Expenses:Food).
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("go-back", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Journal));
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(back_key, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Expenses:Food".into())));
+
+    // Step forward once via shortcut (Account -> Journal), then once via button (Journal -> Editor).
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(forward_key, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Journal));
+
+    // Re-selecting the already-active view is a no-op and preserves Forward history.
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(ShowJournal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("go-forward").disabled(), None);
+        window.click("go-forward", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Editor));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("go-forward").disabled(), Some(true));
+    })
+    .unwrap();
+
+    // Go back twice to Account(Expenses:Food), then visit Holdings: forward stack clears.
+    for _ in 0..2 {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("go-back", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Account("Expenses:Food".into())));
+
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(ShowHoldings), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Holdings));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("go-back").disabled(), None);
+        assert_eq!(window.find("go-forward").disabled(), Some(true));
+    })
+    .unwrap();
+
+    // Switching root ledgers resets both Back and Forward stacks.
+    let vault_path = vault.0.clone();
+    cx.update_window(handle, |_, window, cx| {
+        app.update(cx, |app, cx| app.open_path(&vault_path, window, cx));
+        window.render_frame(cx);
+        assert_eq!(window.find("go-back").disabled(), Some(true));
+        assert_eq!(window.find("go-forward").disabled(), Some(true));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_back_forward_remembers_last_ten_places(cx: &mut TestAppContext) {
+    let (handle, app) = open_app(Some(Path::new(FIXTURE)), Page::BalanceSheet, cx);
+
+    // Visit 11 more distinct places after starting on BalanceSheet (P0..P11 = 12 total).
+    let sequence = [
+        Page::Income,
+        Page::Journal,
+        Page::Holdings,
+        Page::Errors,
+        Page::Editor,
+        Page::Account("Assets:Cash".into()),
+        Page::Account("Assets:Bank:Checking".into()),
+        Page::Account("Expenses:Food".into()),
+        Page::Account("Income:Salary".into()),
+        Page::BalanceSheet,
+        Page::Journal,
+    ];
+
+    for next in &sequence {
+        let next = next.clone();
+        cx.update_window(handle, |_, window, cx| match &next {
+            Page::BalanceSheet => window.dispatch_action(Box::new(ShowBalanceSheet), cx),
+            Page::Income => window.dispatch_action(Box::new(ShowIncome), cx),
+            Page::Journal => window.dispatch_action(Box::new(ShowJournal), cx),
+            Page::Holdings => window.dispatch_action(Box::new(ShowHoldings), cx),
+            Page::Errors => window.dispatch_action(Box::new(ShowErrors), cx),
+            Page::Editor => window.dispatch_action(Box::new(ShowEditor), cx),
+            Page::Account(acct) => app.update(cx, |app, cx| {
+                app.on_report_event(
+                    &app.session().clone(),
+                    &ReportEvent::OpenAccount(acct.clone()),
+                    window,
+                    cx,
+                );
+            }),
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    cx.read(|cx| assert_eq!(app.read(cx).page(), &Page::Journal));
+
+    // Only the last 10 places before the current view (sequence[0..10]) are kept;
+    // the initial Page::BalanceSheet (P0) has rolled off the history cap.
+    let expected_back: Vec<Page> = sequence[..10].iter().rev().cloned().collect();
+    for expected in &expected_back {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("go-back").disabled(), None);
+            window.click("go-back", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| assert_eq!(app.read(cx).page(), expected));
+    }
+
+    // After 10 Back steps we are at `Page::Income` (sequence[0]), and Back is now disabled.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("go-back").disabled(), Some(true));
+        assert_eq!(window.find("go-forward").disabled(), None);
+    })
+    .unwrap();
+
+    // Forward steps through all 10 places right back to the final `Page::Journal`.
+    for expected in &sequence[1..] {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("go-forward").disabled(), None);
+            window.click("go-forward", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| assert_eq!(app.read(cx).page(), expected));
+    }
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("go-back").disabled(), None);
+        assert_eq!(window.find("go-forward").disabled(), Some(true));
     })
     .unwrap();
 }
