@@ -340,21 +340,27 @@ fn format_amount(value: Decimal, currency: &str) -> SharedString {
     builder.finish().plain()
 }
 
-fn format_axis_tick(value: f64) -> SharedString {
+fn format_scaled_unit(scaled: f64, unit: &str) -> SharedString {
+    let s = format!("{scaled:.3}");
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    let normalized = if trimmed == "-0" || trimmed.is_empty() {
+        "0"
+    } else {
+        trimmed
+    };
+    format!("{normalized}{unit}").into()
+}
+
+fn format_axis_tick(value: f64, step: f64) -> SharedString {
     if value.abs() < 1e-9 {
         return "0".into();
     }
     let abs = value.abs();
-    if abs >= 1_000_000_000.0 {
-        return format!("{:.1}B", value / 1_000_000_000.0)
-            .trim_end_matches(".0B")
-            .replace(".0B", "B")
-            .into();
+    if abs >= 1_000_000_000.0 && step >= 1_000_000.0 {
+        return format_scaled_unit(value / 1_000_000_000.0, "B");
     }
-    if abs >= 1_000_000.0 {
-        let s = format!("{:.1}", value / 1_000_000.0);
-        let trimmed = s.strip_suffix(".0").unwrap_or(&s);
-        return format!("{trimmed}M").into();
+    if abs >= 1_000_000.0 && step >= 1_000.0 {
+        return format_scaled_unit(value / 1_000_000.0, "M");
     }
     let rounded = value.round();
     if (value - rounded).abs() < 1e-6 {
@@ -362,13 +368,27 @@ fn format_axis_tick(value: f64) -> SharedString {
         builder.push_number_str(&format!("{}", rounded as i64));
         return builder.finish().plain();
     }
+    let dp = if step.is_finite() && step > 0.0 {
+        let k = (step * (1.0 + 1e-12)).log10().floor() as i32;
+        (1 - k).clamp(2, 6) as usize
+    } else {
+        2
+    };
+    let formatted = format!("{value:.dp$}");
+    let formatted = if dp > 2 {
+        let (int_part, frac_part) = formatted.split_once('.').unwrap_or((&formatted, ""));
+        let keep = frac_part.trim_end_matches('0').len().max(2);
+        format!("{int_part}.{}", &frac_part[..keep.min(frac_part.len())])
+    } else {
+        formatted
+    };
     let mut builder = GroupedBuilder::new();
-    builder.push_number_str(&format!("{value:.2}"));
+    builder.push_number_str(&formatted);
     builder.finish().plain()
 }
 
 /// Computes `target_count`-ish human-friendly ticks spanning `[min_val.min(0.0), max_val.max(0.0)]`
-/// such that `0.0` is always an exact tick.
+/// such that `0.0` is always an exact tick (used by bar charts).
 fn nice_y_ticks(
     min_val: f64,
     max_val: f64,
@@ -410,9 +430,103 @@ fn nice_y_ticks(
         if v.abs() < step * 1e-6 {
             v = 0.0;
         }
-        ticks.push((v, format_axis_tick(v)));
+        ticks.push((v, format_axis_tick(v, step)));
     }
     (nice_lo, nice_hi, ticks)
+}
+
+/// Computes the Y-axis range and interior decimal-nice ticks for a line chart:
+///
+/// ```text
+/// Y_axis_min = Y_data_min - 0.1 * (Y_data_max - Y_data_min)
+/// Y_axis_max = Y_data_max + 0.1 * (Y_data_max - Y_data_min)
+/// ```
+///
+/// When all plotted points share the same value (`Y_data_max == Y_data_min`),
+/// expands symmetrically by `10%` of `|Y_data_min|` (or `[-1, 1]` around `0`)
+/// so a constant balance line renders centered on a non-degenerate scale.
+fn line_y_axis(
+    values: impl IntoIterator<Item = f64>,
+    target_count: usize,
+) -> (f64, f64, Vec<(f64, SharedString)>) {
+    let mut data_min = f64::INFINITY;
+    let mut data_max = f64::NEG_INFINITY;
+    for v in values {
+        if v.is_finite() {
+            data_min = data_min.min(v);
+            data_max = data_max.max(v);
+        }
+    }
+    if !data_min.is_finite() || !data_max.is_finite() {
+        return (
+            -1.0,
+            1.0,
+            vec![(-1.0, "-1".into()), (0.0, "0".into()), (1.0, "1".into())],
+        );
+    }
+
+    let data_span = data_max - data_min;
+    let (y_min, y_max) = if data_span > 1e-9 {
+        let pad = 0.1 * data_span;
+        (data_min - pad, data_max + pad)
+    } else if data_min.abs() > 1e-9 {
+        let pad = data_min.abs() * 0.1;
+        (data_min - pad, data_max + pad)
+    } else {
+        (-1.0, 1.0)
+    };
+
+    let span = y_max - y_min;
+    let target = target_count.max(2);
+    let raw_step = span / (target.saturating_sub(1)) as f64;
+    let mag = 10_f64.powf(raw_step.log10().floor());
+    let eps = span * 1e-9;
+
+    let candidates = [0.2, 0.25, 0.5, 1.0, 2.0, 2.5, 5.0, 10.0];
+    let mut best_step = mag;
+    let mut best_score = (usize::MAX, usize::MAX);
+    for mult in candidates {
+        let step = mult * mag;
+        if !step.is_finite() || step <= 0.0 {
+            continue;
+        }
+        let lo_idx = ((y_min - eps) / step).ceil();
+        let hi_idx = ((y_max + eps) / step).floor();
+        if !lo_idx.is_finite() || !hi_idx.is_finite() || hi_idx < lo_idx {
+            continue;
+        }
+        let count = ((hi_idx - lo_idx).round() as usize) + 1;
+        let tier = if (3..=6).contains(&count) {
+            0
+        } else if (2..=7).contains(&count) {
+            1
+        } else {
+            2
+        };
+        let score = (tier, count.abs_diff(target));
+        if score <= best_score {
+            best_score = score;
+            best_step = step;
+        }
+    }
+
+    let lo_idx = ((y_min - eps) / best_step).ceil();
+    let hi_idx = ((y_max + eps) / best_step).floor();
+    let count = if lo_idx.is_finite() && hi_idx.is_finite() && hi_idx >= lo_idx {
+        (((hi_idx - lo_idx).round() as usize) + 1).min(16)
+    } else {
+        0
+    };
+    let mut ticks = Vec::with_capacity(count);
+    for i in 0..count {
+        let mut v = (lo_idx + i as f64) * best_step;
+        if v.abs() < best_step * 1e-6 {
+            v = 0.0;
+        }
+        v = v.clamp(y_min, y_max);
+        ticks.push((v, format_axis_tick(v, best_step)));
+    }
+    (y_min, y_max, ticks)
 }
 
 fn account_series_color(currency_ix: usize, theme: &Theme) -> Hsla {
@@ -1085,19 +1199,8 @@ impl TimeLinePlot {
         day_indices: Vec<i32>,
         series: Vec<LineSeriesData>,
     ) -> Self {
-        let mut min_val = 0.0_f64;
-        let mut max_val = 0.0_f64;
-        for s in &series {
-            for &v in &s.values {
-                if v < min_val {
-                    min_val = v;
-                }
-                if v > max_val {
-                    max_val = v;
-                }
-            }
-        }
-        let (y_min, y_max, y_ticks) = nice_y_ticks(min_val, max_val, 5);
+        let (y_min, y_max, y_ticks) =
+            line_y_axis(series.iter().flat_map(|s| s.values.iter().copied()), 5);
         Self {
             id: id.into(),
             dates,
@@ -1735,7 +1838,7 @@ mod tests {
 
     use super::{
         BalanceSheetMode, ChartDateFilter, IncomeChartMode, balance_sheet_mode_currencies,
-        format_amount, income_mode_currencies,
+        format_amount, income_mode_currencies, line_y_axis, nice_y_ticks,
     };
 
     fn dec(s: &str) -> Decimal {
@@ -1857,5 +1960,66 @@ mod tests {
             filter.effective_range(),
             ChartDateRange::between(ymd(2024, 2, 1), ymd(2025, 4, 1))
         );
+    }
+
+    #[test]
+    fn test_line_y_axis_uses_ten_percent_data_span_margins_without_zero_anchor() {
+        // Strictly positive series `[1000, 2000]`:
+        // Y_axis_min = 1000 - 0.1 * 1000 = 900
+        // Y_axis_max = 2000 + 0.1 * 1000 = 2100
+        let (y_min, y_max, ticks) = line_y_axis([1000.0, 1500.0, 2000.0], 5);
+        assert!((y_min - 900.0).abs() < 1e-9);
+        assert!((y_max - 2100.0).abs() < 1e-9);
+        assert!(y_min > 0.0, "line chart y-axis does not start at 0");
+        assert!((3..=6).contains(&ticks.len()));
+        for &(val, _) in &ticks {
+            assert!(val >= y_min && val <= y_max);
+        }
+
+        // Strictly negative series `[-500, -200]`:
+        // Y_axis_min = -500 - 0.1 * 300 = -530
+        // Y_axis_max = -200 + 0.1 * 300 = -170
+        let (neg_min, neg_max, neg_ticks) = line_y_axis([-500.0, -350.0, -200.0], 5);
+        assert!((neg_min - -530.0).abs() < 1e-9);
+        assert!((neg_max - -170.0).abs() < 1e-9);
+        assert!(neg_max < 0.0);
+        for &(val, _) in &neg_ticks {
+            assert!(val >= neg_min && val <= neg_max);
+        }
+
+        // Zero-crossing series `[-300, 4554.50]` includes `0` as an exact tick.
+        let (cross_min, cross_max, cross_ticks) = line_y_axis([-300.0, 4554.50], 5);
+        assert!((cross_min - -785.45).abs() < 1e-9);
+        assert!((cross_max - 5039.95).abs() < 1e-9);
+        assert!(
+            cross_ticks
+                .iter()
+                .any(|(v, label)| v.abs() < 1e-9 && label.as_ref() == "0")
+        );
+
+        // Large-offset tight-range series `[1_010_000, 1_050_000]` formats
+        // distinct million-scale tick labels without collapsing to `"1M"`.
+        let (m_min, m_max, m_ticks) = line_y_axis([1_010_000.0, 1_050_000.0], 5);
+        assert!((m_min - 1_006_000.0).abs() < 1e-9);
+        assert!((m_max - 1_054_000.0).abs() < 1e-9);
+        let labels: Vec<&str> = m_ticks.iter().map(|(_, l)| l.as_ref()).collect();
+        let mut unique_labels = labels.clone();
+        unique_labels.dedup();
+        assert_eq!(labels, unique_labels);
+
+        // Flat carried-forward balance (`54.50` across all dates) stays
+        // non-degenerate around `54.50`, and flat `0` centers on `[-1, 1]`.
+        let (flat_min, flat_max, flat_ticks) = line_y_axis([54.50, 54.50], 5);
+        assert!((flat_min - 49.05).abs() < 1e-9);
+        assert!((flat_max - 59.95).abs() < 1e-9);
+        assert!(!flat_ticks.is_empty());
+
+        let (zero_min, zero_max, _) = line_y_axis([0.0, 0.0], 5);
+        assert_eq!((zero_min, zero_max), (-1.0, 1.0));
+
+        // Bar charts (`nice_y_ticks`) still anchor at `0.0`.
+        let (bar_min, bar_max, _) = nice_y_ticks(1000.0, 2000.0, 5);
+        assert_eq!(bar_min, 0.0);
+        assert!(bar_max >= 2000.0);
     }
 }
