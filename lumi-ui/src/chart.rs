@@ -439,12 +439,17 @@ fn nice_y_ticks(
 ///
 /// ```text
 /// Y_axis_min = Y_data_min - 0.1 * (Y_data_max - Y_data_min)
+/// if Y_data_min >= 0:
+///     Y_axis_min = max(Y_axis_min, 0)
+///
 /// Y_axis_max = Y_data_max + 0.1 * (Y_data_max - Y_data_min)
+/// if Y_data_max <= 0:
+///     Y_axis_max = min(Y_axis_max, 0)
 /// ```
 ///
 /// When all plotted points share the same value (`Y_data_max == Y_data_min`),
-/// expands symmetrically by `10%` of `|Y_data_min|` (or `[-1, 1]` around `0`)
-/// so a constant balance line renders centered on a non-degenerate scale.
+/// expands symmetrically by `10%` of `|Y_data_min|` (or `[0, 1]` at `0`) so a
+/// constant balance line renders on a non-degenerate scale without crossing `0`.
 fn line_y_axis(
     values: impl IntoIterator<Item = f64>,
     target_count: usize,
@@ -459,21 +464,30 @@ fn line_y_axis(
     }
     if !data_min.is_finite() || !data_max.is_finite() {
         return (
-            -1.0,
+            0.0,
             1.0,
-            vec![(-1.0, "-1".into()), (0.0, "0".into()), (1.0, "1".into())],
+            vec![(0.0, "0".into()), (0.5, "0.50".into()), (1.0, "1".into())],
         );
     }
 
     let data_span = data_max - data_min;
-    let (y_min, y_max) = if data_span > 1e-9 {
-        let pad = 0.1 * data_span;
-        (data_min - pad, data_max + pad)
-    } else if data_min.abs() > 1e-9 {
-        let pad = data_min.abs() * 0.1;
-        (data_min - pad, data_max + pad)
+    let (y_min, y_max) = if data_span > 1e-9 || data_min.abs() > 1e-9 {
+        let pad = if data_span > 1e-9 {
+            0.1 * data_span
+        } else {
+            0.1 * data_min.abs()
+        };
+        let mut y_min = data_min - pad;
+        if data_min >= 0.0 {
+            y_min = y_min.max(0.0);
+        }
+        let mut y_max = data_max + pad;
+        if data_max <= 0.0 {
+            y_max = y_max.min(0.0);
+        }
+        (y_min, y_max)
     } else {
-        (-1.0, 1.0)
+        (0.0, 1.0)
     };
 
     let span = y_max - y_min;
@@ -1976,6 +1990,18 @@ mod tests {
             assert!(val >= y_min && val <= y_max);
         }
 
+        // Non-negative series close to or touching `0` clamps `Y_axis_min` at `0`:
+        // `[0, 1000]` -> `max(-100, 0) = 0`, `1000 + 100 = 1100`
+        // `[50, 1000]` -> `max(50 - 95, 0) = 0`, `1000 + 95 = 1095`
+        let (pos0_min, pos0_max, pos0_ticks) = line_y_axis([0.0, 1000.0], 5);
+        assert_eq!(pos0_min, 0.0);
+        assert!((pos0_max - 1100.0).abs() < 1e-9);
+        assert!(pos0_ticks.iter().any(|(v, _)| v.abs() < 1e-9));
+
+        let (pos50_min, pos50_max, _) = line_y_axis([50.0, 1000.0], 5);
+        assert_eq!(pos50_min, 0.0);
+        assert!((pos50_max - 1095.0).abs() < 1e-9);
+
         // Strictly negative series `[-500, -200]`:
         // Y_axis_min = -500 - 0.1 * 300 = -530
         // Y_axis_max = -200 + 0.1 * 300 = -170
@@ -1987,7 +2013,20 @@ mod tests {
             assert!(val >= neg_min && val <= neg_max);
         }
 
-        // Zero-crossing series `[-300, 4554.50]` includes `0` as an exact tick.
+        // Non-positive series close to or touching `0` clamps `Y_axis_max` at `0`:
+        // `[-80, 0]` -> `-80 - 8 = -88`, `min(8, 0) = 0`
+        // `[-1000, -50]` -> `-1000 - 95 = -1095`, `min(-50 + 95, 0) = 0`
+        let (liab_min, liab_max, liab_ticks) = line_y_axis([-80.0, 0.0], 5);
+        assert!((liab_min - -88.0).abs() < 1e-9);
+        assert_eq!(liab_max, 0.0);
+        assert!(liab_ticks.iter().any(|(v, _)| v.abs() < 1e-9));
+
+        let (neg50_min, neg50_max, _) = line_y_axis([-1000.0, -50.0], 5);
+        assert!((neg50_min - -1095.0).abs() < 1e-9);
+        assert_eq!(neg50_max, 0.0);
+
+        // Zero-crossing series `[-300, 4554.50]` keeps both 10% margins and
+        // includes `0` as an exact tick.
         let (cross_min, cross_max, cross_ticks) = line_y_axis([-300.0, 4554.50], 5);
         assert!((cross_min - -785.45).abs() < 1e-9);
         assert!((cross_max - 5039.95).abs() < 1e-9);
@@ -2007,15 +2046,19 @@ mod tests {
         unique_labels.dedup();
         assert_eq!(labels, unique_labels);
 
-        // Flat carried-forward balance (`54.50` across all dates) stays
-        // non-degenerate around `54.50`, and flat `0` centers on `[-1, 1]`.
+        // Flat carried-forward balances stay non-degenerate without crossing `0`,
+        // and flat `0` stays non-negative (`[0, 1]`).
         let (flat_min, flat_max, flat_ticks) = line_y_axis([54.50, 54.50], 5);
         assert!((flat_min - 49.05).abs() < 1e-9);
         assert!((flat_max - 59.95).abs() < 1e-9);
         assert!(!flat_ticks.is_empty());
 
+        let (flat_neg_min, flat_neg_max, _) = line_y_axis([-80.0, -80.0], 5);
+        assert!((flat_neg_min - -88.0).abs() < 1e-9);
+        assert!((flat_neg_max - -72.0).abs() < 1e-9);
+
         let (zero_min, zero_max, _) = line_y_axis([0.0, 0.0], 5);
-        assert_eq!((zero_min, zero_max), (-1.0, 1.0));
+        assert_eq!((zero_min, zero_max), (0.0, 1.0));
 
         // Bar charts (`nice_y_ticks`) still anchor at `0.0`.
         let (bar_min, bar_max, _) = nice_y_ticks(1000.0, 2000.0, 5);
