@@ -5,7 +5,9 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonGroup};
+use gpui_kit::component::calendar::Date;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::date_picker::{DatePicker, DatePickerState, DateRangePreset};
 use gpui_kit::component::plot::label::{TEXT_SIZE, Text, measure_text_width};
 use gpui_kit::component::plot::scale::{Scale as _, ScaleLinear};
 use gpui_kit::component::plot::shape::{Bar, BarAlignment, Line};
@@ -16,12 +18,13 @@ use gpui_kit::component::plot::{
 };
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, Theme};
 use gpui_kit::{
-    AnyElement, App, Bounds, Corners, ElementId, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Point, SharedString, Size, Styled as _, TestSupportExt as _,
-    TextAlign, Window, div, point, px,
+    AnyElement, App, Bounds, Context, Corners, ElementId, Entity, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Point, SharedString, Size, Styled as _,
+    TestSupportExt as _, TextAlign, Window, div, point, px,
 };
 use lumi::web::{
-    AccountBalanceSeries, BalanceSheetSeries, IncomeExpenseSeries, TimeInterval, format_day_index,
+    AccountBalanceSeries, BalanceSheetSeries, ChartDatePreset, ChartDateRange, IncomeExpenseSeries,
+    NaiveDate, TimeInterval, format_day_index, today_date,
 };
 use rust_decimal::{Decimal, RoundingStrategy};
 
@@ -126,6 +129,195 @@ impl CurrencySelection {
             .filter(|c| self.is_selected(c))
             .collect()
     }
+}
+
+/// Tracks the active date range preset (`1Y`, `3Y`, `10Y`, `YTD`, `All`,
+/// `Custom`) and user-selected custom bounds for a chart.
+#[derive(Clone, Debug)]
+pub(crate) struct ChartDateFilter {
+    preset: ChartDatePreset,
+    today: NaiveDate,
+    custom_range: ChartDateRange,
+}
+
+impl Default for ChartDateFilter {
+    fn default() -> Self {
+        Self {
+            preset: ChartDatePreset::default(),
+            today: today_date(),
+            custom_range: ChartDateRange::default(),
+        }
+    }
+}
+
+impl ChartDateFilter {
+    pub(crate) fn preset(&self) -> ChartDatePreset {
+        self.preset
+    }
+
+    pub(crate) fn today(&self) -> NaiveDate {
+        self.today
+    }
+
+    pub(crate) fn effective_range(&self) -> ChartDateRange {
+        self.preset.resolve(self.today).unwrap_or(self.custom_range)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_today(&mut self, today: NaiveDate) -> bool {
+        if self.today != today {
+            self.today = today;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn select_preset(
+        &mut self,
+        preset: ChartDatePreset,
+        series_bounds: Option<(NaiveDate, NaiveDate)>,
+    ) -> bool {
+        let prev_preset = self.preset;
+        let prev_range = self.effective_range();
+
+        if preset == ChartDatePreset::Custom
+            && (self.custom_range.start.is_none() || self.custom_range.end.is_none())
+        {
+            self.custom_range = if let (Some(start), Some(end)) = (prev_range.start, prev_range.end)
+            {
+                ChartDateRange::between(start, end)
+            } else if let Some((first, last)) = series_bounds {
+                ChartDateRange::between(first, last)
+            } else {
+                ChartDateRange::between(self.today, self.today)
+            };
+        }
+
+        self.preset = preset;
+        prev_preset != self.preset || prev_range != self.effective_range()
+    }
+
+    pub(crate) fn set_custom_range(
+        &mut self,
+        start: Option<NaiveDate>,
+        end: Option<NaiveDate>,
+    ) -> bool {
+        let next = match (start, end) {
+            (Some(a), Some(b)) => ChartDateRange::between(a, b),
+            (start, end) => ChartDateRange { start, end },
+        };
+        let changed = self.preset != ChartDatePreset::Custom || self.custom_range != next;
+        self.preset = ChartDatePreset::Custom;
+        self.custom_range = next;
+        changed
+    }
+}
+
+/// Builds a 2-month ISO range [`DatePickerState`] for custom chart date
+/// selection.
+pub(crate) fn new_chart_date_picker(
+    window: &mut Window,
+    cx: &mut Context<DatePickerState>,
+) -> DatePickerState {
+    DatePickerState::range(window, cx)
+        .date_format("%Y-%m-%d")
+        .number_of_months(2)
+}
+
+/// Pushes `filter`'s current effective range into `picker` without emitting a
+/// change event.
+pub(crate) fn sync_chart_date_picker(
+    picker: &Entity<DatePickerState>,
+    filter: &ChartDateFilter,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let range = filter.effective_range();
+    picker.update(cx, |state, cx| {
+        state.set_date(Date::Range(range.start, range.end), window, cx);
+    });
+}
+
+fn date_picker_presets(today: NaiveDate) -> Vec<DateRangePreset> {
+    [
+        ChartDatePreset::OneYear,
+        ChartDatePreset::ThreeYears,
+        ChartDatePreset::TenYears,
+        ChartDatePreset::YearToDate,
+    ]
+    .into_iter()
+    .filter_map(|preset| {
+        let range = preset.resolve(today)?;
+        Some(DateRangePreset::range(
+            preset.tooltip(),
+            range.start?,
+            range.end?,
+        ))
+    })
+    .collect()
+}
+
+/// Renders the `1Y | 3Y | 10Y | YTD | All | Custom` preset strip and, when
+/// [`ChartDatePreset::Custom`] is active, the range [`DatePicker`] beside it.
+pub(crate) fn render_date_range_controls<FP>(
+    scope: impl Into<SharedString>,
+    filter: &ChartDateFilter,
+    picker: Option<&Entity<DatePickerState>>,
+    on_select_preset: FP,
+) -> AnyElement
+where
+    FP: Fn(ChartDatePreset, &mut Window, &mut App) + 'static,
+{
+    let scope: SharedString = scope.into();
+    let on_select_preset = Rc::new(on_select_preset);
+    let preset_group = ButtonGroup::new((ElementId::from("chart-range-group"), scope))
+        .outline()
+        .compact()
+        .children(ChartDatePreset::ALL.map(|item| {
+            Button::new((ElementId::from("chart-range"), item.short_id()))
+                .xsmall()
+                .label(item.label())
+                .tooltip(item.tooltip())
+                .selected(item == filter.preset())
+        }))
+        .on_click(move |selected: &Vec<usize>, window, cx| {
+            if let Some(next) = selected
+                .first()
+                .and_then(|ix| ChartDatePreset::ALL.get(*ix))
+            {
+                on_select_preset(*next, window, cx);
+            }
+        });
+
+    let mut row = div()
+        .id("chart-date-range-bar")
+        .test_support()
+        .h_flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .child(preset_group);
+
+    if filter.preset() == ChartDatePreset::Custom
+        && let Some(picker) = picker
+    {
+        row = row.child(
+            div()
+                .id("chart-custom-date-picker")
+                .test_support()
+                .w(px(210.))
+                .child(
+                    DatePicker::new(picker)
+                        .xsmall()
+                        .number_of_months(2)
+                        .placeholder("YYYY-MM-DD - YYYY-MM-DD")
+                        .presets(date_picker_presets(filter.today())),
+                ),
+        );
+    }
+
+    row.into_any_element()
 }
 
 fn decimal_to_f64(value: Decimal) -> f64 {
@@ -319,12 +511,30 @@ pub(crate) fn balance_sheet_mode_currencies(
     }
 }
 
-/// Currencies with at least one non-zero bucket in `mode` (falling back to all
-/// `series.currencies` when every currency is zero across all buckets).
+/// Currencies with at least one non-zero bucket in `mode` (preferring
+/// ledger-wide `income_currencies` / `expense_currencies` when populated, and
+/// falling back to all `series.currencies` when every currency is zero).
 pub(crate) fn income_mode_currencies(
     series: &IncomeExpenseSeries,
     mode: IncomeChartMode,
 ) -> Vec<(usize, &str)> {
+    let mode_list = match mode {
+        IncomeChartMode::Income => &series.income_currencies,
+        IncomeChartMode::Expenses => &series.expense_currencies,
+    };
+    if !mode_list.is_empty() {
+        let matched: Vec<(usize, &str)> = series
+            .currencies
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| mode_list.iter().any(|mc| mc == *c))
+            .map(|(ix, c)| (ix, c.as_str()))
+            .collect();
+        if !matched.is_empty() {
+            return matched;
+        }
+    }
+
     let non_zero: Vec<(usize, &str)> = series
         .currencies
         .iter()
@@ -411,9 +621,9 @@ fn render_empty_chart_state(message: &'static str, height: Pixels, cx: &App) -> 
 /// Renders the Balance Sheet line chart card (`Assets` or `Liabilities` vs time,
 /// switched via the bottom `Assets | Liabilities` button group).
 pub(crate) fn render_balance_sheet_chart<FM, FC>(
-    series: &BalanceSheetSeries,
-    mode: BalanceSheetMode,
-    selection: &CurrencySelection,
+    (series, mode): (&BalanceSheetSeries, BalanceSheetMode),
+    (selection, date_filter): (&CurrencySelection, &ChartDateFilter),
+    date_controls: AnyElement,
     on_select_mode: FM,
     on_toggle_currency: FC,
     cx: &App,
@@ -426,6 +636,7 @@ where
         return None;
     }
 
+    let sliced = series.slice(date_filter.effective_range());
     let theme = cx.theme();
     let active_currencies = balance_sheet_mode_currencies(series, mode);
     let checklist_currencies: Vec<String> = active_currencies
@@ -441,10 +652,10 @@ where
         }
         let color = balance_sheet_series_color(mode, palette_ix, theme);
         let label: SharedString = currency.to_string().into();
-        let mut vals = Vec::with_capacity(series.points.len());
-        let mut fmt = Vec::with_capacity(series.points.len());
+        let mut vals = Vec::with_capacity(sliced.points.len());
+        let mut fmt = Vec::with_capacity(sliced.points.len());
 
-        for pt in &series.points {
+        for pt in &sliced.points {
             let v = match mode {
                 BalanceSheetMode::Assets => pt.assets[ccy_ix],
                 BalanceSheetMode::Liabilities => pt.liabilities[ccy_ix],
@@ -482,15 +693,17 @@ where
         });
 
     let plot_height = px(180.);
-    let body = if lines.is_empty() {
+    let body = if sliced.points.is_empty() {
+        render_empty_chart_state("No data in selected date range", plot_height, cx)
+    } else if lines.is_empty() {
         render_empty_chart_state("Select at least one currency to display", plot_height, cx)
     } else {
-        let dates: Vec<SharedString> = series
+        let dates: Vec<SharedString> = sliced
             .points
             .iter()
             .map(|p| p.date.to_string().into())
             .collect();
-        let day_indices: Vec<i32> = series.points.iter().map(|p| p.day_index()).collect();
+        let day_indices: Vec<i32> = sliced.points.iter().map(|p| p.day_index()).collect();
         div()
             .id("balance-sheet-plot-area")
             .test_support()
@@ -531,12 +744,20 @@ where
                             .child(div().text_sm().font_medium().child(mode.title()))
                             .children(legend),
                     )
-                    .child(render_currency_checklist(
-                        &checklist_currencies,
-                        selection,
-                        on_toggle_currency,
-                        cx,
-                    )),
+                    .child(
+                        div()
+                            .h_flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_3()
+                            .child(date_controls)
+                            .child(render_currency_checklist(
+                                &checklist_currencies,
+                                selection,
+                                on_toggle_currency,
+                                cx,
+                            )),
+                    ),
             )
             .child(body)
             .child(
@@ -555,7 +776,8 @@ where
 pub(crate) fn render_account_balance_chart<F>(
     account: &SharedString,
     series: &AccountBalanceSeries,
-    selection: &CurrencySelection,
+    (selection, date_filter): (&CurrencySelection, &ChartDateFilter),
+    date_controls: AnyElement,
     on_toggle_currency: F,
     cx: &App,
 ) -> Option<AnyElement>
@@ -566,6 +788,7 @@ where
         return None;
     }
 
+    let sliced = series.slice(date_filter.effective_range());
     let theme = cx.theme();
     let mut lines = Vec::new();
     let mut legend = Vec::new();
@@ -576,9 +799,9 @@ where
         }
         let color = account_series_color(ccy_ix, theme);
         let label: SharedString = currency.clone().into();
-        let mut vals = Vec::with_capacity(series.points.len());
-        let mut fmt = Vec::with_capacity(series.points.len());
-        for pt in &series.points {
+        let mut vals = Vec::with_capacity(sliced.points.len());
+        let mut fmt = Vec::with_capacity(sliced.points.len());
+        for pt in &sliced.points {
             let b = pt.balances[ccy_ix];
             vals.push(decimal_to_f64(b));
             fmt.push(format_amount(b, currency));
@@ -593,15 +816,17 @@ where
     }
 
     let plot_height = px(156.);
-    let body = if lines.is_empty() {
+    let body = if sliced.points.is_empty() {
+        render_empty_chart_state("No data in selected date range", plot_height, cx)
+    } else if lines.is_empty() {
         render_empty_chart_state("Select at least one currency to display", plot_height, cx)
     } else {
-        let dates: Vec<SharedString> = series
+        let dates: Vec<SharedString> = sliced
             .points
             .iter()
             .map(|p| p.date.to_string().into())
             .collect();
-        let day_indices: Vec<i32> = series.points.iter().map(|p| p.day_index()).collect();
+        let day_indices: Vec<i32> = sliced.points.iter().map(|p| p.day_index()).collect();
         div()
             .id("account-balance-plot-area")
             .test_support()
@@ -641,12 +866,20 @@ where
                             .child(div().text_sm().font_medium().child("Account Balance"))
                             .children(legend),
                     )
-                    .child(render_currency_checklist(
-                        &series.currencies,
-                        selection,
-                        on_toggle_currency,
-                        cx,
-                    )),
+                    .child(
+                        div()
+                            .h_flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_3()
+                            .child(date_controls)
+                            .child(render_currency_checklist(
+                                &series.currencies,
+                                selection,
+                                on_toggle_currency,
+                                cx,
+                            )),
+                    ),
             )
             .child(body)
             .into_any_element(),
@@ -659,7 +892,7 @@ where
 pub(crate) fn render_income_expense_chart<FM, FI, FC>(
     series: &IncomeExpenseSeries,
     (mode, interval): (IncomeChartMode, TimeInterval),
-    selection: &CurrencySelection,
+    (selection, date_controls): (&CurrencySelection, AnyElement),
     on_select_mode: FM,
     on_select_interval: FI,
     on_toggle_currency: FC,
@@ -670,7 +903,7 @@ where
     FI: Fn(TimeInterval, &mut Window, &mut App) + 'static,
     FC: Fn(SharedString, bool, &mut Window, &mut App) + 'static,
 {
-    if series.currencies.is_empty() || series.buckets.is_empty() {
+    if series.currencies.is_empty() {
         return None;
     }
 
@@ -746,7 +979,9 @@ where
         });
 
     let plot_height = px(180.);
-    let body = if bars.is_empty() {
+    let body = if series.buckets.is_empty() {
+        render_empty_chart_state("No data in selected date range", plot_height, cx)
+    } else if bars.is_empty() {
         render_empty_chart_state("Select at least one currency to display", plot_height, cx)
     } else {
         let labels: Vec<SharedString> = series
@@ -797,12 +1032,20 @@ where
                             .child(interval_selector)
                             .children(legend),
                     )
-                    .child(render_currency_checklist(
-                        &checklist_currencies,
-                        selection,
-                        on_toggle_currency,
-                        cx,
-                    )),
+                    .child(
+                        div()
+                            .h_flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_3()
+                            .child(date_controls)
+                            .child(render_currency_checklist(
+                                &checklist_currencies,
+                                selection,
+                                on_toggle_currency,
+                                cx,
+                            )),
+                    ),
             )
             .child(body)
             .child(
@@ -1485,14 +1728,14 @@ mod tests {
     use std::str::FromStr;
 
     use lumi::web::{
-        BalanceSheetPoint, BalanceSheetSeries, IncomeExpenseBucket, IncomeExpenseSeries, NaiveDate,
-        TimeInterval,
+        BalanceSheetPoint, BalanceSheetSeries, ChartDatePreset, ChartDateRange,
+        IncomeExpenseBucket, IncomeExpenseSeries, NaiveDate, TimeInterval,
     };
     use rust_decimal::Decimal;
 
     use super::{
-        BalanceSheetMode, IncomeChartMode, balance_sheet_mode_currencies, format_amount,
-        income_mode_currencies,
+        BalanceSheetMode, ChartDateFilter, IncomeChartMode, balance_sheet_mode_currencies,
+        format_amount, income_mode_currencies,
     };
 
     fn dec(s: &str) -> Decimal {
@@ -1564,6 +1807,7 @@ mod tests {
                 income: vec![dec("0"), dec("3000.00")],
                 expenses: vec![dec("300.00"), dec("125.50")],
             }],
+            ..Default::default()
         };
         assert_eq!(
             income_mode_currencies(&inc, IncomeChartMode::Income),
@@ -1572,6 +1816,46 @@ mod tests {
         assert_eq!(
             income_mode_currencies(&inc, IncomeChartMode::Expenses),
             vec![(0, "EUR"), (1, "USD")]
+        );
+    }
+
+    #[test]
+    fn test_chart_date_filter_seeds_and_orders_custom_ranges() {
+        let ymd = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+        let mut filter = ChartDateFilter::default();
+        filter.set_today(ymd(2025, 6, 15));
+        assert_eq!(filter.preset(), ChartDatePreset::All);
+        assert_eq!(filter.effective_range(), ChartDateRange::ALL);
+
+        // Switching from `All` to `Custom` seeds from `series_bounds`.
+        assert!(filter.select_preset(
+            ChartDatePreset::Custom,
+            Some((ymd(2024, 1, 1), ymd(2025, 6, 1)))
+        ));
+        assert_eq!(filter.preset(), ChartDatePreset::Custom);
+        assert_eq!(
+            filter.effective_range(),
+            ChartDateRange::between(ymd(2024, 1, 1), ymd(2025, 6, 1))
+        );
+
+        // Reversed custom dates are normalized to `start <= end`.
+        assert!(filter.set_custom_range(Some(ymd(2025, 4, 1)), Some(ymd(2024, 2, 1))));
+        assert_eq!(
+            filter.effective_range(),
+            ChartDateRange::between(ymd(2024, 2, 1), ymd(2025, 4, 1))
+        );
+
+        // Preset ranges resolve relative to `today`, while remembering the
+        // custom range if the user switches back to `Custom`.
+        assert!(filter.select_preset(ChartDatePreset::OneYear, None));
+        assert_eq!(
+            filter.effective_range(),
+            ChartDateRange::between(ymd(2024, 6, 15), ymd(2025, 6, 15))
+        );
+        assert!(filter.select_preset(ChartDatePreset::Custom, None));
+        assert_eq!(
+            filter.effective_range(),
+            ChartDateRange::between(ymd(2024, 2, 1), ymd(2025, 4, 1))
         );
     }
 }

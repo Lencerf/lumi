@@ -2,12 +2,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui_kit::component::calendar::Date;
+use gpui_kit::component::date_picker::DatePickerEvent;
 use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, Pixels, ScrollDelta, Size,
     TestAppContext, WindowBounds, WindowOptions, point, px, size,
 };
-use lumi::web::{TimeInterval, TrieTable, TrieTableRow};
+use lumi::web::{
+    ChartDatePreset, ChartDateRange, NaiveDate, TimeInterval, TrieTable, TrieTableRow,
+};
 
 use crate::LumiApp;
 use crate::chart::{BalanceSheetMode, IncomeChartMode};
@@ -808,4 +812,197 @@ fn test_income_statement_bar_chart_switches_intervals_and_filters_currencies(
         })
         .unwrap();
     }
+}
+
+#[gpui_kit::test]
+fn test_balance_sheet_and_income_charts_support_date_range_presets_and_custom_picker(
+    cx: &mut TestAppContext,
+) {
+    let ymd = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+
+    // 1. Balance Sheet chart date range presets + custom DatePicker.
+    let (bs_handle, bs_app) = open_app(Page::BalanceSheet, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+
+    cx.update_window(bs_handle, |_, window, cx| {
+        let report = bs_app.read(cx).trie_report().expect("balance sheet shown");
+        report.update(cx, |r, cx| r.set_chart_today(ymd(2025, 6, 15), cx));
+        window.render_frame(cx);
+
+        assert_eq!(report.read(cx).chart_date_preset(), ChartDatePreset::All);
+        assert_eq!(report.read(cx).chart_date_range(), ChartDateRange::ALL);
+        assert!(window.try_find("chart-custom-date-picker").is_none());
+
+        for (short_id, preset, expected_range) in [
+            (
+                "1y",
+                ChartDatePreset::OneYear,
+                ChartDateRange::between(ymd(2024, 6, 15), ymd(2025, 6, 15)),
+            ),
+            (
+                "3y",
+                ChartDatePreset::ThreeYears,
+                ChartDateRange::between(ymd(2022, 6, 15), ymd(2025, 6, 15)),
+            ),
+            (
+                "10y",
+                ChartDatePreset::TenYears,
+                ChartDateRange::between(ymd(2015, 6, 15), ymd(2025, 6, 15)),
+            ),
+            (
+                "ytd",
+                ChartDatePreset::YearToDate,
+                ChartDateRange::between(ymd(2025, 1, 1), ymd(2025, 6, 15)),
+            ),
+        ] {
+            window.click((ElementId::from("chart-range"), short_id), cx);
+            window.render_frame(cx);
+            assert_eq!(report.read(cx).chart_date_preset(), preset);
+            assert_eq!(report.read(cx).chart_date_range(), expected_range);
+            assert!(window.try_find("balance-sheet-plot-area").is_some());
+        }
+
+        // Clicking `Custom` reveals the range DatePicker seeded from the prior
+        // range (`2025-01-01 ..= 2025-06-15`).
+        window.click((ElementId::from("chart-range"), "custom"), cx);
+        window.render_frame(cx);
+        assert_eq!(report.read(cx).chart_date_preset(), ChartDatePreset::Custom);
+        assert!(window.try_find("chart-custom-date-picker").is_some());
+
+        // Open the DatePicker popup and pick its first quick preset ("Past 1 year").
+        let picker = report
+            .read(cx)
+            .chart_date_picker()
+            .expect("date picker initialized")
+            .clone();
+        window.click(("date-picker", picker.entity_id()), cx);
+        window.render_frame(cx);
+        window.click(("preset", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(bs_handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = bs_app.read(cx).trie_report().expect("balance sheet shown");
+        assert_eq!(
+            report.read(cx).chart_date_range(),
+            ChartDateRange::between(ymd(2024, 6, 15), ymd(2025, 6, 15))
+        );
+        assert!(window.try_find("balance-sheet-plot-area").is_some());
+
+        // Choosing a custom range strictly before the ledger (`2020`) keeps the
+        // chart card and range controls mounted while hiding the plot area.
+        let picker = report
+            .read(cx)
+            .chart_date_picker()
+            .expect("date picker initialized")
+            .clone();
+        picker.update(cx, |state, cx| {
+            state.set_date(
+                Date::Range(Some(ymd(2020, 1, 1)), Some(ymd(2020, 12, 31))),
+                window,
+                cx,
+            );
+            cx.emit(DatePickerEvent::Change(state.date_time()));
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(bs_handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = bs_app.read(cx).trie_report().expect("balance sheet shown");
+        assert_eq!(
+            report.read(cx).chart_date_range(),
+            ChartDateRange::between(ymd(2020, 1, 1), ymd(2020, 12, 31))
+        );
+        assert!(
+            window
+                .try_find((ElementId::from("chart-card"), "balance-sheet"))
+                .is_some()
+        );
+        assert!(window.try_find("chart-date-range-bar").is_some());
+        assert!(window.try_find("balance-sheet-plot-area").is_none());
+
+        // Clicking `All` restores the full timeline and hides the custom picker.
+        window.click((ElementId::from("chart-range"), "all"), cx);
+        window.render_frame(cx);
+        assert_eq!(report.read(cx).chart_date_preset(), ChartDatePreset::All);
+        assert_eq!(report.read(cx).chart_date_range(), ChartDateRange::ALL);
+        assert!(window.try_find("chart-custom-date-picker").is_none());
+        assert!(window.try_find("balance-sheet-plot-area").is_some());
+    })
+    .unwrap();
+
+    // 2. Income Statement chart date range presets + empty-range resilience.
+    let (inc_handle, inc_app) = open_app(Page::Income, size(px(1200.), px(800.)), cx);
+    cx.run_until_parked();
+
+    let initial_table_gen = cx.read(|cx| {
+        inc_app
+            .read(cx)
+            .trie_report()
+            .expect("income report shown")
+            .read(cx)
+            .generation
+    });
+
+    cx.update_window(inc_handle, |_, window, cx| {
+        let report = inc_app.read(cx).trie_report().expect("income report shown");
+        report.update(cx, |r, cx| r.set_chart_today(ymd(2025, 6, 15), cx));
+        window.render_frame(cx);
+        window.click((ElementId::from("chart-range"), "ytd"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(inc_handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = inc_app.read(cx).trie_report().expect("income report shown");
+        assert_eq!(
+            report.read(cx).chart_date_preset(),
+            ChartDatePreset::YearToDate
+        );
+        assert_eq!(
+            report.read(cx).chart_date_range(),
+            ChartDateRange::between(ymd(2025, 1, 1), ymd(2025, 6, 15))
+        );
+        assert_eq!(
+            report.read(cx).generation,
+            initial_table_gen,
+            "changing chart date range should not re-query hierarchy tables"
+        );
+        // Ledger-wide Income currency (`USD`) stays available even though 2025
+        // only had EUR Expenses.
+        assert_eq!(report.read(cx).selected_chart_currencies(), ["USD"]);
+        assert!(window.try_find("income-expense-plot-area").is_some());
+
+        // Move `today` to 2026 where YTD has zero postings: chart card and
+        // range controls stay visible while the plot area shows the empty message.
+        report.update(cx, |r, cx| r.set_chart_today(ymd(2026, 6, 15), cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(inc_handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find((ElementId::from("chart-card"), "income"))
+                .is_some()
+        );
+        assert!(window.try_find("chart-date-range-bar").is_some());
+        assert!(window.try_find("income-expense-plot-area").is_none());
+
+        window.click((ElementId::from("chart-range"), "all"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(inc_handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("income-expense-plot-area").is_some());
+    })
+    .unwrap();
 }

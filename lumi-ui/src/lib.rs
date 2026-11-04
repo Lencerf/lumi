@@ -42,6 +42,7 @@ pub use journal_report::{
     ActivateRow, EditEntry, JournalReport, OpenAccount, RECORD_TYPES, ShowInContext, ShowInJournal,
     TogglePostings,
 };
+pub use lumi::web::{ChartDatePreset, ChartDateRange};
 pub use navigation::{Page, ReportEvent};
 pub use session::LedgerSession;
 pub use source_editor::{SaveSource, SourceEditor};

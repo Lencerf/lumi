@@ -6,8 +6,8 @@ use lumi::web::{FilterOptions, JournalItem, TrieOptions, TrieTable, TrieTableRow
 use lumi::{ErrorLevel, Ledger, Source, edit, query};
 
 use crate::source::{
-    AccountBalanceSeries, BalanceSheetSeries, Completions, IncomeExpenseSeries, JournalPage,
-    LedgerSource, Positions, TimeInterval,
+    AccountBalanceSeries, BalanceSheetSeries, ChartDateRange, Completions, IncomeExpenseSeries,
+    JournalPage, LedgerSource, Positions, TimeInterval,
 };
 
 /// A ledger parsed in this process from a file on disk.
@@ -120,10 +120,11 @@ impl LedgerSource for LocalLedger {
     fn income_expense_series(
         &self,
         interval: TimeInterval,
+        range: ChartDateRange,
         cx: &mut App,
     ) -> Task<Result<IncomeExpenseSeries>> {
         self.query(cx, move |loaded| {
-            query::income_expense_series(&loaded.ledger, interval)
+            query::income_expense_series_in_range(&loaded.ledger, interval, range)
         })
     }
 

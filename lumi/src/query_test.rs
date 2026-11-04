@@ -4,10 +4,13 @@ use rust_decimal::Decimal;
 
 use crate::Ledger;
 use crate::query::{
-    account_balance_series, balance_sheet_series, completions, income_expense_series, journal,
-    journal_page_of, positions, source_files, trie, trie_table,
+    account_balance_series, balance_sheet_series, completions, income_expense_series,
+    income_expense_series_in_range, journal, journal_page_of, positions, source_files, trie,
+    trie_table,
 };
-use crate::web::{FilterOptions, TimeInterval, TrieOptions};
+use crate::web::{
+    ChartDatePreset, ChartDateRange, FilterOptions, NaiveDate, TimeInterval, TrieOptions,
+};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/query_test.bean");
 
@@ -772,4 +775,122 @@ fn test_income_expense_series_buckets_daily_monthly_quarterly_yearly() {
     assert_eq!(daily.buckets.len(), 492);
     assert_eq!(daily.buckets.first().unwrap().label, "2024-01-15");
     assert_eq!(daily.buckets.last().unwrap().label, "2025-05-20");
+}
+
+#[test]
+fn test_chart_date_presets_and_series_date_range_filtering() {
+    let ymd = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+    let leap_day = ymd(2024, 2, 29);
+    assert_eq!(
+        ChartDatePreset::OneYear.resolve(leap_day),
+        Some(ChartDateRange::between(ymd(2023, 2, 28), leap_day))
+    );
+    assert_eq!(
+        ChartDatePreset::ThreeYears.resolve(leap_day),
+        Some(ChartDateRange::between(ymd(2021, 2, 28), leap_day))
+    );
+    assert_eq!(
+        ChartDatePreset::TenYears.resolve(leap_day),
+        Some(ChartDateRange::between(ymd(2014, 2, 28), leap_day))
+    );
+    assert_eq!(
+        ChartDatePreset::YearToDate.resolve(ymd(2025, 6, 15)),
+        Some(ChartDateRange::between(ymd(2025, 1, 1), ymd(2025, 6, 15)))
+    );
+    assert_eq!(
+        ChartDatePreset::All.resolve(ymd(2025, 6, 15)),
+        Some(ChartDateRange::ALL)
+    );
+    assert_eq!(ChartDatePreset::Custom.resolve(ymd(2025, 6, 15)), None);
+
+    let ledger = fixture();
+    let bs = balance_sheet_series(&ledger);
+    assert_eq!(bs.date_bounds(), Some((ymd(2024, 1, 1), ymd(2025, 6, 1))));
+
+    // YTD in 2025 (`2025-01-01 ..= 2025-06-15`) carries forward the end-of-2024
+    // cumulative balance onto `2025-01-01` and extends to `2025-06-15`.
+    let ytd_range = ChartDatePreset::YearToDate
+        .resolve(ymd(2025, 6, 15))
+        .unwrap();
+    let bs_ytd = bs.slice(ytd_range);
+    let bs_ytd_pts: Vec<(String, Vec<Decimal>, Vec<Decimal>)> = bs_ytd
+        .points
+        .iter()
+        .map(|p| (p.date.to_string(), p.assets.clone(), p.liabilities.clone()))
+        .collect();
+    assert_eq!(
+        bs_ytd_pts,
+        [
+            (
+                "2025-01-01".to_string(),
+                vec![dec("0"), dec("4554.50")],
+                vec![dec("0"), dec("-80.00")],
+            ),
+            (
+                "2025-05-20".to_string(),
+                vec![dec("-300.00"), dec("4554.50")],
+                vec![dec("0"), dec("-80.00")],
+            ),
+            (
+                "2025-06-01".to_string(),
+                vec![dec("-300.00"), dec("4474.50")],
+                vec![dec("0"), dec("0.00")],
+            ),
+            (
+                "2025-06-15".to_string(),
+                vec![dec("-300.00"), dec("4474.50")],
+                vec![dec("0"), dec("0.00")],
+            ),
+        ]
+    );
+
+    // An account with no transactions inside `[2025-01-01, 2025-06-15]` still
+    // carries forward its prior balance (`54.50 USD`) across the range.
+    let cash = account_balance_series(&ledger, "Assets:Cash", &FilterOptions::default());
+    let cash_ytd = cash.slice(ytd_range);
+    let cash_ytd_pts: Vec<(String, Decimal)> = cash_ytd
+        .points
+        .iter()
+        .map(|p| (p.date.to_string(), p.balances[0]))
+        .collect();
+    assert_eq!(
+        cash_ytd_pts,
+        [
+            ("2025-01-01".to_string(), dec("54.50")),
+            ("2025-06-15".to_string(), dec("54.50")),
+        ]
+    );
+
+    // A range strictly before the ledger began yields zero points while keeping
+    // the currency list intact.
+    let pre_ledger = bs.slice(ChartDateRange::between(ymd(2020, 1, 1), ymd(2020, 12, 31)));
+    assert_eq!(pre_ledger.currencies, ["EUR", "USD"]);
+    assert!(pre_ledger.points.is_empty());
+
+    // Income/Expense flow chart restricted to 2025 YTD includes only 2025
+    // postings (`2025-05`), while retaining ledger-wide currencies and bounds.
+    let inc_ytd = income_expense_series_in_range(&ledger, TimeInterval::Monthly, ytd_range);
+    assert_eq!(inc_ytd.currencies, ["EUR", "USD"]);
+    assert_eq!(inc_ytd.income_currencies, ["USD"]);
+    assert_eq!(inc_ytd.expense_currencies, ["EUR", "USD"]);
+    assert_eq!(
+        inc_ytd.date_bounds(),
+        Some((ymd(2024, 1, 15), ymd(2025, 5, 20)))
+    );
+    assert_eq!(inc_ytd.buckets.len(), 1);
+    assert_eq!(inc_ytd.buckets[0].label, "2025-05");
+    assert_eq!(inc_ytd.buckets[0].income, [dec("0"), dec("0")]);
+    assert_eq!(inc_ytd.buckets[0].expenses, [dec("300.00"), dec("0")]);
+
+    // Flow chart in an empty range returns zero buckets while preserving
+    // ledger-wide currency metadata.
+    let inc_empty = income_expense_series_in_range(
+        &ledger,
+        TimeInterval::Monthly,
+        ChartDateRange::between(ymd(2026, 1, 1), ymd(2026, 12, 31)),
+    );
+    assert_eq!(inc_empty.currencies, ["EUR", "USD"]);
+    assert_eq!(inc_empty.income_currencies, ["USD"]);
+    assert_eq!(inc_empty.expense_currencies, ["EUR", "USD"]);
+    assert!(inc_empty.buckets.is_empty());
 }

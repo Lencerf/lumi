@@ -11,9 +11,10 @@ use chrono::{Datelike, NaiveDate};
 use rust_decimal::Decimal;
 
 use crate::web::{
-    AccountBalancePoint, AccountBalanceSeries, BalanceSheetPoint, BalanceSheetSeries, Completions,
-    DEFAULT_ENTRIES_PER_PAGE, FilterOptions, IncomeExpenseBucket, IncomeExpenseSeries, JournalItem,
-    Position, TimeInterval, TrieNode, TrieOptions, TrieTable, TrieTableRow,
+    AccountBalancePoint, AccountBalanceSeries, BalanceSheetPoint, BalanceSheetSeries,
+    ChartDateRange, Completions, DEFAULT_ENTRIES_PER_PAGE, FilterOptions, IncomeExpenseBucket,
+    IncomeExpenseSeries, JournalItem, Position, TimeInterval, TrieNode, TrieOptions, TrieTable,
+    TrieTableRow,
 };
 use crate::{BalanceSheet, Ledger, Posting, Source, Transaction, TxnFlag};
 
@@ -733,13 +734,30 @@ impl BucketKey {
     }
 }
 
-/// Aggregates `Income` and `Expenses` postings into contiguous calendar buckets
-/// for `interval`, counting positions held at cost in their cost currency.
+/// Aggregates `Income` and `Expenses` postings across all dates into contiguous
+/// calendar buckets for `interval`, counting positions held at cost in their
+/// cost currency.
 ///
 /// Earned income (`Income` postings, negative in Beancount) is negated so
 /// positive earned income can be compared directly alongside positive expenses.
 pub fn income_expense_series(ledger: &Ledger, interval: TimeInterval) -> IncomeExpenseSeries {
+    income_expense_series_in_range(ledger, interval, ChartDateRange::ALL)
+}
+
+/// Aggregates `Income` and `Expenses` postings occurring within `range` into
+/// contiguous calendar buckets for `interval`, while retaining ledger-wide
+/// currency and date metadata so chart controls remain populated even when
+/// `range` contains no postings.
+pub fn income_expense_series_in_range(
+    ledger: &Ledger,
+    interval: TimeInterval,
+    range: ChartDateRange,
+) -> IncomeExpenseSeries {
     let mut currencies_set: HashSet<&str> = HashSet::new();
+    let mut income_currencies_set: HashSet<&str> = HashSet::new();
+    let mut expense_currencies_set: HashSet<&str> = HashSet::new();
+    let mut first_date: Option<NaiveDate> = None;
+    let mut last_date: Option<NaiveDate> = None;
     let mut by_bucket: HashMap<(BucketKey, &str), (Decimal, Decimal)> = HashMap::new();
     let mut min_key: Option<BucketKey> = None;
     let mut max_key: Option<BucketKey> = None;
@@ -748,7 +766,9 @@ pub fn income_expense_series(ledger: &Ledger, interval: TimeInterval) -> IncomeE
         if txn.flag() == TxnFlag::Balance {
             continue;
         }
-        let key = BucketKey::from_date(txn.date(), interval);
+        let date = txn.date();
+        let in_range = range.contains(date);
+        let key = BucketKey::from_date(date, interval);
         for posting in txn.postings() {
             let (currency, amount) = posting_cost_amount(posting);
             if amount.is_zero() {
@@ -760,6 +780,17 @@ pub fn income_expense_series(ledger: &Ledger, interval: TimeInterval) -> IncomeE
                 continue;
             }
             currencies_set.insert(currency);
+            if is_income {
+                income_currencies_set.insert(currency);
+            } else {
+                expense_currencies_set.insert(currency);
+            }
+            first_date = Some(first_date.map_or(date, |cur| cur.min(date)));
+            last_date = Some(last_date.map_or(date, |cur| cur.max(date)));
+
+            if !in_range {
+                continue;
+            }
             let slot = by_bucket.entry((key, currency)).or_default();
             if is_income {
                 slot.0 -= amount;
@@ -771,41 +802,50 @@ pub fn income_expense_series(ledger: &Ledger, interval: TimeInterval) -> IncomeE
         }
     }
 
-    let (Some(start), Some(end)) = (min_key, max_key) else {
+    if currencies_set.is_empty() {
         return IncomeExpenseSeries {
             interval,
-            currencies: Vec::new(),
-            buckets: Vec::new(),
+            ..Default::default()
         };
-    };
+    }
 
     let mut currencies: Vec<&str> = currencies_set.into_iter().collect();
     currencies.sort_unstable();
+    let mut income_currencies: Vec<&str> = income_currencies_set.into_iter().collect();
+    income_currencies.sort_unstable();
+    let mut expense_currencies: Vec<&str> = expense_currencies_set.into_iter().collect();
+    expense_currencies.sort_unstable();
 
     let mut buckets = Vec::new();
-    let mut current = Some(start);
-    while let Some(key) = current {
-        let mut income = Vec::with_capacity(currencies.len());
-        let mut expenses = Vec::with_capacity(currencies.len());
-        for &currency in &currencies {
-            let (inc, exp) = by_bucket.get(&(key, currency)).copied().unwrap_or_default();
-            income.push(inc);
-            expenses.push(exp);
+    if let (Some(start), Some(end)) = (min_key, max_key) {
+        let mut current = Some(start);
+        while let Some(key) = current {
+            let mut income = Vec::with_capacity(currencies.len());
+            let mut expenses = Vec::with_capacity(currencies.len());
+            for &currency in &currencies {
+                let (inc, exp) = by_bucket.get(&(key, currency)).copied().unwrap_or_default();
+                income.push(inc);
+                expenses.push(exp);
+            }
+            buckets.push(IncomeExpenseBucket {
+                label: key.label(),
+                income,
+                expenses,
+            });
+            if key >= end {
+                break;
+            }
+            current = key.next();
         }
-        buckets.push(IncomeExpenseBucket {
-            label: key.label(),
-            income,
-            expenses,
-        });
-        if key >= end {
-            break;
-        }
-        current = key.next();
     }
 
     IncomeExpenseSeries {
         interval,
         currencies: currencies.into_iter().map(str::to_string).collect(),
+        income_currencies: income_currencies.into_iter().map(str::to_string).collect(),
+        expense_currencies: expense_currencies.into_iter().map(str::to_string).collect(),
+        first_date,
+        last_date,
         buckets,
     }
 }

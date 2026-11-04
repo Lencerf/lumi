@@ -1,21 +1,27 @@
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::calendar::Date;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::date_picker::{DatePickerEvent, DatePickerState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, Size, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Context, ElementId, Entity, EventEmitter, Font, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
+    AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter, Font, FontWeight,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
     Styled as _, Subscription, Task, TestSupportExt as _, Window, div, px, relative, rems,
 };
-use lumi::web::{BalanceSheetSeries, IncomeExpenseSeries, TimeInterval, TrieOptions, TrieTable};
+use lumi::web::{
+    BalanceSheetSeries, ChartDatePreset, ChartDateRange, IncomeExpenseSeries, NaiveDate,
+    TimeInterval, TrieOptions, TrieTable,
+};
 
 use crate::chart::{
-    BalanceSheetMode, CurrencySelection, IncomeChartMode, render_balance_sheet_chart,
-    render_income_expense_chart,
+    BalanceSheetMode, ChartDateFilter, CurrencySelection, IncomeChartMode, new_chart_date_picker,
+    render_balance_sheet_chart, render_date_range_controls, render_income_expense_chart,
+    sync_chart_date_picker,
 };
 #[cfg(test)]
 use crate::chart::{balance_sheet_mode_currencies, income_mode_currencies};
@@ -46,6 +52,8 @@ pub struct TrieReport {
     _load_task: Option<Task<()>>,
     chart: ReportChart,
     chart_currencies: CurrencySelection,
+    chart_date_filter: ChartDateFilter,
+    date_picker: Option<Entity<DatePickerState>>,
     balance_sheet_mode: BalanceSheetMode,
     income_chart_mode: IncomeChartMode,
     income_interval: TimeInterval,
@@ -66,6 +74,7 @@ struct LoadKey {
 struct ChartLoadKey {
     revision: u64,
     interval: TimeInterval,
+    range: ChartDateRange,
 }
 
 enum ReportChart {
@@ -157,6 +166,8 @@ impl TrieReport {
             _load_task: None,
             chart: ReportChart::None,
             chart_currencies: CurrencySelection::default(),
+            chart_date_filter: ChartDateFilter::default(),
+            date_picker: None,
             balance_sheet_mode: BalanceSheetMode::default(),
             income_chart_mode: IncomeChartMode::default(),
             income_interval: TimeInterval::default(),
@@ -187,6 +198,27 @@ impl TrieReport {
 
     pub fn income_interval(&self) -> TimeInterval {
         self.income_interval
+    }
+
+    pub fn chart_date_preset(&self) -> ChartDatePreset {
+        self.chart_date_filter.preset()
+    }
+
+    pub fn chart_date_range(&self) -> ChartDateRange {
+        self.chart_date_filter.effective_range()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn chart_date_picker(&self) -> Option<&Entity<DatePickerState>> {
+        self.date_picker.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_chart_today(&mut self, today: NaiveDate, cx: &mut Context<Self>) {
+        if self.chart_date_filter.set_today(today) {
+            self.load_chart(cx);
+            cx.notify();
+        }
     }
 
     #[cfg(test)]
@@ -261,6 +293,57 @@ impl TrieReport {
         }
     }
 
+    fn ensure_date_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.date_picker.is_none() {
+            let picker = cx.new(|cx| new_chart_date_picker(window, cx));
+            sync_chart_date_picker(&picker, &self.chart_date_filter, window, cx);
+            self._subscriptions
+                .push(cx.subscribe(&picker, Self::on_date_picker_event));
+            self.date_picker = Some(picker);
+        }
+    }
+
+    fn chart_series_bounds(&self) -> Option<(NaiveDate, NaiveDate)> {
+        match &self.chart {
+            ReportChart::None => None,
+            ReportChart::BalanceSheet(series) => series.date_bounds(),
+            ReportChart::Income(series) => series.date_bounds(),
+        }
+    }
+
+    fn select_chart_date_preset(
+        &mut self,
+        preset: ChartDatePreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let bounds = self.chart_series_bounds();
+        if self.chart_date_filter.select_preset(preset, bounds) {
+            if preset == ChartDatePreset::Custom
+                && let Some(picker) = &self.date_picker
+            {
+                sync_chart_date_picker(picker, &self.chart_date_filter, window, cx);
+            }
+            self.load_chart(cx);
+            cx.notify();
+        }
+    }
+
+    fn on_date_picker_event(
+        &mut self,
+        _: Entity<DatePickerState>,
+        event: &DatePickerEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let DatePickerEvent::Change(dt) = event;
+        if let Date::Range(start, end) = dt.date()
+            && self.chart_date_filter.set_custom_range(start, end)
+        {
+            self.load_chart(cx);
+            cx.notify();
+        }
+    }
+
     /// Queries the tables and chart for the current ledger revision and options,
     /// unless those exact requests have already been made.
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -323,9 +406,17 @@ impl TrieReport {
             }
             (session.revision(), session.source().clone())
         };
-        let key = ChartLoadKey {
-            revision,
-            interval: self.income_interval,
+        let key = match self.page {
+            Page::Income => ChartLoadKey {
+                revision,
+                interval: self.income_interval,
+                range: self.chart_date_filter.effective_range(),
+            },
+            _ => ChartLoadKey {
+                revision,
+                interval: TimeInterval::default(),
+                range: ChartDateRange::ALL,
+            },
         };
         if self.chart_requested == Some(key) {
             return;
@@ -335,7 +426,7 @@ impl TrieReport {
         let generation = self.chart_generation;
         match self.page {
             Page::Income => {
-                let task = source.income_expense_series(self.income_interval, cx);
+                let task = source.income_expense_series(key.interval, key.range, cx);
                 self._chart_task = Some(cx.spawn(async move |this, cx| {
                     let Ok(series) = task.await else {
                         return;
@@ -376,15 +467,27 @@ impl TrieReport {
     }
 
     fn render_chart(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let preset_entity = cx.entity().downgrade();
+        let date_controls = render_date_range_controls(
+            self.page.id(),
+            &self.chart_date_filter,
+            self.date_picker.as_ref(),
+            move |preset, window, cx| {
+                let _ = preset_entity.update(cx, |this, cx| {
+                    this.select_chart_date_preset(preset, window, cx);
+                });
+            },
+        );
+
         match &self.chart {
             ReportChart::None => None,
             ReportChart::BalanceSheet(series) => {
                 let mode_entity = cx.entity().downgrade();
                 let currency_entity = cx.entity().downgrade();
                 render_balance_sheet_chart(
-                    series,
-                    self.balance_sheet_mode,
-                    &self.chart_currencies,
+                    (series, self.balance_sheet_mode),
+                    (&self.chart_currencies, &self.chart_date_filter),
+                    date_controls,
                     move |mode, _, cx| {
                         let _ = mode_entity.update(cx, |this, cx| {
                             this.set_balance_sheet_mode(mode, cx);
@@ -405,7 +508,7 @@ impl TrieReport {
                 render_income_expense_chart(
                     series,
                     (self.income_chart_mode, self.income_interval),
-                    &self.chart_currencies,
+                    (&self.chart_currencies, date_controls),
                     move |mode, _, cx| {
                         let _ = mode_entity.update(cx, |this, cx| {
                             this.set_income_chart_mode(mode, cx);
@@ -820,6 +923,7 @@ impl EventEmitter<ReportEvent> for TrieReport {}
 
 impl Render for TrieReport {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_date_picker(window, cx);
         let page = self.page.clone();
         let chart = self.render_chart(cx);
         let mut tables = self.tables.iter();

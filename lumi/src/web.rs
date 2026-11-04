@@ -3,8 +3,8 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use crate::{Currency, UnitCost};
-use chrono::Datelike;
 pub use chrono::NaiveDate;
+use chrono::{Datelike, Local, Months};
 use rust_decimal::Decimal;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,145 @@ impl TimeInterval {
     }
 }
 
+/// Inclusive `[start, end]` calendar date range for filtering chart series.
+///
+/// Either bound may be `None` to leave that end open (`All` has both `None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ChartDateRange {
+    pub start: Option<NaiveDate>,
+    pub end: Option<NaiveDate>,
+}
+
+impl ChartDateRange {
+    /// Unbounded date range (`All`).
+    pub const ALL: Self = Self {
+        start: None,
+        end: None,
+    };
+
+    /// Creates an inclusive `[start, end]` range, ordering the two dates if
+    /// `a > b`.
+    pub fn between(a: NaiveDate, b: NaiveDate) -> Self {
+        if a <= b {
+            Self {
+                start: Some(a),
+                end: Some(b),
+            }
+        } else {
+            Self {
+                start: Some(b),
+                end: Some(a),
+            }
+        }
+    }
+
+    pub fn is_unbounded(&self) -> bool {
+        self.start.is_none() && self.end.is_none()
+    }
+
+    pub fn contains(&self, date: NaiveDate) -> bool {
+        if let (Some(start), Some(end)) = (self.start, self.end)
+            && start > end
+        {
+            return false;
+        }
+        self.start.is_none_or(|start| date >= start) && self.end.is_none_or(|end| date <= end)
+    }
+}
+
+/// Quick-select date range presets for charts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum ChartDatePreset {
+    OneYear,
+    ThreeYears,
+    TenYears,
+    YearToDate,
+    #[default]
+    All,
+    Custom,
+}
+
+impl ChartDatePreset {
+    /// All selectable presets in toolbar display order.
+    pub const ALL: [Self; 6] = [
+        Self::OneYear,
+        Self::ThreeYears,
+        Self::TenYears,
+        Self::YearToDate,
+        Self::All,
+        Self::Custom,
+    ];
+
+    /// Compact button label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OneYear => "1Y",
+            Self::ThreeYears => "3Y",
+            Self::TenYears => "10Y",
+            Self::YearToDate => "YTD",
+            Self::All => "All",
+            Self::Custom => "Custom",
+        }
+    }
+
+    /// Descriptive tooltip label.
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            Self::OneYear => "Past 1 year",
+            Self::ThreeYears => "Past 3 years",
+            Self::TenYears => "Past 10 years",
+            Self::YearToDate => "Year to date",
+            Self::All => "All dates",
+            Self::Custom => "Custom date range",
+        }
+    }
+
+    /// Lowercase identifier for element IDs.
+    pub fn short_id(self) -> &'static str {
+        match self {
+            Self::OneYear => "1y",
+            Self::ThreeYears => "3y",
+            Self::TenYears => "10y",
+            Self::YearToDate => "ytd",
+            Self::All => "all",
+            Self::Custom => "custom",
+        }
+    }
+
+    /// Resolves a fixed preset relative to `today`, returning `None` for
+    /// [`Self::Custom`] (whose range comes from user selection).
+    pub fn resolve(self, today: NaiveDate) -> Option<ChartDateRange> {
+        match self {
+            Self::OneYear => Some(ChartDateRange {
+                start: today.checked_sub_months(Months::new(12)),
+                end: Some(today),
+            }),
+            Self::ThreeYears => Some(ChartDateRange {
+                start: today.checked_sub_months(Months::new(36)),
+                end: Some(today),
+            }),
+            Self::TenYears => Some(ChartDateRange {
+                start: today.checked_sub_months(Months::new(120)),
+                end: Some(today),
+            }),
+            Self::YearToDate => Some(ChartDateRange {
+                start: NaiveDate::from_ymd_opt(today.year(), 1, 1),
+                end: Some(today),
+            }),
+            Self::All => Some(ChartDateRange::ALL),
+            Self::Custom => None,
+        }
+    }
+}
+
+/// Today's local calendar date.
+pub fn today_date() -> NaiveDate {
+    Local::now().date_naive()
+}
+
 /// Cumulative `Assets` and `Liabilities` balances over time, grouped by
 /// currency.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -147,6 +286,66 @@ pub struct BalanceSheetSeries {
     /// Chronological end-of-day snapshots on dates touching `Assets` or
     /// `Liabilities`.
     pub points: Vec<BalanceSheetPoint>,
+}
+
+impl BalanceSheetSeries {
+    /// Earliest and latest snapshot dates in `points`, if non-empty.
+    pub fn date_bounds(&self) -> Option<(NaiveDate, NaiveDate)> {
+        Some((self.points.first()?.date, self.points.last()?.date))
+    }
+
+    /// Slices this cumulative series to `range`, carrying forward any balance
+    /// accrued strictly before `range.start` onto `range.start` and extending
+    /// the final balance horizontally to `range.end` when bounded.
+    pub fn slice(&self, range: ChartDateRange) -> Self {
+        if range.is_unbounded() || self.points.is_empty() {
+            return self.clone();
+        }
+        if let (Some(start), Some(end)) = (range.start, range.end)
+            && start > end
+        {
+            return Self {
+                currencies: self.currencies.clone(),
+                points: Vec::new(),
+            };
+        }
+
+        let prior = range
+            .start
+            .and_then(|start| self.points.iter().rfind(|pt| pt.date < start));
+        let in_range: Vec<&BalanceSheetPoint> = self
+            .points
+            .iter()
+            .filter(|pt| range.contains(pt.date))
+            .collect();
+
+        let mut points = Vec::new();
+        if let (Some(start), Some(prev)) = (range.start, prior)
+            && in_range.first().is_none_or(|first| first.date > start)
+        {
+            points.push(BalanceSheetPoint {
+                date: start,
+                assets: prev.assets.clone(),
+                liabilities: prev.liabilities.clone(),
+            });
+        }
+        points.extend(in_range.into_iter().cloned());
+
+        if let (Some(end), Some(last)) = (range.end, points.last().cloned())
+            && last.date < end
+        {
+            points.push(BalanceSheetPoint {
+                date: end,
+                assets: last.assets,
+                liabilities: last.liabilities,
+            });
+        }
+
+        Self {
+            currencies: self.currencies.clone(),
+            points,
+        }
+    }
 }
 
 /// One date's cumulative `Assets` and `Liabilities` balances per currency
@@ -180,6 +379,64 @@ pub struct AccountBalanceSeries {
     pub points: Vec<AccountBalancePoint>,
 }
 
+impl AccountBalanceSeries {
+    /// Earliest and latest snapshot dates in `points`, if non-empty.
+    pub fn date_bounds(&self) -> Option<(NaiveDate, NaiveDate)> {
+        Some((self.points.first()?.date, self.points.last()?.date))
+    }
+
+    /// Slices this cumulative series to `range`, carrying forward any balance
+    /// accrued strictly before `range.start` onto `range.start` and extending
+    /// the final balance horizontally to `range.end` when bounded.
+    pub fn slice(&self, range: ChartDateRange) -> Self {
+        if range.is_unbounded() || self.points.is_empty() {
+            return self.clone();
+        }
+        if let (Some(start), Some(end)) = (range.start, range.end)
+            && start > end
+        {
+            return Self {
+                currencies: self.currencies.clone(),
+                points: Vec::new(),
+            };
+        }
+
+        let prior = range
+            .start
+            .and_then(|start| self.points.iter().rfind(|pt| pt.date < start));
+        let in_range: Vec<&AccountBalancePoint> = self
+            .points
+            .iter()
+            .filter(|pt| range.contains(pt.date))
+            .collect();
+
+        let mut points = Vec::new();
+        if let (Some(start), Some(prev)) = (range.start, prior)
+            && in_range.first().is_none_or(|first| first.date > start)
+        {
+            points.push(AccountBalancePoint {
+                date: start,
+                balances: prev.balances.clone(),
+            });
+        }
+        points.extend(in_range.into_iter().cloned());
+
+        if let (Some(end), Some(last)) = (range.end, points.last().cloned())
+            && last.date < end
+        {
+            points.push(AccountBalancePoint {
+                date: end,
+                balances: last.balances,
+            });
+        }
+
+        Self {
+            currencies: self.currencies.clone(),
+            points,
+        }
+    }
+}
+
 /// One date's cumulative account balance per currency (aligned by index with
 /// [`AccountBalanceSeries::currencies`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,9 +463,29 @@ pub struct IncomeExpenseSeries {
     pub interval: TimeInterval,
     /// Sorted list of currencies that appear in `Income` or `Expenses`.
     pub currencies: Vec<Currency>,
-    /// Contiguous calendar buckets from the first to the last `Income` or
-    /// `Expenses` posting.
+    /// Sorted list of currencies that appear in `Income` across the ledger.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub income_currencies: Vec<Currency>,
+    /// Sorted list of currencies that appear in `Expenses` across the ledger.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub expense_currencies: Vec<Currency>,
+    /// Earliest `Income` or `Expenses` posting date in the ledger.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub first_date: Option<NaiveDate>,
+    /// Latest `Income` or `Expenses` posting date in the ledger.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub last_date: Option<NaiveDate>,
+    /// Contiguous calendar buckets from the first to the last matching `Income`
+    /// or `Expenses` posting.
     pub buckets: Vec<IncomeExpenseBucket>,
+}
+
+impl IncomeExpenseSeries {
+    /// Earliest and latest `Income` or `Expenses` posting dates across the
+    /// ledger, if present.
+    pub fn date_bounds(&self) -> Option<(NaiveDate, NaiveDate)> {
+        Some((self.first_date?, self.last_date?))
+    }
 }
 
 /// One calendar bucket's `Income` and `Expenses` totals per currency (aligned

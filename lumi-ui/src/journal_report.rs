@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::calendar::Date;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::date_picker::{DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Search};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::pagination::Pagination;
@@ -20,12 +22,19 @@ use gpui_kit::{
     Render, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
     Subscription, Task, TestSupportExt as _, Window, div, px,
 };
-use lumi::web::{AccountBalanceSeries, DEFAULT_ENTRIES_PER_PAGE, FilterOptions};
+#[cfg(test)]
+use lumi::web::NaiveDate;
+use lumi::web::{
+    AccountBalanceSeries, ChartDatePreset, ChartDateRange, DEFAULT_ENTRIES_PER_PAGE, FilterOptions,
+};
 use lumi::{Source, TxnFlag};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::chart::{CurrencySelection, render_account_balance_chart};
+use crate::chart::{
+    ChartDateFilter, CurrencySelection, new_chart_date_picker, render_account_balance_chart,
+    render_date_range_controls, sync_chart_date_picker,
+};
 use crate::entry_editor::EntryEditor;
 use crate::input_guard::EditDragGuard;
 use crate::navigation::{Page, ReportEvent};
@@ -111,6 +120,8 @@ pub struct JournalReport {
     requested_revision: Option<u64>,
     account_chart: Option<AccountBalanceSeries>,
     chart_currencies: CurrencySelection,
+    chart_date_filter: ChartDateFilter,
+    date_picker: Option<Entity<DatePickerState>>,
     chart_generation: u64,
     _chart_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -165,11 +176,17 @@ impl JournalReport {
                 .clean_on_escape()
         });
         let search_drag_guard = EditDragGuard::new(&search_input);
-        let _subscriptions = vec![
+        let date_picker = page
+            .account()
+            .map(|_| cx.new(|cx| new_chart_date_picker(window, cx)));
+        let mut _subscriptions = vec![
             cx.observe(&session, |this, _, cx| this.load(cx)),
             cx.subscribe(&table, Self::on_table_event),
             cx.subscribe(&search_input, Self::on_search_input_event),
         ];
+        if let Some(picker) = &date_picker {
+            _subscriptions.push(cx.subscribe(picker, Self::on_date_picker_event));
+        }
         let mut this = Self {
             page,
             session,
@@ -179,6 +196,8 @@ impl JournalReport {
             requested_revision: None,
             account_chart: None,
             chart_currencies: CurrencySelection::default(),
+            chart_date_filter: ChartDateFilter::default(),
+            date_picker,
             chart_generation: 0,
             _chart_task: None,
             _subscriptions,
@@ -189,6 +208,26 @@ impl JournalReport {
 
     pub fn page(&self) -> &Page {
         &self.page
+    }
+
+    pub fn chart_date_preset(&self) -> ChartDatePreset {
+        self.chart_date_filter.preset()
+    }
+
+    pub fn chart_date_range(&self) -> ChartDateRange {
+        self.chart_date_filter.effective_range()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn chart_date_picker(&self) -> Option<&Entity<DatePickerState>> {
+        self.date_picker.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_chart_today(&mut self, today: NaiveDate, cx: &mut Context<Self>) {
+        if self.chart_date_filter.set_today(today) {
+            cx.notify();
+        }
     }
 
     #[cfg(test)]
@@ -452,14 +491,60 @@ impl JournalReport {
         }
     }
 
+    fn select_chart_date_preset(
+        &mut self,
+        preset: ChartDatePreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let bounds = self
+            .account_chart
+            .as_ref()
+            .and_then(AccountBalanceSeries::date_bounds);
+        if self.chart_date_filter.select_preset(preset, bounds) {
+            if preset == ChartDatePreset::Custom
+                && let Some(picker) = &self.date_picker
+            {
+                sync_chart_date_picker(picker, &self.chart_date_filter, window, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn on_date_picker_event(
+        &mut self,
+        _: Entity<DatePickerState>,
+        event: &DatePickerEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let DatePickerEvent::Change(dt) = event;
+        if let Date::Range(start, end) = dt.date()
+            && self.chart_date_filter.set_custom_range(start, end)
+        {
+            cx.notify();
+        }
+    }
+
     fn render_account_chart(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let account = self.page.account()?;
         let series = self.account_chart.as_ref()?;
+        let preset_entity = cx.entity().downgrade();
+        let date_controls = render_date_range_controls(
+            self.page.id(),
+            &self.chart_date_filter,
+            self.date_picker.as_ref(),
+            move |preset, window, cx| {
+                let _ = preset_entity.update(cx, |this, cx| {
+                    this.select_chart_date_preset(preset, window, cx);
+                });
+            },
+        );
         let entity = cx.entity().downgrade();
         render_account_balance_chart(
             account,
             series,
-            &self.chart_currencies,
+            (&self.chart_currencies, &self.chart_date_filter),
+            date_controls,
             move |currency, selected, _, cx| {
                 let _ = entity.update(cx, |this, cx| {
                     this.set_currency_selected(currency, selected, cx);

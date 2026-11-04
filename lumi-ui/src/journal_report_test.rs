@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::calendar::Date;
+use gpui_kit::component::date_picker::DatePickerEvent;
 use gpui_kit::component::table::TableDelegate as _;
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
@@ -9,6 +11,7 @@ use gpui_kit::{
     WindowOptions, point, px, size,
 };
 use lumi::TxnFlag;
+use lumi::web::{ChartDatePreset, ChartDateRange, NaiveDate};
 
 use crate::LumiApp;
 use crate::journal_report::{JournalReport, JournalRow};
@@ -1801,6 +1804,117 @@ fn test_account_view_renders_balance_line_chart_with_currency_checklist_and_jour
         window.click((ElementId::from("chart-currency"), "EUR"), cx);
         window.render_frame(cx);
         assert_eq!(report.read(cx).selected_chart_currencies(), ["EUR"]);
+        assert!(window.try_find("account-balance-plot-area").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_account_balance_chart_supports_date_range_presets_and_custom_picker(
+    cx: &mut TestAppContext,
+) {
+    let ymd = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+    cx.update(crate::init);
+    let (handle, app): (AnyWindowHandle, Entity<LumiApp>) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(1200.), px(800.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    LumiApp::new(
+                        Arc::new(LocalLedger::new(FIXTURE)),
+                        "query_test.bean",
+                        Page::Account("Assets:Cash".into()),
+                        window,
+                        cx,
+                    )
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        let report = app.read(cx).journal().expect("account journal shown");
+        report.update(cx, |r, cx| r.set_chart_today(ymd(2025, 6, 15), cx));
+        window.render_frame(cx);
+
+        assert_eq!(report.read(cx).chart_date_preset(), ChartDatePreset::All);
+        assert_eq!(report.read(cx).chart_date_range(), ChartDateRange::ALL);
+        assert!(window.try_find("chart-custom-date-picker").is_none());
+
+        // `Assets:Cash` last changed on `2024-02-10` (`54.50 USD`); selecting
+        // `YTD` (`2025-01-01 ..= 2025-06-15`) carries forward `54.50 USD` and
+        // plots a flat balance line across the window.
+        window.click((ElementId::from("chart-range"), "ytd"), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            report.read(cx).chart_date_preset(),
+            ChartDatePreset::YearToDate
+        );
+        assert_eq!(
+            report.read(cx).chart_date_range(),
+            ChartDateRange::between(ymd(2025, 1, 1), ymd(2025, 6, 15))
+        );
+        assert!(window.try_find("account-balance-plot-area").is_some());
+        window.hover("account-balance-plot-area", cx);
+        window.render_frame(cx);
+
+        // Selecting `Custom` reveals the range DatePicker; picking a pre-ledger
+        // window keeps the chart card and range selector mounted while hiding
+        // the plot area.
+        window.click((ElementId::from("chart-range"), "custom"), cx);
+        window.render_frame(cx);
+        assert_eq!(report.read(cx).chart_date_preset(), ChartDatePreset::Custom);
+        assert!(window.try_find("chart-custom-date-picker").is_some());
+
+        let picker = report
+            .read(cx)
+            .chart_date_picker()
+            .expect("account date picker")
+            .clone();
+        picker.update(cx, |state, cx| {
+            state.set_date(
+                Date::Range(Some(ymd(2020, 1, 1)), Some(ymd(2020, 12, 31))),
+                window,
+                cx,
+            );
+            cx.emit(DatePickerEvent::Change(state.date_time()));
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let report = app.read(cx).journal().expect("account journal shown");
+        assert_eq!(
+            report.read(cx).chart_date_range(),
+            ChartDateRange::between(ymd(2020, 1, 1), ymd(2020, 12, 31))
+        );
+        assert!(
+            window
+                .try_find((ElementId::from("chart-card"), "Assets:Cash"))
+                .is_some()
+        );
+        assert!(window.try_find("chart-date-range-bar").is_some());
+        assert!(window.try_find("account-balance-plot-area").is_none());
+
+        // Switching to `1Y` restores the plot and hides the custom picker.
+        window.click((ElementId::from("chart-range"), "1y"), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            report.read(cx).chart_date_preset(),
+            ChartDatePreset::OneYear
+        );
+        assert!(window.try_find("chart-custom-date-picker").is_none());
         assert!(window.try_find("account-balance-plot-area").is_some());
     })
     .unwrap();

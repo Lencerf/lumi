@@ -11,7 +11,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use gpui_kit::{App, Task};
 pub use lumi::web::{
-    AccountBalanceSeries, BalanceSheetSeries, Completions, IncomeExpenseSeries, TimeInterval,
+    AccountBalanceSeries, BalanceSheetSeries, ChartDatePreset, ChartDateRange, Completions,
+    IncomeExpenseSeries, TimeInterval,
 };
 use lumi::web::{FilterOptions, JournalItem, Position, TrieOptions, TrieTable};
 use lumi::{Source, Transaction};
@@ -68,11 +69,12 @@ pub trait LedgerSource: 'static {
         cx: &mut App,
     ) -> Task<Result<AccountBalanceSeries>>;
 
-    /// Periodic `Income` and `Expenses` totals grouped by `interval` and
-    /// currency.
+    /// Periodic `Income` and `Expenses` totals within `range`, grouped by
+    /// `interval` and currency.
     fn income_expense_series(
         &self,
         interval: TimeInterval,
+        range: ChartDateRange,
         cx: &mut App,
     ) -> Task<Result<IncomeExpenseSeries>>;
 
