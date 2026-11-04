@@ -219,8 +219,20 @@ include \"sub.bean\"
 
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        let table = window.find("table").bounds();
+        let last_col = window.find(("col-header", 2usize)).bounds();
+        assert_eq!(
+            last_col.origin.x + last_col.size.width,
+            table.origin.x + table.size.width
+        );
         assert!(window.try_find(("col-sep-head", 0usize)).is_none());
-        for col in 1..=3usize {
+        assert!(window.try_find(("col-sep-head", 3usize)).is_none());
+        assert!(
+            window
+                .try_find((gpui_kit::ElementId::from("col-sep-cell"), "1:3"))
+                .is_none()
+        );
+        for col in 1..3usize {
             let head = window.find(("col-sep-head", col)).bounds();
             let row1 = window
                 .find((

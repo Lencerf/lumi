@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::table::{Column, TableDelegate, TableEvent, TableState};
+use gpui_kit::component::{ActiveTheme as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Div, Entity, EventEmitter, IntoElement, ParentElement as _,
@@ -15,7 +15,8 @@ use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
 use crate::style::{
-    data_table_td, data_table_th, interactive_button, table_card, table_header, table_row,
+    FullWidthDelegate, TableColumns, data_table_td, data_table_th, full_width_data_table,
+    interactive_button, sync_resized_table_columns, table_card, table_header, table_row,
     table_row_bg,
 };
 
@@ -41,7 +42,7 @@ struct ErrorRow {
 struct ErrorsDelegate {
     source: Arc<dyn LedgerSource>,
     report: WeakEntity<ErrorsReport>,
-    columns: Vec<Column>,
+    columns: TableColumns,
     errors: Vec<ErrorRow>,
     loading: bool,
     failed: Option<SharedString>,
@@ -60,7 +61,10 @@ impl ErrorsReport {
         let source = session.read(cx).source().clone();
         let report = cx.entity().downgrade();
         let table = cx.new(|cx| TableState::new(ErrorsDelegate::new(source, report), window, cx));
-        let _subscriptions = vec![cx.observe(&session, |this, _, cx| this.load(cx))];
+        let _subscriptions = vec![
+            cx.observe(&session, |this, _, cx| this.load(cx)),
+            cx.subscribe(&table, Self::on_table_event),
+        ];
         let mut this = Self {
             session,
             table,
@@ -105,6 +109,17 @@ impl ErrorsReport {
         self.table
             .update(cx, |table, cx| table.delegate_mut().load(cx));
     }
+
+    fn on_table_event(
+        &mut self,
+        table: Entity<TableState<ErrorsDelegate>>,
+        event: &TableEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let TableEvent::ColumnWidthsChanged(widths) = event {
+            sync_resized_table_columns(&table, widths, cx);
+        }
+    }
 }
 
 impl Render for ErrorsReport {
@@ -146,12 +161,9 @@ impl Render for ErrorsReport {
             })
             .child(
                 div().flex_1().min_h_0().p_6().pt_3().child(
-                    table_card(cx).size_full().child(
-                        DataTable::new(&self.table)
-                            .small()
-                            .bordered(false)
-                            .stripe(false),
-                    ),
+                    table_card(cx)
+                        .size_full()
+                        .child(full_width_data_table(&self.table)),
                 ),
             )
     }
@@ -199,11 +211,14 @@ impl ErrorsDelegate {
         Self {
             source,
             report,
-            columns: vec![
-                Column::new("level", "Level").width(px(90.)),
-                Column::new("message", "Message").width(px(620.)),
-                Column::new("location", "Location").width(px(300.)),
-            ],
+            columns: TableColumns::new(
+                vec![
+                    Column::new("level", "Level").width(px(90.)),
+                    Column::new("message", "Message").width(px(500.)),
+                    Column::new("location", "Location").width(px(300.)),
+                ],
+                "message",
+            ),
             errors: Vec::new(),
             loading: false,
             failed: None,
@@ -288,6 +303,12 @@ pub(crate) fn common_dir<'a>(mut paths: impl Iterator<Item = &'a str>) -> String
     prefix.to_string()
 }
 
+impl FullWidthDelegate for ErrorsDelegate {
+    fn columns_mut(&mut self) -> &mut TableColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for ErrorsDelegate {
     fn columns_count(&self, _: &App) -> usize {
         self.columns.len()
@@ -315,7 +336,25 @@ impl TableDelegate for ErrorsDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        data_table_th(&self.columns, col_ix, cx)
+        data_table_th(self.columns.as_slice(), col_ix, cx)
+    }
+
+    fn move_column(
+        &mut self,
+        col_ix: usize,
+        to_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        self.columns.move_column(col_ix, to_ix);
+    }
+
+    fn render_last_empty_col(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        div()
     }
 
     fn render_tr(
@@ -340,7 +379,6 @@ impl TableDelegate for ErrorsDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let error = &self.errors[row_ix];
-        let columns_count = self.columns.len();
         let cell = match self.columns[col_ix].key.as_ref() {
             "level" => div()
                 .text_color(match error.level {
@@ -379,7 +417,7 @@ impl TableDelegate for ErrorsDelegate {
             }
             _ => div(),
         };
-        data_table_td(row_ix, col_ix, columns_count, cell, cx)
+        data_table_td(row_ix, col_ix, cell, cx)
     }
 
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {

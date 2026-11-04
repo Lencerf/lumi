@@ -9,9 +9,7 @@ use gpui_kit::component::date_picker::{DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Search};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::pagination::Pagination;
-use gpui_kit::component::table::{
-    Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
-};
+use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableEvent, TableState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, Size, StyledExt as _,
 };
@@ -42,8 +40,9 @@ use crate::number::{GroupedBuilder, GroupedText};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
 use crate::style::{
-    data_table_td, data_table_th, interactive_button, table_card, table_focused_row_bg,
-    table_header, table_row, table_row_bg,
+    FullWidthDelegate, TableColumns, data_table_td, data_table_th, full_width_data_table,
+    interactive_button, sync_resized_table_columns, table_card, table_focused_row_bg, table_header,
+    table_row, table_row_bg,
 };
 
 /// Opens the journal of an account, from a posting's context menu.
@@ -137,7 +136,7 @@ enum JournalRow {
 struct JournalDelegate {
     source: Arc<dyn LedgerSource>,
     account: Option<SharedString>,
-    columns: Vec<Column>,
+    columns: TableColumns,
     entries: Vec<JournalEntry>,
     rows: Vec<JournalRow>,
     expanded: HashSet<usize>,
@@ -787,6 +786,9 @@ impl JournalReport {
             TableEvent::DoubleClickedRow(row_ix) => {
                 self.activate_row(*row_ix, cx);
             }
+            TableEvent::ColumnWidthsChanged(widths) => {
+                sync_resized_table_columns(&table, widths, cx);
+            }
             _ => {}
         }
     }
@@ -969,12 +971,9 @@ impl Render for JournalReport {
             })
             .child(
                 div().flex_1().min_h_0().px_6().py_3().child(
-                    table_card(cx).size_full().child(
-                        DataTable::new(&self.table)
-                            .small()
-                            .bordered(false)
-                            .stripe(false),
-                    ),
+                    table_card(cx)
+                        .size_full()
+                        .child(full_width_data_table(&self.table)),
                 ),
             )
             .child(self.render_footer(cx))
@@ -991,7 +990,7 @@ impl JournalDelegate {
             Column::new("date", "Date").width(px(120.)).sortable(),
             Column::new("flag", "Flag").width(px(48.)).text_center(),
             Column::new("description", "Description").width(px(if account.is_some() {
-                320.
+                260.
             } else {
                 380.
             })),
@@ -1010,7 +1009,7 @@ impl JournalDelegate {
         Self {
             source,
             account,
-            columns,
+            columns: TableColumns::new(columns, "description"),
             entries: Vec::new(),
             rows: Vec::new(),
             expanded: HashSet::new(),
@@ -1322,6 +1321,12 @@ fn flag_color(flag: TxnFlag, cx: &App) -> Hsla {
     }
 }
 
+impl FullWidthDelegate for JournalDelegate {
+    fn columns_mut(&mut self) -> &mut TableColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for JournalDelegate {
     fn columns_count(&self, _: &App) -> usize {
         self.columns.len()
@@ -1349,7 +1354,7 @@ impl TableDelegate for JournalDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        data_table_th(&self.columns, col_ix, cx)
+        data_table_th(self.columns.as_slice(), col_ix, cx)
     }
 
     fn perform_sort(
@@ -1359,6 +1364,7 @@ impl TableDelegate for JournalDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
+        self.columns.set_sort(col_ix, sort);
         if self.columns[col_ix].key.as_ref() != "date" {
             return;
         }
@@ -1368,6 +1374,24 @@ impl TableDelegate for JournalDelegate {
             self.page = 1;
             self.load_page(cx);
         }
+    }
+
+    fn move_column(
+        &mut self,
+        col_ix: usize,
+        to_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        self.columns.move_column(col_ix, to_ix);
+    }
+
+    fn render_last_empty_col(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        div()
     }
 
     fn render_tr(
@@ -1460,7 +1484,6 @@ impl TableDelegate for JournalDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let mono = cx.theme().mono_font_family.clone();
-        let columns_count = self.columns.len();
         let column = self.columns[col_ix].key.as_ref();
         let cell = match self.rows[row_ix] {
             JournalRow::Transaction(entry_ix) => {
@@ -1624,7 +1647,7 @@ impl TableDelegate for JournalDelegate {
                 }
             }
         };
-        data_table_td(row_ix, col_ix, columns_count, cell, cx)
+        data_table_td(row_ix, col_ix, cell, cx)
     }
 
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {

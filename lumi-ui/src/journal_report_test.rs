@@ -524,7 +524,9 @@ fn test_description_cell_toggles_postings_and_sub_rows_match_parent_background(
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let bounds = window.find(("postings", 0usize)).bounds();
-        assert_eq!(bounds.size.width, px(380.));
+        let desc_col = window.find(("col-header", 2usize)).bounds();
+        assert_eq!(bounds.size.width, desc_col.size.width);
+        assert!(bounds.size.width > px(380.));
         window.click_at(("postings", 0usize), point(px(340.), px(10.)), cx);
         window.click_at(("postings", 1usize), point(px(340.), px(10.)), cx);
         window.click_at(("postings", 2usize), point(px(340.), px(10.)), cx);
@@ -1513,7 +1515,7 @@ fn test_journal_and_account_tables_render_aligned_full_height_column_separators(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                     Default::default(),
-                    size(px(1200.), px(800.)),
+                    size(px(1280.), px(800.)),
                 ))),
                 ..Default::default()
             },
@@ -1541,8 +1543,20 @@ fn test_journal_and_account_tables_render_aligned_full_height_column_separators(
     .unwrap();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        let table = window.find("table").bounds();
+        let last_col = window.find(("col-header", 3usize)).bounds();
+        assert_eq!(
+            last_col.origin.x + last_col.size.width,
+            table.origin.x + table.size.width
+        );
         assert!(window.try_find(("col-sep-head", 0usize)).is_none());
-        for col in 1..=4usize {
+        assert!(window.try_find(("col-sep-head", 4usize)).is_none());
+        assert!(
+            window
+                .try_find((gpui_kit::ElementId::from("col-sep-cell"), "0:4"))
+                .is_none()
+        );
+        for col in 1..4usize {
             let head = window.find(("col-sep-head", col)).bounds();
             assert_eq!(head.size.width, px(1.));
             assert_eq!(head.size.height, px(29.));
@@ -1577,7 +1591,20 @@ fn test_journal_and_account_tables_render_aligned_full_height_column_separators(
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(app.read(cx).page(), &Page::Account("Assets:Cash".into()));
-        for col in 1..=6usize {
+        let table = window.find("table").bounds();
+        let last_col = window.find(("col-header", 5usize)).bounds();
+        assert_eq!(
+            last_col.origin.x + last_col.size.width,
+            table.origin.x + table.size.width
+        );
+        assert!(window.try_find(("col-sep-head", 0usize)).is_none());
+        assert!(window.try_find(("col-sep-head", 6usize)).is_none());
+        assert!(
+            window
+                .try_find((gpui_kit::ElementId::from("col-sep-cell"), "1:6"))
+                .is_none()
+        );
+        for col in 1..6usize {
             let head = window.find(("col-sep-head", col)).bounds();
             let row1 = window
                 .find((

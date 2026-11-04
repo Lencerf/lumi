@@ -4,9 +4,7 @@ use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Search};
 use gpui_kit::component::menu::PopupMenu;
-use gpui_kit::component::table::{
-    Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
-};
+use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableEvent, TableState};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -24,7 +22,8 @@ use crate::number::GroupedText;
 use crate::session::LedgerSession;
 use crate::source::{LedgerSource, Positions};
 use crate::style::{
-    data_table_td, data_table_th, interactive_button, table_card, table_header, table_row,
+    FullWidthDelegate, TableColumns, data_table_td, data_table_th, full_width_data_table,
+    interactive_button, sync_resized_table_columns, table_card, table_header, table_row,
     table_row_bg,
 };
 
@@ -55,7 +54,7 @@ struct Holding {
 
 struct HoldingsDelegate {
     source: Arc<dyn LedgerSource>,
-    columns: Vec<Column>,
+    columns: TableColumns,
     all_holdings: Vec<Holding>,
     holdings: Vec<Holding>,
     query: SharedString,
@@ -212,12 +211,16 @@ impl HoldingsReport {
 
     fn on_table_event(
         &mut self,
-        _: Entity<TableState<HoldingsDelegate>>,
+        table: Entity<TableState<HoldingsDelegate>>,
         event: &TableEvent,
         cx: &mut Context<Self>,
     ) {
-        if let TableEvent::DoubleClickedRow(row_ix) = event {
-            self.open_row(*row_ix, cx);
+        match event {
+            TableEvent::DoubleClickedRow(row_ix) => self.open_row(*row_ix, cx),
+            TableEvent::ColumnWidthsChanged(widths) => {
+                sync_resized_table_columns(&table, widths, cx);
+            }
+            _ => {}
         }
     }
 }
@@ -307,12 +310,9 @@ impl Render for HoldingsReport {
             })
             .child(
                 div().flex_1().min_h_0().p_6().pt_3().child(
-                    table_card(cx).size_full().child(
-                        DataTable::new(&self.table)
-                            .small()
-                            .bordered(false)
-                            .stripe(false),
-                    ),
+                    table_card(cx)
+                        .size_full()
+                        .child(full_width_data_table(&self.table)),
                 ),
             )
     }
@@ -322,17 +322,20 @@ impl HoldingsDelegate {
     fn new(source: Arc<dyn LedgerSource>) -> Self {
         Self {
             source,
-            columns: vec![
-                Column::new("account", "Account").width(px(320.)).sortable(),
-                Column::new("units", "Units").width(px(170.)).text_right(),
-                Column::new("cost", "Cost").width(px(150.)).text_right(),
-                Column::new("acquired", "Acquired")
-                    .width(px(120.))
-                    .text_right(),
-                Column::new("book_value", "Book value")
-                    .width(px(170.))
-                    .text_right(),
-            ],
+            columns: TableColumns::new(
+                vec![
+                    Column::new("account", "Account").width(px(280.)).sortable(),
+                    Column::new("units", "Units").width(px(170.)).text_right(),
+                    Column::new("cost", "Cost").width(px(150.)).text_right(),
+                    Column::new("acquired", "Acquired")
+                        .width(px(120.))
+                        .text_right(),
+                    Column::new("book_value", "Book value")
+                        .width(px(170.))
+                        .text_right(),
+                ],
+                "account",
+            ),
             all_holdings: Vec::new(),
             holdings: Vec::new(),
             query: SharedString::default(),
@@ -475,6 +478,12 @@ fn holdings(positions: Positions) -> Vec<Holding> {
     rows
 }
 
+impl FullWidthDelegate for HoldingsDelegate {
+    fn columns_mut(&mut self) -> &mut TableColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for HoldingsDelegate {
     fn columns_count(&self, _: &App) -> usize {
         self.columns.len()
@@ -502,7 +511,7 @@ impl TableDelegate for HoldingsDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        data_table_th(&self.columns, col_ix, cx)
+        data_table_th(self.columns.as_slice(), col_ix, cx)
     }
 
     fn render_tr(
@@ -526,11 +535,30 @@ impl TableDelegate for HoldingsDelegate {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) {
+        self.columns.set_sort(col_ix, sort);
         if self.columns[col_ix].key.as_ref() != "account" {
             return;
         }
         self.sort = sort;
         self.apply_filter_and_sort();
+    }
+
+    fn move_column(
+        &mut self,
+        col_ix: usize,
+        to_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        self.columns.move_column(col_ix, to_ix);
+    }
+
+    fn render_last_empty_col(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        div()
     }
 
     fn context_menu(
@@ -557,7 +585,6 @@ impl TableDelegate for HoldingsDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let holding = &self.holdings[row_ix];
-        let columns_count = self.columns.len();
         let mono = cx.theme().mono_font_family.clone();
         // Every column is an identifier or a number, so all are monospaced.
         let cell = match self.columns[col_ix].key.as_ref() {
@@ -590,7 +617,7 @@ impl TableDelegate for HoldingsDelegate {
             "book_value" => holding.book_value.render_mono_right(mono),
             _ => div().into_any_element(),
         };
-        data_table_td(row_ix, col_ix, columns_count, cell, cx)
+        data_table_td(row_ix, col_ix, cell, cx)
     }
 
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {
