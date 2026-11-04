@@ -17,13 +17,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, MouseButton, NavigationDirection,
-    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, TestSupportExt as _, Window, actions, div, px,
+    ParentElement as _, PathPromptOptions, Pixels, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
+    actions, div, px,
 };
 #[cfg(not(target_family = "wasm"))]
 use gpui_kit::{
-    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions,
-    size,
+    Decorations, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
+    WindowOptions, size,
 };
 
 use crate::entry_editor::{EntryEditorLayer, OpenSource};
@@ -34,6 +35,8 @@ use crate::navigation::{Page, ReportEvent};
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
 use crate::source_editor::SourceEditor;
+#[cfg(not(target_family = "wasm"))]
+use crate::style::report_horizontal_overhead;
 use crate::trie_report::TrieReport;
 
 actions!(
@@ -116,18 +119,25 @@ pub struct LumiApp {
     editor_layer: Entity<EntryEditorLayer>,
     menu_bar: Option<Entity<AppMenuBar>>,
     focus_handle: FocusHandle,
+    pending_view_fit: bool,
+    user_resized_width: bool,
+    pending_auto_widths: VecDeque<Pixels>,
+    last_observed_width: Pixels,
     _open_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
-/// The view behind a page, and the subscription that routes its requests to
-/// the application, for the views that make any.
+/// The view behind a page, and the subscriptions that route its requests and
+/// content-width updates to the application.
 struct Report {
     view: AnyView,
-    _subscription: Option<Subscription>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl LumiApp {
+    #[cfg(not(target_family = "wasm"))]
+    const MIN_AUTO_WINDOW_WIDTH: Pixels = px(680.);
+
     /// Builds platform-appropriate [`WindowOptions`] for a native [`LumiApp`]
     /// window.
     ///
@@ -150,7 +160,7 @@ impl LumiApp {
         WindowOptions {
             titlebar: Some(titlebar),
             window_bounds: Some(bounds),
-            window_min_size: Some(size(px(640.), px(400.))),
+            window_min_size: Some(size(px(520.), px(360.))),
             app_id: Some("io.github.lencerf.lumi".into()),
             app_owns_titlebar_drag: !cfg!(target_os = "macos"),
             window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
@@ -183,9 +193,11 @@ impl LumiApp {
         let session = cx.new(|_| LedgerSession::empty());
         let editor_layer = EntryEditorLayer::register(window, cx);
         let menu_bar = SHOW_TITLE_BAR.then(|| AppMenuBar::new(cx));
+        let last_observed_width = window.viewport_size().width;
         let _subscriptions = vec![
             cx.observe(&session, |_, _, cx| cx.notify()),
             cx.subscribe_in(&editor_layer, window, Self::on_open_source),
+            cx.observe_window_bounds(window, Self::on_window_bounds_changed),
         ];
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
@@ -202,6 +214,10 @@ impl LumiApp {
             editor_layer,
             menu_bar,
             focus_handle,
+            pending_view_fit: false,
+            user_resized_width: false,
+            pending_auto_widths: VecDeque::new(),
+            last_observed_width,
             _open_task: None,
             _subscriptions,
         }
@@ -344,10 +360,13 @@ impl LumiApp {
         if had_source && self.page.account().is_some() {
             self.page = Page::BalanceSheet;
         }
+        self.pending_view_fit = true;
+        self.user_resized_width = false;
         self.session
             .update(cx, |session, cx| session.set_source(source, cx));
         let page = self.page.clone();
         self.report(&page, window, cx);
+        self.sync_window_width(window, cx);
         cx.notify();
     }
 
@@ -396,35 +415,47 @@ impl LumiApp {
             Page::BalanceSheet | Page::Income => {
                 let view = cx.new(|cx| TrieReport::new(page.clone(), session, cx));
                 Report {
-                    _subscription: Some(cx.subscribe_in(&view, window, Self::on_report_event)),
+                    _subscriptions: vec![
+                        cx.subscribe_in(&view, window, Self::on_report_event),
+                        cx.observe_in(&view, window, Self::on_report_updated),
+                    ],
                     view: view.into(),
                 }
             }
             Page::Journal | Page::Account(_) => {
                 let view = cx.new(|cx| JournalReport::new(page.clone(), session, window, cx));
                 Report {
-                    _subscription: Some(cx.subscribe_in(&view, window, Self::on_report_event)),
+                    _subscriptions: vec![
+                        cx.subscribe_in(&view, window, Self::on_report_event),
+                        cx.observe_in(&view, window, Self::on_report_updated),
+                    ],
                     view: view.into(),
                 }
             }
             Page::Holdings => {
                 let view = cx.new(|cx| HoldingsReport::new(session, window, cx));
                 Report {
-                    _subscription: Some(cx.subscribe_in(&view, window, Self::on_report_event)),
+                    _subscriptions: vec![
+                        cx.subscribe_in(&view, window, Self::on_report_event),
+                        cx.observe_in(&view, window, Self::on_report_updated),
+                    ],
                     view: view.into(),
                 }
             }
             Page::Errors => {
                 let view = cx.new(|cx| ErrorsReport::new(session, window, cx));
                 Report {
-                    _subscription: Some(cx.subscribe_in(&view, window, Self::on_report_event)),
+                    _subscriptions: vec![
+                        cx.subscribe_in(&view, window, Self::on_report_event),
+                        cx.observe_in(&view, window, Self::on_report_updated),
+                    ],
                     view: view.into(),
                 }
             }
             Page::Editor => {
                 let view = cx.new(|cx| SourceEditor::new(session, window, cx));
                 Report {
-                    _subscription: None,
+                    _subscriptions: vec![cx.observe_in(&view, window, Self::on_report_updated)],
                     view: view.into(),
                 }
             }
@@ -535,8 +566,7 @@ impl LumiApp {
             }
             self.back_stack.push_back(prev);
         }
-        self.focus_handle.focus(window, cx);
-        cx.notify();
+        self.activate_current_view(window, cx);
     }
 
     fn go_back(&mut self, _: &GoBack, window: &mut Window, cx: &mut Context<Self>) {
@@ -546,8 +576,7 @@ impl LumiApp {
         if let Some(prev) = self.back_stack.pop_back() {
             let current = std::mem::replace(&mut self.page, prev);
             self.forward_stack.push(current);
-            self.focus_handle.focus(window, cx);
-            cx.notify();
+            self.activate_current_view(window, cx);
         }
     }
 
@@ -561,8 +590,135 @@ impl LumiApp {
                 self.back_stack.pop_front();
             }
             self.back_stack.push_back(current);
-            self.focus_handle.focus(window, cx);
+            self.activate_current_view(window, cx);
+        }
+    }
+
+    fn activate_current_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_view_fit = true;
+        self.user_resized_width = false;
+        if self.session.read(cx).has_source() {
+            let page = self.page.clone();
+            self.report(&page, window, cx);
+            self.sync_window_width(window, cx);
+        }
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    fn on_report_updated<T: 'static>(
+        &mut self,
+        _: Entity<T>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_window_width(window, cx);
+        cx.notify();
+    }
+
+    fn on_window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let width = window.viewport_size().width;
+        if (width - self.last_observed_width).abs() <= px(1.) {
+            return;
+        }
+        self.last_observed_width = width;
+        if let Some(pos) = self
+            .pending_auto_widths
+            .iter()
+            .position(|&expected| (width - expected).abs() <= px(2.))
+        {
+            self.pending_auto_widths.drain(..=pos);
             cx.notify();
+            return;
+        }
+        self.pending_auto_widths.clear();
+        self.user_resized_width = true;
+        self.pending_view_fit = false;
+        cx.notify();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn preferred_report_content_width(&self, window: &Window, cx: &mut App) -> Option<Pixels> {
+        if !self.session.read(cx).has_source() {
+            return None;
+        }
+        let view = self.reports.get(&self.page)?.view.clone();
+        if let Ok(trie) = view.clone().downcast::<TrieReport>() {
+            trie.read(cx).preferred_content_width(window, cx)
+        } else if let Ok(journal) = view.clone().downcast::<JournalReport>() {
+            journal.update(cx, |r, cx| r.preferred_content_width(window, cx))
+        } else if let Ok(holdings) = view.clone().downcast::<HoldingsReport>() {
+            holdings.update(cx, |r, cx| r.preferred_content_width(window, cx))
+        } else if let Ok(errors) = view.clone().downcast::<ErrorsReport>() {
+            errors.update(cx, |r, cx| r.preferred_content_width(window, cx))
+        } else if let Ok(editor) = view.downcast::<SourceEditor>() {
+            editor.read(cx).preferred_content_width(window, cx)
+        } else {
+            None
+        }
+    }
+
+    fn sync_window_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = (window, cx);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            if self.user_resized_width || window.is_fullscreen() || window.is_maximized() {
+                return;
+            }
+            if matches!(
+                window.window_decorations(),
+                Decorations::Client { tiling } if tiling.left && tiling.right
+            ) {
+                return;
+            }
+            let Some(content_width) = self.preferred_report_content_width(window, cx) else {
+                return;
+            };
+            let raw_desired =
+                px(f32::from(report_horizontal_overhead(window) + content_width).ceil());
+            let max_width = window
+                .display(cx)
+                .map(|display| {
+                    let w = display.bounds().size.width;
+                    #[cfg(test)]
+                    {
+                        w
+                    }
+                    #[cfg(not(test))]
+                    {
+                        (w - px(40.)).max(Self::MIN_AUTO_WINDOW_WIDTH)
+                    }
+                })
+                .unwrap_or(px(3840.));
+            let desired_width = raw_desired.clamp(Self::MIN_AUTO_WINDOW_WIDTH, max_width);
+            let current_width = self
+                .pending_auto_widths
+                .back()
+                .copied()
+                .unwrap_or_else(|| window.viewport_size().width);
+            let should_resize = if self.pending_view_fit {
+                self.pending_view_fit = false;
+                (desired_width - current_width).abs() > px(1.)
+            } else {
+                desired_width > current_width + px(1.)
+            };
+            if should_resize {
+                if self.pending_auto_widths.len() >= 4 {
+                    self.pending_auto_widths.pop_front();
+                }
+                self.pending_auto_widths.push_back(desired_width);
+                let new_size = size(desired_width, window.viewport_size().height);
+                window.resize(new_size);
+                #[cfg(test)]
+                if window.bounds().size == new_size && window.viewport_size() != new_size {
+                    window.defer(cx, |window, cx| {
+                        window.bounds_changed(cx);
+                    });
+                }
+            }
         }
     }
 

@@ -3,8 +3,8 @@ use gpui_kit::component::table::{Column, ColumnSort};
 use gpui_kit::{FontWeight, Pixels, Styled as _, TestAppContext, px};
 
 use crate::style::{
-    TableColumns, table_card, table_col_separator_color, table_focused_row_bg, table_header,
-    table_row, table_row_bg,
+    TableColumns, scale_widths_proportionally, table_card, table_col_separator_color,
+    table_focused_row_bg, table_header, table_row, table_row_bg,
 };
 
 #[gpui_kit::test]
@@ -59,39 +59,51 @@ fn test_table_card_and_header_match_paper_card_style(cx: &mut TestAppContext) {
 }
 
 #[test]
-fn test_table_columns_fits_viewport_and_keeps_resize_flush_with_right_edge() {
+fn test_table_columns_scales_proportionally_when_wider_and_never_shrinks_when_narrower() {
     let widths_of =
         |cols: &TableColumns| -> Vec<Pixels> { cols.as_slice().iter().map(|c| c.width).collect() };
 
-    let mut cols = TableColumns::new(
-        vec![
-            Column::new("level", "Level").width(px(90.)).sortable(),
-            Column::new("message", "Message").width(px(500.)),
-            Column::new("location", "Location").width(px(300.)),
-        ],
-        "message",
-    );
+    let mut cols = TableColumns::new(vec![
+        Column::new("level", "Level").width(px(100.)).sortable(),
+        Column::new("message", "Message").width(px(500.)),
+        Column::new("location", "Location").width(px(300.)),
+    ]);
+    assert_eq!(cols.natural_total_width(), px(900.));
 
-    // Narrower than base sum (890px): preserves minimum base width for horizontal scroll.
+    // Narrower than natural sum (900px): columns never shrink below natural widths.
     assert!(!cols.fit_to_width(px(700.)));
-    assert_eq!(widths_of(&cols), [px(90.), px(500.), px(300.)]);
+    assert_eq!(widths_of(&cols), [px(100.), px(500.), px(300.)]);
 
-    // Wider viewport (1200px): flexible column absorbs the extra 310px.
+    // Exact fit (900px): columns match natural widths.
+    assert!(!cols.fit_to_width(px(900.)));
+    assert_eq!(widths_of(&cols), [px(100.), px(500.), px(300.)]);
+
+    // Wider viewport (1350px = 1.5x of 900px): all columns widen proportionally.
+    assert!(cols.fit_to_width(px(1350.)));
+    assert_eq!(widths_of(&cols), [px(150.), px(750.), px(450.)]);
+    assert!(!cols.fit_to_width(px(1350.)));
+
+    // Shrinking back below natural sum (650px): columns return to natural widths (no shrinking).
+    assert!(cols.fit_to_width(px(650.)));
+    assert_eq!(widths_of(&cols), [px(100.), px(500.), px(300.)]);
+
+    // Updating natural widths re-fits to the current viewport width.
     assert!(cols.fit_to_width(px(1200.)));
-    assert_eq!(widths_of(&cols), [px(90.), px(810.), px(300.)]);
-    assert!(!cols.fit_to_width(px(1200.)));
+    assert!(cols.set_natural_widths(vec![px(80.), px(320.), px(200.)]));
+    assert_eq!(cols.natural_widths(), [px(80.), px(320.), px(200.)]);
+    assert_eq!(widths_of(&cols), [px(160.), px(640.), px(400.)]);
 
     // Dragging the divider between Message and Location 60px left grows Location by 60px
     // so total width stays at 1200px with no trailing empty column.
-    assert!(cols.apply_resized_widths(&[px(90.), px(750.), px(300.)]));
-    assert_eq!(widths_of(&cols), [px(90.), px(750.), px(360.)]);
+    assert!(cols.apply_resized_widths(&[px(160.), px(580.), px(400.)]));
+    assert_eq!(widths_of(&cols), [px(160.), px(580.), px(460.)]);
 
     // Dragging the last column's right edge inward clamps back to 1200px; dragging it
     // wider (> 1200px) preserves the wider width for horizontal scrolling.
-    assert!(cols.apply_resized_widths(&[px(90.), px(750.), px(250.)]));
-    assert_eq!(widths_of(&cols), [px(90.), px(750.), px(360.)]);
-    assert!(!cols.apply_resized_widths(&[px(90.), px(750.), px(460.)]));
-    assert_eq!(widths_of(&cols), [px(90.), px(750.), px(460.)]);
+    assert!(cols.apply_resized_widths(&[px(160.), px(580.), px(350.)]));
+    assert_eq!(widths_of(&cols), [px(160.), px(580.), px(460.)]);
+    assert!(!cols.apply_resized_widths(&[px(160.), px(580.), px(560.)]));
+    assert_eq!(widths_of(&cols), [px(160.), px(580.), px(560.)]);
 
     // Sort and column order stay synchronized across refreshes.
     cols.set_sort(0, ColumnSort::Ascending);
@@ -99,4 +111,11 @@ fn test_table_columns_fits_viewport_and_keeps_resize_flush_with_right_edge() {
     cols.move_column(0, 2);
     assert_eq!(cols[2].key.as_ref(), "level");
     assert_eq!(cols[2].sort, Some(ColumnSort::Ascending));
+    assert_eq!(cols.natural_widths()[2], px(80.));
+
+    // Non-divisible proportional scaling conserves exact sum and never shrinks any column.
+    let scaled = scale_widths_proportionally(&[px(73.), px(211.), px(149.)], px(701.));
+    let sum: Pixels = scaled.iter().copied().sum();
+    assert_eq!(sum, px(701.));
+    assert!(scaled[0] >= px(73.) && scaled[1] >= px(211.) && scaled[2] >= px(149.));
 }

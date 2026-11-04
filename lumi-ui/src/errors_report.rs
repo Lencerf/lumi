@@ -7,7 +7,8 @@ use gpui_kit::component::{ActiveTheme as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Div, Entity, EventEmitter, IntoElement, ParentElement as _,
-    Render, SharedString, Stateful, Styled as _, Subscription, Task, WeakEntity, Window, div, px,
+    Pixels, Render, SharedString, Stateful, Styled as _, Subscription, Task, WeakEntity, Window,
+    div, px,
 };
 use lumi::ErrorLevel;
 
@@ -15,9 +16,9 @@ use crate::navigation::ReportEvent;
 use crate::session::LedgerSession;
 use crate::source::LedgerSource;
 use crate::style::{
-    FullWidthDelegate, TableColumns, data_table_td, data_table_th, full_width_data_table,
-    interactive_button, sync_resized_table_columns, table_card, table_header, table_row,
-    table_row_bg,
+    FullWidthDelegate, TableColumns, TableTextMetrics, data_table_td, data_table_th,
+    full_width_data_table, interactive_button, sync_resized_table_columns, table_card,
+    table_header, table_row, table_row_bg,
 };
 
 /// The errors, warnings and notes the last reload of the ledger reported,
@@ -47,6 +48,8 @@ struct ErrorsDelegate {
     loading: bool,
     failed: Option<SharedString>,
     generation: u64,
+    rows_version: u64,
+    measured_key: Option<(u64, Pixels)>,
     _load_task: Option<Task<()>>,
 }
 
@@ -63,6 +66,7 @@ impl ErrorsReport {
         let table = cx.new(|cx| TableState::new(ErrorsDelegate::new(source, report), window, cx));
         let _subscriptions = vec![
             cx.observe(&session, |this, _, cx| this.load(cx)),
+            cx.observe(&table, |_, _, cx| cx.notify()),
             cx.subscribe(&table, Self::on_table_event),
         ];
         let mut this = Self {
@@ -73,6 +77,31 @@ impl ErrorsReport {
         };
         this.load(cx);
         this
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn preferred_content_width(&self, window: &Window, cx: &mut App) -> Option<Pixels> {
+        self.requested_revision?;
+        let table = self.table.clone();
+        table.update(cx, |table, cx| {
+            let (changed, width) = {
+                let delegate = table.delegate_mut();
+                if delegate.loading && delegate.errors.is_empty() {
+                    return None;
+                }
+                let changed = delegate.sync_natural_widths(window, cx);
+                let width = if delegate.errors.is_empty() {
+                    px(520.)
+                } else {
+                    (delegate.columns.natural_total_width() + px(2.)).max(px(420.))
+                };
+                (changed, width)
+            };
+            if changed {
+                table.refresh(cx);
+            }
+            Some(width)
+        })
     }
 
     /// The levels and messages of the rows shown, in table order.
@@ -105,6 +134,28 @@ impl ErrorsReport {
         });
     }
 
+    #[cfg(test)]
+    pub(crate) fn column_widths(&self, cx: &App) -> Vec<Pixels> {
+        self.table
+            .read(cx)
+            .delegate()
+            .columns
+            .as_slice()
+            .iter()
+            .map(|c| c.width)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn natural_column_widths(&self, cx: &App) -> Vec<Pixels> {
+        self.table
+            .read(cx)
+            .delegate()
+            .columns
+            .natural_widths()
+            .to_vec()
+    }
+
     fn retry(&mut self, cx: &mut Context<Self>) {
         self.table
             .update(cx, |table, cx| table.delegate_mut().load(cx));
@@ -131,6 +182,7 @@ impl Render for ErrorsReport {
         div()
             .v_flex()
             .size_full()
+            .min_w_0()
             .min_h_0()
             .child(
                 div()
@@ -160,9 +212,11 @@ impl Render for ErrorsReport {
                 )
             })
             .child(
-                div().flex_1().min_h_0().p_6().pt_3().child(
+                div().flex_1().min_w_0().min_h_0().p_6().pt_3().child(
                     table_card(cx)
                         .size_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .child(full_width_data_table(&self.table)),
                 ),
             )
@@ -211,20 +265,59 @@ impl ErrorsDelegate {
         Self {
             source,
             report,
-            columns: TableColumns::new(
-                vec![
-                    Column::new("level", "Level").width(px(90.)),
-                    Column::new("message", "Message").width(px(500.)),
-                    Column::new("location", "Location").width(px(300.)),
-                ],
-                "message",
-            ),
+            columns: TableColumns::new(vec![
+                Column::new("level", "Level").width(px(90.)),
+                Column::new("message", "Message").width(px(500.)),
+                Column::new("location", "Location").width(px(300.)),
+            ]),
             errors: Vec::new(),
             loading: false,
             failed: None,
             generation: 0,
+            rows_version: 0,
+            measured_key: None,
             _load_task: None,
         }
+    }
+
+    fn measure_natural_widths(&mut self, window: &Window, cx: &App) -> bool {
+        let key = (self.rows_version, window.rem_size());
+        if self.measured_key == Some(key) {
+            return false;
+        }
+        self.measured_key = Some(key);
+        let m = TableTextMetrics::new(window, cx);
+        let widths = self
+            .columns
+            .as_slice()
+            .iter()
+            .map(|col| match col.key.as_ref() {
+                "level" => {
+                    let mut w = m.header_width("Level", false);
+                    for err in &self.errors {
+                        let semibold = matches!(err.level, ErrorLevel::Error | ErrorLevel::Warning);
+                        w = w.max(m.sans_cell(level_text(err.level).into(), semibold));
+                    }
+                    w
+                }
+                "message" => {
+                    let mut w = m.header_width("Message", false);
+                    for err in &self.errors {
+                        w = w.max(m.sans_cell(err.message.clone(), false));
+                    }
+                    w
+                }
+                "location" => {
+                    let mut w = m.header_width("Location", false);
+                    for err in &self.errors {
+                        w = w.max(m.mono_button_cell(err.location.clone(), false));
+                    }
+                    w
+                }
+                _ => col.width,
+            })
+            .collect();
+        self.columns.set_natural_widths(widths)
     }
 
     fn load(&mut self, cx: &mut Context<TableState<Self>>) {
@@ -243,7 +336,10 @@ impl ErrorsDelegate {
                     }
                     delegate.loading = false;
                     match result {
-                        Ok(errors) => delegate.errors = error_rows(errors),
+                        Ok(errors) => {
+                            delegate.errors = error_rows(errors);
+                            delegate.rows_version += 1;
+                        }
                         Err(error) => delegate.failed = Some(format!("{error:#}").into()),
                     }
                     cx.notify();
@@ -306,6 +402,10 @@ pub(crate) fn common_dir<'a>(mut paths: impl Iterator<Item = &'a str>) -> String
 impl FullWidthDelegate for ErrorsDelegate {
     fn columns_mut(&mut self) -> &mut TableColumns {
         &mut self.columns
+    }
+
+    fn sync_natural_widths(&mut self, window: &Window, cx: &App) -> bool {
+        self.measure_natural_widths(window, cx)
     }
 }
 

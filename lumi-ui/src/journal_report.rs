@@ -17,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Action, AnyElement, App, AppContext as _, ClickEvent, Context, Div, ElementId, Entity,
     EventEmitter, Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Pixels, Render, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
     Subscription, Task, TestSupportExt as _, Window, div, px,
 };
 #[cfg(test)]
@@ -29,6 +29,8 @@ use lumi::{Source, TxnFlag};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+#[cfg(not(target_family = "wasm"))]
+use crate::chart::MIN_CHART_INNER_WIDTH;
 use crate::chart::{
     ChartDateFilter, CurrencySelection, new_chart_date_picker, render_account_balance_chart,
     render_date_range_controls, sync_chart_date_picker,
@@ -40,9 +42,9 @@ use crate::number::{GroupedBuilder, GroupedText};
 use crate::session::LedgerSession;
 use crate::source::{JournalEntry, LedgerSource};
 use crate::style::{
-    FullWidthDelegate, TableColumns, data_table_td, data_table_th, full_width_data_table,
-    interactive_button, sync_resized_table_columns, table_card, table_focused_row_bg, table_header,
-    table_row, table_row_bg,
+    FullWidthDelegate, TableColumns, TableTextMetrics, data_table_td, data_table_th,
+    full_width_data_table, interactive_button, sync_resized_table_columns, table_card,
+    table_focused_row_bg, table_header, table_row, table_row_bg,
 };
 
 /// Opens the journal of an account, from a posting's context menu.
@@ -156,6 +158,8 @@ struct JournalDelegate {
     /// Counts requests so that a page that arrives for an earlier one is
     /// dropped.
     generation: u64,
+    rows_version: u64,
+    measured_key: Option<(u64, Pixels)>,
     _load_task: Option<Task<()>>,
 }
 
@@ -180,6 +184,7 @@ impl JournalReport {
             .map(|_| cx.new(|cx| new_chart_date_picker(window, cx)));
         let mut _subscriptions = vec![
             cx.observe(&session, |this, _, cx| this.load(cx)),
+            cx.observe(&table, |_, _, cx| cx.notify()),
             cx.subscribe(&table, Self::on_table_event),
             cx.subscribe(&search_input, Self::on_search_input_event),
         ];
@@ -277,6 +282,28 @@ impl JournalReport {
             .read(cx)
             .focus_handle(cx)
             .is_focused(window)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn column_widths(&self, cx: &App) -> Vec<Pixels> {
+        self.table
+            .read(cx)
+            .delegate()
+            .columns
+            .as_slice()
+            .iter()
+            .map(|c| c.width)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn natural_column_widths(&self, cx: &App) -> Vec<Pixels> {
+        self.table
+            .read(cx)
+            .delegate()
+            .columns
+            .natural_widths()
+            .to_vec()
     }
 
     #[cfg(test)]
@@ -524,7 +551,41 @@ impl JournalReport {
         }
     }
 
-    fn render_account_chart(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn preferred_content_width(&self, window: &Window, cx: &mut App) -> Option<Pixels> {
+        self.requested_revision?;
+        let min_width = if self
+            .account_chart
+            .as_ref()
+            .is_some_and(|s| !s.currencies.is_empty() && !s.points.is_empty())
+        {
+            MIN_CHART_INNER_WIDTH + px(2.)
+        } else {
+            px(540.)
+        };
+        let table = self.table.clone();
+        table.update(cx, |table, cx| {
+            let (changed, width) = {
+                let delegate = table.delegate_mut();
+                if delegate.loading && delegate.entries.is_empty() {
+                    return None;
+                }
+                let changed = delegate.sync_natural_widths(window, cx);
+                let width = (delegate.columns.natural_total_width() + px(2.)).max(min_width);
+                (changed, width)
+            };
+            if changed {
+                table.refresh(cx);
+            }
+            Some(width)
+        })
+    }
+
+    fn render_account_chart(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let account = self.page.account()?;
         let series = self.account_chart.as_ref()?;
         let preset_entity = cx.entity().downgrade();
@@ -549,6 +610,7 @@ impl JournalReport {
                     this.set_currency_selected(currency, selected, cx);
                 });
             },
+            window,
             cx,
         )
     }
@@ -807,6 +869,7 @@ impl JournalReport {
         let total_pages = total.div_ceil(page_size).max(1);
         div()
             .h_flex()
+            .flex_wrap()
             .items_center()
             .justify_between()
             .gap_3()
@@ -855,7 +918,7 @@ impl JournalReport {
 impl EventEmitter<ReportEvent> for JournalReport {}
 
 impl Render for JournalReport {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (first, last, total, expand_all, visible_flags, failed) = {
             let delegate = self.table.read(cx).delegate();
             let first = (delegate.page - 1) * delegate.page_size + 1;
@@ -878,6 +941,7 @@ impl Render for JournalReport {
         div()
             .v_flex()
             .size_full()
+            .min_w_0()
             .min_h_0()
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::activate_selected_row))
@@ -891,6 +955,7 @@ impl Render for JournalReport {
             .child(
                 div()
                     .h_flex()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
                     .gap_3()
@@ -899,6 +964,7 @@ impl Render for JournalReport {
                     .child(
                         div()
                             .h_flex()
+                            .flex_wrap()
                             .items_center()
                             .gap_2()
                             .flex_1()
@@ -906,8 +972,9 @@ impl Render for JournalReport {
                             .child(
                                 div()
                                     .relative()
-                                    .w(px(300.))
-                                    .max_w_full()
+                                    .flex_1()
+                                    .min_w(px(140.))
+                                    .max_w(px(300.))
                                     .capture_action(self.search_drag_guard.paste_capture())
                                     .child(self.search_drag_guard.element())
                                     .child(
@@ -966,13 +1033,15 @@ impl Render for JournalReport {
                         ),
                 )
             })
-            .when_some(self.render_account_chart(cx), |this, chart| {
-                this.child(div().flex_shrink_0().px_6().pt_3().child(chart))
+            .when_some(self.render_account_chart(window, cx), |this, chart| {
+                this.child(div().flex_shrink_0().min_w_0().px_6().pt_3().child(chart))
             })
             .child(
-                div().flex_1().min_h_0().px_6().py_3().child(
+                div().flex_1().min_w_0().min_h_0().px_6().py_3().child(
                     table_card(cx)
                         .size_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .child(full_width_data_table(&self.table)),
                 ),
             )
@@ -1009,7 +1078,7 @@ impl JournalDelegate {
         Self {
             source,
             account,
-            columns: TableColumns::new(columns, "description"),
+            columns: TableColumns::new(columns),
             entries: Vec::new(),
             rows: Vec::new(),
             expanded: HashSet::new(),
@@ -1024,8 +1093,130 @@ impl JournalDelegate {
             loading: false,
             failed: None,
             generation: 0,
+            rows_version: 0,
+            measured_key: None,
             _load_task: None,
         }
+    }
+
+    fn measure_natural_widths(&mut self, window: &Window, cx: &App) -> bool {
+        let key = (self.rows_version, window.rem_size());
+        if self.measured_key == Some(key) {
+            return false;
+        }
+        self.measured_key = Some(key);
+        let m = TableTextMetrics::new(window, cx);
+        let widths = self
+            .columns
+            .as_slice()
+            .iter()
+            .map(|col| match col.key.as_ref() {
+                "date" => {
+                    let mut w = m.header_width("Date", true);
+                    for entry in &self.entries {
+                        w = w.max(m.mono_button_cell(entry.txn.date().to_string().into(), false));
+                    }
+                    w
+                }
+                "flag" => {
+                    let mut w = m.header_width("Flag", false);
+                    for entry in &self.entries {
+                        let flag = entry.txn.flag();
+                        w = w.max(m.mono_cell(flag_text(flag).into(), flag == TxnFlag::Pending));
+                    }
+                    w
+                }
+                "description" => {
+                    let mut w = m.header_width("Description", false);
+                    for &row in &self.rows {
+                        match row {
+                            JournalRow::Transaction(entry_ix) => {
+                                let txn = &self.entries[entry_ix].txn;
+                                if txn.flag() == TxnFlag::Balance {
+                                    let account: SharedString = txn
+                                        .postings()
+                                        .first()
+                                        .map(|p| p.account.to_string())
+                                        .unwrap_or_default()
+                                        .into();
+                                    w = w.max(m.mono_button_cell(account, false));
+                                } else {
+                                    let mut parts = 0usize;
+                                    let mut content = px(0.);
+                                    if !txn.payee().is_empty() {
+                                        content += m.sans_width(txn.payee().clone().into(), true);
+                                        parts += 1;
+                                    }
+                                    if !txn.narration().is_empty() {
+                                        content +=
+                                            m.sans_width(txn.narration().clone().into(), false);
+                                        parts += 1;
+                                    }
+                                    for tag in txn.tags() {
+                                        content += m.mono_xs_width(tag.clone().into());
+                                        parts += 1;
+                                    }
+                                    for link in txn.links() {
+                                        content += m.mono_xs_width(link.clone().into());
+                                        parts += 1;
+                                    }
+                                    let gaps = m.gap_1 * parts.saturating_sub(1) as f32;
+                                    let row_w = TableTextMetrics::ceil_px(
+                                        content + gaps + m.cell_h_pad + px(8.),
+                                    );
+                                    w = w.max(row_w);
+                                }
+                            }
+                            JournalRow::Posting(entry_ix, posting_ix) => {
+                                let account: SharedString = self.entries[entry_ix].txn.postings()
+                                    [posting_ix]
+                                    .account
+                                    .to_string()
+                                    .into();
+                                w = w.max(m.pl_5 + m.mono_button_cell(account, false));
+                            }
+                        }
+                    }
+                    w
+                }
+                "position" => {
+                    let mut w = m.header_width("Position", false);
+                    for &row in &self.rows {
+                        match row {
+                            JournalRow::Transaction(entry_ix) => {
+                                let txn = &self.entries[entry_ix].txn;
+                                if txn.flag() == TxnFlag::Balance {
+                                    w = w.max(
+                                        m.grouped_mono_cell(&balance_position_text(txn), window),
+                                    );
+                                }
+                            }
+                            JournalRow::Posting(entry_ix, posting_ix) => {
+                                let posting = &self.entries[entry_ix].txn.postings()[posting_ix];
+                                w = w.max(m.grouped_mono_cell(&position_text(posting), window));
+                            }
+                        }
+                    }
+                    w
+                }
+                "change" => {
+                    let mut w = m.header_width("Change", false);
+                    for entry in &self.entries {
+                        w = w.max(m.grouped_mono_cell(&amounts_text(&entry.changes), window));
+                    }
+                    w
+                }
+                "balance" => {
+                    let mut w = m.header_width("Balance", false);
+                    for entry in &self.entries {
+                        w = w.max(m.grouped_mono_cell(&amounts_text(&entry.balance), window));
+                    }
+                    w
+                }
+                _ => col.width,
+            })
+            .collect();
+        self.columns.set_natural_widths(widths)
     }
 
     fn filter_options(&self, page: Option<usize>) -> FilterOptions {
@@ -1224,6 +1415,7 @@ impl JournalDelegate {
                 }
             }
         }
+        self.rows_version += 1;
     }
 
     fn is_expanded(&self, entry_ix: usize) -> bool {
@@ -1324,6 +1516,10 @@ fn flag_color(flag: TxnFlag, cx: &App) -> Hsla {
 impl FullWidthDelegate for JournalDelegate {
     fn columns_mut(&mut self) -> &mut TableColumns {
         &mut self.columns
+    }
+
+    fn sync_natural_widths(&mut self, window: &Window, cx: &App) -> bool {
+        self.measure_natural_widths(window, cx)
     }
 }
 

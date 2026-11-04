@@ -29,13 +29,14 @@ use lumi::web::{
 use rust_decimal::{Decimal, RoundingStrategy};
 
 use crate::number::GroupedBuilder;
-use crate::style::table_card;
+use crate::style::{horizontal_scroll_area, table_card};
 
 const PLOT_TOP_PAD: f32 = 10.0;
 const PLOT_RIGHT_PAD: f32 = 14.0;
 const HOVER_DOT_SIZE: Pixels = px(6.0);
 const HOVER_HALO_SIZE: Pixels = px(14.0);
 const BAR_HOVER_DIM: f32 = 0.35;
+pub(crate) const MIN_CHART_INNER_WIDTH: Pixels = px(560.);
 
 /// Which root hierarchy (`Assets` or `Liabilities`) is displayed in the Balance
 /// Sheet line chart.
@@ -754,7 +755,8 @@ pub(crate) fn render_balance_sheet_chart<FM, FC>(
     date_controls: AnyElement,
     on_select_mode: FM,
     on_toggle_currency: FC,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> Option<AnyElement>
 where
     FM: Fn(BalanceSheetMode, &mut Window, &mut App) + 'static,
@@ -846,56 +848,66 @@ where
             .into_any_element()
     };
 
+    let inner = div()
+        .v_flex()
+        .flex_1()
+        .min_w(MIN_CHART_INNER_WIDTH)
+        .gap_2()
+        .px_4()
+        .py_3()
+        .child(
+            div()
+                .h_flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .h_flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(div().text_sm().font_medium().child(mode.title()))
+                        .children(legend),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(date_controls)
+                        .child(render_currency_checklist(
+                            &checklist_currencies,
+                            selection,
+                            on_toggle_currency,
+                            cx,
+                        )),
+                ),
+        )
+        .child(body)
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .pt_0p5()
+                .child(mode_selector),
+        );
+
     Some(
         table_card(cx)
             .id((ElementId::from("chart-card"), "balance-sheet"))
             .test_support()
             .w_full()
-            .min_w(px(480.))
-            .v_flex()
-            .gap_2()
-            .px_4()
-            .py_3()
-            .child(
-                div()
-                    .h_flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .h_flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(div().text_sm().font_medium().child(mode.title()))
-                            .children(legend),
-                    )
-                    .child(
-                        div()
-                            .h_flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(date_controls)
-                            .child(render_currency_checklist(
-                                &checklist_currencies,
-                                selection,
-                                on_toggle_currency,
-                                cx,
-                            )),
-                    ),
-            )
-            .child(body)
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .pt_0p5()
-                    .child(mode_selector),
-            )
+            .min_w_0()
+            .child(horizontal_scroll_area(
+                (ElementId::from("chart-scroll"), "balance-sheet"),
+                inner,
+                window,
+                cx,
+            ))
             .into_any_element(),
     )
 }
@@ -907,7 +919,8 @@ pub(crate) fn render_account_balance_chart<F>(
     (selection, date_filter): (&CurrencySelection, &ChartDateFilter),
     date_controls: AnyElement,
     on_toggle_currency: F,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> Option<AnyElement>
 where
     F: Fn(SharedString, bool, &mut Window, &mut App) + 'static,
@@ -969,47 +982,58 @@ where
             .into_any_element()
     };
 
+    let inner = div()
+        .v_flex()
+        .flex_1()
+        .min_w(MIN_CHART_INNER_WIDTH)
+        .gap_2()
+        .px_4()
+        .py_3()
+        .child(
+            div()
+                .h_flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .h_flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(div().text_sm().font_medium().child("Account Balance"))
+                        .children(legend),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(date_controls)
+                        .child(render_currency_checklist(
+                            &series.currencies,
+                            selection,
+                            on_toggle_currency,
+                            cx,
+                        )),
+                ),
+        )
+        .child(body);
+
     Some(
         table_card(cx)
             .id((ElementId::from("chart-card"), account.clone()))
             .test_support()
             .w_full()
-            .v_flex()
-            .gap_2()
-            .px_4()
-            .py_3()
-            .child(
-                div()
-                    .h_flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .h_flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(div().text_sm().font_medium().child("Account Balance"))
-                            .children(legend),
-                    )
-                    .child(
-                        div()
-                            .h_flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(date_controls)
-                            .child(render_currency_checklist(
-                                &series.currencies,
-                                selection,
-                                on_toggle_currency,
-                                cx,
-                            )),
-                    ),
-            )
-            .child(body)
+            .min_w_0()
+            .child(horizontal_scroll_area(
+                (ElementId::from("chart-scroll"), account.clone()),
+                inner,
+                window,
+                cx,
+            ))
             .into_any_element(),
     )
 }
@@ -1021,10 +1045,10 @@ pub(crate) fn render_income_expense_chart<FM, FI, FC>(
     series: &IncomeExpenseSeries,
     (mode, interval): (IncomeChartMode, TimeInterval),
     (selection, date_controls): (&CurrencySelection, AnyElement),
-    on_select_mode: FM,
-    on_select_interval: FI,
+    (on_select_mode, on_select_interval): (FM, FI),
     on_toggle_currency: FC,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> Option<AnyElement>
 where
     FM: Fn(IncomeChartMode, &mut Window, &mut App) + 'static,
@@ -1133,57 +1157,67 @@ where
             .into_any_element()
     };
 
+    let inner = div()
+        .v_flex()
+        .flex_1()
+        .min_w(MIN_CHART_INNER_WIDTH)
+        .gap_2()
+        .px_4()
+        .py_3()
+        .child(
+            div()
+                .h_flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .h_flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(div().text_sm().font_medium().child(mode.label()))
+                        .child(interval_selector)
+                        .children(legend),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(date_controls)
+                        .child(render_currency_checklist(
+                            &checklist_currencies,
+                            selection,
+                            on_toggle_currency,
+                            cx,
+                        )),
+                ),
+        )
+        .child(body)
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .pt_0p5()
+                .child(mode_selector),
+        );
+
     Some(
         table_card(cx)
             .id((ElementId::from("chart-card"), "income"))
             .test_support()
             .w_full()
-            .min_w(px(480.))
-            .v_flex()
-            .gap_2()
-            .px_4()
-            .py_3()
-            .child(
-                div()
-                    .h_flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .h_flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(div().text_sm().font_medium().child(mode.label()))
-                            .child(interval_selector)
-                            .children(legend),
-                    )
-                    .child(
-                        div()
-                            .h_flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(date_controls)
-                            .child(render_currency_checklist(
-                                &checklist_currencies,
-                                selection,
-                                on_toggle_currency,
-                                cx,
-                            )),
-                    ),
-            )
-            .child(body)
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .pt_0p5()
-                    .child(mode_selector),
-            )
+            .min_w_0()
+            .child(horizontal_scroll_area(
+                (ElementId::from("chart-scroll"), "income"),
+                inner,
+                window,
+                cx,
+            ))
             .into_any_element(),
     )
 }

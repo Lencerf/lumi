@@ -9,8 +9,8 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, Styled
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Div, Entity, EventEmitter, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
-    Styled as _, Subscription, Task, Window, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
+    Stateful, Styled as _, Subscription, Task, Window, div, px,
 };
 use lumi::web::Position;
 use rust_decimal::Decimal;
@@ -22,9 +22,9 @@ use crate::number::GroupedText;
 use crate::session::LedgerSession;
 use crate::source::{LedgerSource, Positions};
 use crate::style::{
-    FullWidthDelegate, TableColumns, data_table_td, data_table_th, full_width_data_table,
-    interactive_button, sync_resized_table_columns, table_card, table_header, table_row,
-    table_row_bg,
+    FullWidthDelegate, TableColumns, TableTextMetrics, data_table_td, data_table_th,
+    full_width_data_table, interactive_button, sync_resized_table_columns, table_card,
+    table_header, table_row, table_row_bg,
 };
 
 /// The key context of the holdings table; its key bindings apply within it.
@@ -62,6 +62,8 @@ struct HoldingsDelegate {
     loading: bool,
     failed: Option<SharedString>,
     generation: u64,
+    rows_version: u64,
+    measured_key: Option<(u64, Pixels)>,
     _load_task: Option<Task<()>>,
 }
 
@@ -81,6 +83,7 @@ impl HoldingsReport {
         let search_drag_guard = EditDragGuard::new(&search_input);
         let _subscriptions = vec![
             cx.observe(&session, |this, _, cx| this.load(cx)),
+            cx.observe(&table, |_, _, cx| cx.notify()),
             cx.subscribe(&table, Self::on_table_event),
             cx.subscribe(&search_input, Self::on_search_input_event),
         ];
@@ -94,6 +97,27 @@ impl HoldingsReport {
         };
         this.load(cx);
         this
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn preferred_content_width(&self, window: &Window, cx: &mut App) -> Option<Pixels> {
+        self.requested_revision?;
+        let table = self.table.clone();
+        table.update(cx, |table, cx| {
+            let (changed, width) = {
+                let delegate = table.delegate_mut();
+                if delegate.loading && delegate.all_holdings.is_empty() {
+                    return None;
+                }
+                let changed = delegate.sync_natural_widths(window, cx);
+                let width = (delegate.columns.natural_total_width() + px(2.)).max(px(480.));
+                (changed, width)
+            };
+            if changed {
+                table.refresh(cx);
+            }
+            Some(width)
+        })
     }
 
     /// The accounts of the rows shown, in table order.
@@ -167,6 +191,28 @@ impl HoldingsReport {
             let query = input.read(cx).value();
             self.apply_search_query(query, cx);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn column_widths(&self, cx: &App) -> Vec<Pixels> {
+        self.table
+            .read(cx)
+            .delegate()
+            .columns
+            .as_slice()
+            .iter()
+            .map(|c| c.width)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn natural_column_widths(&self, cx: &App) -> Vec<Pixels> {
+        self.table
+            .read(cx)
+            .delegate()
+            .columns
+            .natural_widths()
+            .to_vec()
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -248,6 +294,7 @@ impl Render for HoldingsReport {
         div()
             .v_flex()
             .size_full()
+            .min_w_0()
             .min_h_0()
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::open_selected_row))
@@ -256,6 +303,7 @@ impl Render for HoldingsReport {
             .child(
                 div()
                     .h_flex()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
                     .gap_3()
@@ -264,8 +312,9 @@ impl Render for HoldingsReport {
                     .child(
                         div()
                             .relative()
-                            .w(px(320.))
-                            .max_w_full()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .max_w(px(320.))
                             .capture_action(self.search_drag_guard.paste_capture())
                             .child(self.search_drag_guard.element())
                             .child(
@@ -309,9 +358,11 @@ impl Render for HoldingsReport {
                 )
             })
             .child(
-                div().flex_1().min_h_0().p_6().pt_3().child(
+                div().flex_1().min_w_0().min_h_0().p_6().pt_3().child(
                     table_card(cx)
                         .size_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .child(full_width_data_table(&self.table)),
                 ),
             )
@@ -322,20 +373,17 @@ impl HoldingsDelegate {
     fn new(source: Arc<dyn LedgerSource>) -> Self {
         Self {
             source,
-            columns: TableColumns::new(
-                vec![
-                    Column::new("account", "Account").width(px(280.)).sortable(),
-                    Column::new("units", "Units").width(px(170.)).text_right(),
-                    Column::new("cost", "Cost").width(px(150.)).text_right(),
-                    Column::new("acquired", "Acquired")
-                        .width(px(120.))
-                        .text_right(),
-                    Column::new("book_value", "Book value")
-                        .width(px(170.))
-                        .text_right(),
-                ],
-                "account",
-            ),
+            columns: TableColumns::new(vec![
+                Column::new("account", "Account").width(px(280.)).sortable(),
+                Column::new("units", "Units").width(px(170.)).text_right(),
+                Column::new("cost", "Cost").width(px(150.)).text_right(),
+                Column::new("acquired", "Acquired")
+                    .width(px(120.))
+                    .text_right(),
+                Column::new("book_value", "Book value")
+                    .width(px(170.))
+                    .text_right(),
+            ]),
             all_holdings: Vec::new(),
             holdings: Vec::new(),
             query: SharedString::default(),
@@ -343,8 +391,65 @@ impl HoldingsDelegate {
             loading: false,
             failed: None,
             generation: 0,
+            rows_version: 0,
+            measured_key: None,
             _load_task: None,
         }
+    }
+
+    fn measure_natural_widths(&mut self, window: &Window, cx: &App) -> bool {
+        let key = (self.rows_version, window.rem_size());
+        if self.measured_key == Some(key) {
+            return false;
+        }
+        self.measured_key = Some(key);
+        let m = TableTextMetrics::new(window, cx);
+        let widths = self
+            .columns
+            .as_slice()
+            .iter()
+            .map(|col| match col.key.as_ref() {
+                "account" => {
+                    let mut w = m.header_width("Account", true);
+                    for h in &self.holdings {
+                        w = w.max(m.mono_button_cell(h.account.clone(), false));
+                    }
+                    w
+                }
+                "units" => {
+                    let mut w = m.header_width("Units", false);
+                    for h in &self.holdings {
+                        w = w.max(m.grouped_mono_cell(&h.units, window));
+                    }
+                    w
+                }
+                "cost" => {
+                    let mut w = m.header_width("Cost", false);
+                    for h in &self.holdings {
+                        w = w.max(m.grouped_mono_cell(&h.cost, window));
+                    }
+                    w
+                }
+                "acquired" => {
+                    let mut w = m.header_width("Acquired", false);
+                    for h in &self.holdings {
+                        if !h.acquired.is_empty() {
+                            w = w.max(m.mono_right_cell(h.acquired.clone()));
+                        }
+                    }
+                    w
+                }
+                "book_value" => {
+                    let mut w = m.header_width("Book value", false);
+                    for h in &self.holdings {
+                        w = w.max(m.grouped_mono_cell(&h.book_value, window));
+                    }
+                    w
+                }
+                _ => col.width,
+            })
+            .collect();
+        self.columns.set_natural_widths(widths)
     }
 
     fn apply_filter_and_sort(&mut self) {
@@ -364,6 +469,7 @@ impl HoldingsDelegate {
             ColumnSort::Descending => self.holdings.sort_by(|a, b| b.account.cmp(&a.account)),
             _ => self.holdings.sort_by(|a, b| a.account.cmp(&b.account)),
         }
+        self.rows_version += 1;
     }
 
     fn load(&mut self, cx: &mut Context<TableState<Self>>) {
@@ -481,6 +587,10 @@ fn holdings(positions: Positions) -> Vec<Holding> {
 impl FullWidthDelegate for HoldingsDelegate {
     fn columns_mut(&mut self) -> &mut TableColumns {
         &mut self.columns
+    }
+
+    fn sync_natural_widths(&mut self, window: &Window, cx: &App) -> bool {
+        self.measure_natural_widths(window, cx)
     }
 }
 

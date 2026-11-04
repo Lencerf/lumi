@@ -300,14 +300,24 @@ fn test_sibling_tables_have_distinct_paths(cx: &mut TestAppContext) {
     }
 }
 
-/// The report scrolls both ways: the window is too short for the Assets
-/// hierarchy and too narrow for the two columns of the balance sheet.
+/// The report scrolls both ways when the user narrows the window: vertical
+/// scrolling moves the hierarchy while horizontal scrolling moves the table
+/// columns independently.
 #[gpui_kit::test]
 fn test_report_scrolls_both_ways(cx: &mut TestAppContext) {
     let (handle, _app) = open_app(Page::BalanceSheet, size(px(600.), px(500.)), cx);
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        assert!(
+            window.viewport_size().width > px(600.),
+            "opening Balance Sheet auto-widens a too-narrow initial window"
+        );
+        // Simulate the user manually narrowing the window to 600px.
+        window.resize(size(px(600.), px(500.)));
+        window.bounds_changed(cx);
+        window.render_frame(cx);
+
         let last_asset = (ElementId::from("account"), "Assets:Investments:Brokerage");
         let equity = (ElementId::from("account"), "Equity");
         let over = (ElementId::from("account"), "Assets");

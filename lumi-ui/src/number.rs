@@ -143,6 +143,33 @@ pub(crate) fn shape_text_width(
     if text.is_empty() {
         return px(0.);
     }
+    if text.contains(['\n', '\r']) {
+        return text
+            .lines()
+            .map(|line| {
+                if line.is_empty() {
+                    px(0.)
+                } else {
+                    let line_str = SharedString::from(line.to_string());
+                    text_system
+                        .shape_line(
+                            line_str.clone(),
+                            font_size,
+                            &[TextRun {
+                                len: line_str.len(),
+                                font: font.clone(),
+                                color: Hsla::default(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            }],
+                            None,
+                        )
+                        .width
+                }
+            })
+            .fold(px(0.), Pixels::max);
+    }
     text_system
         .shape_line(
             text.clone(),

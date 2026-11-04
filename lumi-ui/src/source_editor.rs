@@ -31,6 +31,8 @@ use crate::completion::BeancountCompletionProvider;
 use crate::errors_report::common_dir;
 use crate::input_guard::EditDragGuard;
 use crate::session::LedgerSession;
+#[cfg(not(target_family = "wasm"))]
+use crate::style::TableTextMetrics;
 use crate::style::{editor_bg, editor_error_line_bg, table_card};
 use crate::{completion, highlight};
 
@@ -269,6 +271,30 @@ impl SourceEditor {
     /// All source files currently available in the dropdown, in display order.
     pub fn files(&self) -> &[SharedString] {
         &self.files
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn preferred_content_width(&self, window: &Window, cx: &App) -> Option<Pixels> {
+        if self.loading_file {
+            return None;
+        }
+        let text = self.original.as_ref()?;
+        let m = TableTextMetrics::new(window, cx);
+        let mut longest: [&str; 8] = [""; 8];
+        for line in text.lines() {
+            let len = line.len();
+            if len > longest[7].len() {
+                longest[7] = line;
+                longest.sort_unstable_by_key(|s| std::cmp::Reverse(s.len()));
+            }
+        }
+        let max_line_width = longest
+            .into_iter()
+            .filter(|line| !line.is_empty())
+            .map(|line| m.mono_cell(SharedString::from(line.to_string()), false))
+            .fold(px(0.), Pixels::max);
+        // Line-number gutter + editor padding + card border.
+        Some((max_line_width + px(84.)).max(px(840.)))
     }
 
     /// The path of the currently selected source file.

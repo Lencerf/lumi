@@ -1,16 +1,24 @@
 use std::sync::Arc;
 
+#[cfg(test)]
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarAxis};
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, Size, StyledExt as _, Theme};
+use gpui_kit::component::{
+    ActiveTheme as _, InteractiveElementExt as _, Sizable as _, Size, StyledExt as _, Theme,
+    window_paddings,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Bounds, Div, Element, ElementId, Entity, GlobalElementId, Hsla,
-    InspectorElementId, InteractiveElement as _, IntoElement, LayoutId, ParentElement as _, Pixels,
-    Stateful, Style, Styled as _, Window, div, px, relative,
+    AnyElement, App, Bounds, Decorations, Div, Element, ElementId, Entity, Font, FontWeight,
+    GlobalElementId, Hsla, InspectorElementId, InteractiveElement as _, IntoElement, LayoutId,
+    ParentElement as _, Pixels, ScrollHandle, SharedString, Stateful,
+    StatefulInteractiveElement as _, Style, Styled as _, Window, WindowTextSystem, div, px,
+    relative, rems,
 };
-#[cfg(test)]
-use gpui_kit::{SharedString, TestSupportExt as _};
+
+use crate::number::{GroupedText, shape_text_width};
 
 /// Customizes the global GPUI Kit theme tokens for lumi's report tables and
 /// editors.
@@ -167,38 +175,304 @@ pub(crate) fn data_table_td(
     })
 }
 
+/// Horizontal inset occupied by client-side window decorations (shadow padding +
+/// `1px` border on untiled edges on Linux; `0px` on macOS, Windows, Web, and
+/// `TestWindow`).
+pub(crate) fn window_chrome_horizontal_inset(window: &Window) -> Pixels {
+    let paddings = window_paddings(window);
+    let border = match window.window_decorations() {
+        Decorations::Server => px(0.),
+        Decorations::Client { tiling } => {
+            (if tiling.left { px(0.) } else { px(1.) })
+                + (if tiling.right { px(0.) } else { px(1.) })
+        }
+    };
+    paddings.left + paddings.right + border
+}
+
+/// Fixed horizontal width outside a report's content box inside [`LumiApp`]:
+/// window decorations + `Sidebar` (`w_48` = `12rem`) + report horizontal
+/// padding (`px_6` / `p_6` = `3rem`).
+pub(crate) fn report_horizontal_overhead(window: &Window) -> Pixels {
+    let rem = window.rem_size();
+    window_chrome_horizontal_inset(window) + rems(12.).to_pixels(rem) + rems(3.).to_pixels(rem)
+}
+
+/// Inner horizontal width available to a report's content box inside [`LumiApp`].
+pub(crate) fn available_report_content_width(window: &Window) -> Pixels {
+    (window.viewport_size().width - report_horizontal_overhead(window)).max(px(0.))
+}
+
+/// Horizontal-only scroll area that shows a bottom [`Scrollbar`] when `content`
+/// is wider than the container, without intercepting vertical mouse-wheel
+/// scrolling.
+pub(crate) fn horizontal_scroll_area(
+    id: impl Into<ElementId>,
+    content: impl IntoElement,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let id = id.into();
+    let scroll_handle = window
+        .use_keyed_state((id.clone(), "hscroll-handle"), cx, |_, _| {
+            ScrollHandle::new()
+        })
+        .read(cx)
+        .clone();
+    let area = div()
+        .id(id.clone())
+        .w_full()
+        .flex()
+        .flex_row()
+        .overflow_x_scroll()
+        .lock_scroll_axis()
+        .track_scroll(&scroll_handle)
+        .child(content);
+    #[cfg(test)]
+    let area = area.test_support();
+    div()
+        .relative()
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .child(area)
+        .child(
+            div().absolute().inset_0().child(
+                Scrollbar::new(&scroll_handle)
+                    .id((id, "scrollbar"))
+                    .axis(ScrollbarAxis::Horizontal)
+                    .viewport_from_layout(),
+            ),
+        )
+}
+
+/// Shared font and spacing metrics for measuring natural content widths of
+/// `Size::Small` report table columns.
+pub(crate) struct TableTextMetrics<'a> {
+    pub(crate) text_system: &'a WindowTextSystem,
+    pub(crate) text_sm: Pixels,
+    pub(crate) text_xs: Pixels,
+    pub(crate) cell_h_pad: Pixels,
+    pub(crate) gap_1: Pixels,
+    pub(crate) pl_5: Pixels,
+    pub(crate) button_extra: Pixels,
+    pub(crate) sort_icon_extra: Pixels,
+    pub(crate) right_num_breathing: Pixels,
+    pub(crate) sans_regular: Font,
+    pub(crate) sans_medium: Font,
+    pub(crate) sans_semibold: Font,
+    pub(crate) mono_regular: Font,
+    pub(crate) mono_semibold: Font,
+}
+
+impl<'a> TableTextMetrics<'a> {
+    pub(crate) fn new(window: &'a Window, cx: &App) -> Self {
+        let rem = window.rem_size();
+        let pad = Size::Small.table_cell_padding();
+        let theme = cx.theme();
+        Self {
+            text_system: window.text_system(),
+            text_sm: rems(0.875).to_pixels(rem),
+            text_xs: rems(0.75).to_pixels(rem),
+            cell_h_pad: pad.left + pad.right,
+            gap_1: rems(0.25).to_pixels(rem),
+            pl_5: rems(1.25).to_pixels(rem),
+            // `interactive_button` (`Button::small().compact()`): `px_1p5` (12px) +
+            // `1px` border on each side + 4px breathing.
+            button_extra: px(18.),
+            // `DataTable` sort icon button (16px) + header `gap_2` (8px) + 2px slack.
+            sort_icon_extra: px(26.),
+            // Left clearance between right-aligned values and the `1px` column separator.
+            right_num_breathing: px(10.),
+            sans_regular: Font {
+                family: theme.font_family.clone(),
+                weight: FontWeight::NORMAL,
+                ..Default::default()
+            },
+            sans_medium: Font {
+                family: theme.font_family.clone(),
+                weight: FontWeight::MEDIUM,
+                ..Default::default()
+            },
+            sans_semibold: Font {
+                family: theme.font_family.clone(),
+                weight: FontWeight::SEMIBOLD,
+                ..Default::default()
+            },
+            mono_regular: Font {
+                family: theme.mono_font_family.clone(),
+                weight: FontWeight::NORMAL,
+                ..Default::default()
+            },
+            mono_semibold: Font {
+                family: theme.mono_font_family.clone(),
+                weight: FontWeight::SEMIBOLD,
+                ..Default::default()
+            },
+        }
+    }
+
+    pub(crate) fn ceil_px(width: Pixels) -> Pixels {
+        px(f32::from(width).ceil().max(24.))
+    }
+
+    pub(crate) fn header_width(&self, label: &str, sortable: bool) -> Pixels {
+        let extra = if sortable {
+            self.sort_icon_extra
+        } else {
+            px(4.)
+        };
+        Self::ceil_px(
+            shape_text_width(
+                self.text_system,
+                SharedString::from(label.to_string()),
+                self.sans_medium.clone(),
+                self.text_sm,
+            ) + self.cell_h_pad
+                + extra,
+        )
+    }
+
+    pub(crate) fn sans_cell(&self, text: SharedString, semibold: bool) -> Pixels {
+        let font = if semibold {
+            self.sans_semibold.clone()
+        } else {
+            self.sans_regular.clone()
+        };
+        Self::ceil_px(
+            shape_text_width(self.text_system, text, font, self.text_sm) + self.cell_h_pad + px(4.),
+        )
+    }
+
+    pub(crate) fn mono_cell(&self, text: SharedString, semibold: bool) -> Pixels {
+        let font = if semibold {
+            self.mono_semibold.clone()
+        } else {
+            self.mono_regular.clone()
+        };
+        Self::ceil_px(
+            shape_text_width(self.text_system, text, font, self.text_sm) + self.cell_h_pad + px(4.),
+        )
+    }
+
+    pub(crate) fn mono_right_cell(&self, text: SharedString) -> Pixels {
+        Self::ceil_px(
+            shape_text_width(
+                self.text_system,
+                text,
+                self.mono_regular.clone(),
+                self.text_sm,
+            ) + self.cell_h_pad
+                + self.right_num_breathing,
+        )
+    }
+
+    pub(crate) fn mono_button_cell(&self, text: SharedString, semibold: bool) -> Pixels {
+        let font = if semibold {
+            self.mono_semibold.clone()
+        } else {
+            self.mono_regular.clone()
+        };
+        Self::ceil_px(
+            shape_text_width(self.text_system, text, font, self.text_sm)
+                + self.cell_h_pad
+                + self.button_extra,
+        )
+    }
+
+    pub(crate) fn grouped_mono_cell(&self, grouped: &GroupedText, window: &Window) -> Pixels {
+        if grouped.as_str().is_empty() {
+            return px(0.);
+        }
+        Self::ceil_px(
+            grouped.measure_width(self.mono_regular.clone(), self.text_sm, window)
+                + self.cell_h_pad
+                + self.right_num_breathing,
+        )
+    }
+
+    pub(crate) fn sans_width(&self, text: SharedString, semibold: bool) -> Pixels {
+        let font = if semibold {
+            self.sans_semibold.clone()
+        } else {
+            self.sans_regular.clone()
+        };
+        shape_text_width(self.text_system, text, font, self.text_sm)
+    }
+
+    pub(crate) fn mono_xs_width(&self, text: SharedString) -> Pixels {
+        shape_text_width(
+            self.text_system,
+            text,
+            self.mono_regular.clone(),
+            self.text_xs,
+        )
+    }
+}
+
+/// Scales `base` column widths to `target_width`:
+/// - When `target_width <= sum(base)`, returns `base` unchanged so columns never
+///   shrink below their content-fitted widths.
+/// - When `target_width > sum(base)`, distributes the extra width proportionally
+///   across all columns with monotonic cumulative rounding so `sum == target_width`
+///   and every column is `>= base[i]`.
+pub(crate) fn scale_widths_proportionally(base: &[Pixels], target_width: Pixels) -> Vec<Pixels> {
+    if base.is_empty() {
+        return Vec::new();
+    }
+    let base_sum: f32 = base.iter().map(|&w| f32::from(w)).sum();
+    let target = f32::from(target_width);
+    if base_sum <= 0.0 || target <= base_sum {
+        return base.to_vec();
+    }
+    let extra = target - base_sum;
+    let n = base.len();
+    let mut out = Vec::with_capacity(n);
+    let mut cum_base = 0.0_f32;
+    let mut prev_extra = 0.0_f32;
+    for (ix, &w) in base.iter().enumerate() {
+        cum_base += f32::from(w);
+        let next_extra = if ix + 1 == n {
+            extra
+        } else {
+            (extra * cum_base / base_sum).round()
+        };
+        let delta = (next_extra - prev_extra).max(0.0);
+        out.push(w + px(delta));
+        prev_extra = next_extra;
+    }
+    out
+}
+
 /// Column definitions for a full-width `DataTable` with no trailing empty column.
 ///
-/// The column identified by `flex_key` expands whenever the table viewport is
-/// wider than the sum of column widths, while manual column resizing keeps total
-/// column width at least as wide as the viewport so no blank trailing gap opens.
+/// Each column tracks its content-fitted natural width (`natural_widths`). When
+/// the table viewport is wider than the sum of column widths, all columns widen
+/// proportionally; when the viewport is narrower, columns keep their natural
+/// widths so the table scrolls horizontally instead of truncating cells.
 pub(crate) struct TableColumns {
     columns: Vec<Column>,
-    flex_key: &'static str,
-    flex_base_width: Pixels,
-    user_flex_width: Option<Pixels>,
+    natural_widths: Vec<Pixels>,
+    user_widths: Option<Vec<Pixels>>,
     table_width: Option<Pixels>,
 }
 
 impl TableColumns {
     const MAX_COL_WIDTH: Pixels = px(10_000.);
 
-    pub(crate) fn new(columns: Vec<Column>, flex_key: &'static str) -> Self {
-        let mut flex_base_width = px(100.);
+    pub(crate) fn new(columns: Vec<Column>) -> Self {
+        let natural_widths = columns
+            .iter()
+            .map(|col| px(f32::from(col.width).ceil().max(24.)))
+            .collect();
         let columns = columns
             .into_iter()
-            .map(|col| {
-                if col.key.as_ref() == flex_key {
-                    flex_base_width = col.width;
-                }
-                col.max_width(Self::MAX_COL_WIDTH)
-            })
+            .map(|col| col.min_width(px(20.)).max_width(Self::MAX_COL_WIDTH))
             .collect();
         Self {
             columns,
-            flex_key,
-            flex_base_width,
-            user_flex_width: None,
+            natural_widths,
+            user_widths: None,
             table_width: None,
         }
     }
@@ -215,10 +489,27 @@ impl TableColumns {
         self.columns.get(col_ix)
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn natural_total_width(&self) -> Pixels {
+        self.natural_widths.iter().copied().sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn natural_widths(&self) -> &[Pixels] {
+        &self.natural_widths
+    }
+
     pub(crate) fn move_column(&mut self, col_ix: usize, to_ix: usize) {
         if col_ix < self.columns.len() && to_ix < self.columns.len() && col_ix != to_ix {
             let col = self.columns.remove(col_ix);
             self.columns.insert(to_ix, col);
+            let nat = self.natural_widths.remove(col_ix);
+            self.natural_widths.insert(to_ix, nat);
+            if let Some(user) = &mut self.user_widths {
+                let uw = user.remove(col_ix);
+                user.insert(to_ix, uw);
+            }
+            self.table_width = None;
         }
     }
 
@@ -232,31 +523,65 @@ impl TableColumns {
         }
     }
 
-    /// Expands the flexible column to fill `width` when the viewport is wider
-    /// than the remaining columns; returns `true` when any column width changed.
+    /// Updates each column's content-fitted natural width (ordered to match
+    /// `self.columns`) and re-applies proportional fitting if a viewport width
+    /// is already known.
+    pub(crate) fn set_natural_widths(&mut self, widths: Vec<Pixels>) -> bool {
+        if widths.len() != self.columns.len() {
+            return false;
+        }
+        let normalized: Vec<Pixels> = widths
+            .into_iter()
+            .map(|w| px(f32::from(w).ceil().max(24.)))
+            .collect();
+        if self.natural_widths == normalized {
+            return false;
+        }
+        self.natural_widths = normalized;
+        if let Some(user) = &mut self.user_widths {
+            for (uw, &nw) in user.iter_mut().zip(&self.natural_widths) {
+                if *uw < nw {
+                    *uw = nw;
+                }
+            }
+        }
+        let prev_table_width = self.table_width.take();
+        match prev_table_width {
+            Some(width) => {
+                self.fit_to_width(width);
+                true
+            }
+            None => {
+                let mut changed = false;
+                for (col, &nw) in self.columns.iter_mut().zip(&self.natural_widths) {
+                    if col.width != nw {
+                        col.width = nw;
+                        changed = true;
+                    }
+                }
+                changed
+            }
+        }
+    }
+
+    /// Scales all columns proportionally to fill `width` when `width` exceeds
+    /// the sum of base widths, or keeps base widths unchanged when `width` is
+    /// narrower; returns `true` when any column width changed.
     pub(crate) fn fit_to_width(&mut self, width: Pixels) -> bool {
         if width <= px(0.) || self.table_width == Some(width) {
             return false;
         }
         self.table_width = Some(width);
-        let other_width: Pixels = self
-            .columns
-            .iter()
-            .filter(|col| col.key.as_ref() != self.flex_key)
-            .map(|col| col.width)
-            .sum();
-        let min_flex = self.user_flex_width.unwrap_or(self.flex_base_width);
-        let target_flex = (width - other_width).max(min_flex);
-        if let Some(flex_col) = self
-            .columns
-            .iter_mut()
-            .find(|col| col.key.as_ref() == self.flex_key)
-            && flex_col.width != target_flex
-        {
-            flex_col.width = target_flex;
-            return true;
+        let base = self.user_widths.as_deref().unwrap_or(&self.natural_widths);
+        let targets = scale_widths_proportionally(base, width);
+        let mut changed = false;
+        for (col, target) in self.columns.iter_mut().zip(targets) {
+            if col.width != target {
+                col.width = target;
+                changed = true;
+            }
         }
-        false
+        changed
     }
 
     /// Records user-resized column widths and absorbs any sub-viewport slack
@@ -270,27 +595,25 @@ impl TableColumns {
             .iter()
             .zip(widths)
             .position(|(col, &w)| col.width != w);
-        for (col, &w) in self.columns.iter_mut().zip(widths) {
-            col.width = w;
-        }
-        if let Some(ix) = resized_ix
-            && self.columns[ix].key.as_ref() == self.flex_key
-        {
-            self.user_flex_width = Some(widths[ix]);
-        }
+        let mut adjusted = widths.to_vec();
+        let mut adjusted_slack = false;
         if let Some(table_width) = self.table_width {
-            let total: Pixels = self.columns.iter().map(|col| col.width).sum();
+            let total: Pixels = adjusted.iter().copied().sum();
             if total < table_width {
                 let slack = table_width - total;
                 let recipient = match resized_ix {
-                    Some(ix) if ix + 1 < self.columns.len() => ix + 1,
-                    _ => self.columns.len() - 1,
+                    Some(ix) if ix + 1 < adjusted.len() => ix + 1,
+                    _ => adjusted.len() - 1,
                 };
-                self.columns[recipient].width += slack;
-                return true;
+                adjusted[recipient] += slack;
+                adjusted_slack = true;
             }
         }
-        false
+        for (col, &w) in self.columns.iter_mut().zip(&adjusted) {
+            col.width = w;
+        }
+        self.user_widths = Some(adjusted);
+        adjusted_slack
     }
 }
 
@@ -304,6 +627,10 @@ impl std::ops::Index<usize> for TableColumns {
 
 pub(crate) trait FullWidthDelegate: TableDelegate {
     fn columns_mut(&mut self) -> &mut TableColumns;
+
+    fn sync_natural_widths(&mut self, _window: &Window, _cx: &App) -> bool {
+        false
+    }
 }
 
 /// Applies user-resized `widths` to `table` and refreshes its column groups if
@@ -325,9 +652,9 @@ pub(crate) fn sync_resized_table_columns<D: FullWidthDelegate>(
     });
 }
 
-/// Renders a small, borderless, unstriped [`DataTable`] whose flexible column
-/// stretches to fill the container width before layout so no trailing empty
-/// column gap appears.
+/// Renders a small, borderless, unstriped [`DataTable`] whose columns fit their
+/// contents and scale proportionally when the container is wider so no trailing
+/// empty column gap appears.
 pub(crate) fn full_width_data_table<D: FullWidthDelegate>(
     state: &Entity<TableState<D>>,
 ) -> FullWidthDataTable<D> {
@@ -385,7 +712,10 @@ impl<D: FullWidthDelegate> Element for FullWidthDataTable<D> {
         let width = bounds.size.width;
         if width > px(0.) {
             self.state.update(cx, |table, cx| {
-                if table.delegate_mut().columns_mut().fit_to_width(width) {
+                let delegate = table.delegate_mut();
+                let natural_changed = delegate.sync_natural_widths(window, cx);
+                let fit_changed = delegate.columns_mut().fit_to_width(width);
+                if natural_changed || fit_changed {
                     table.refresh(cx);
                 }
             });

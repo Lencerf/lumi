@@ -18,6 +18,8 @@ use lumi::web::{
     TimeInterval, TrieOptions, TrieTable,
 };
 
+#[cfg(not(target_family = "wasm"))]
+use crate::chart::MIN_CHART_INNER_WIDTH;
 use crate::chart::{
     BalanceSheetMode, ChartDateFilter, CurrencySelection, IncomeChartMode, new_chart_date_picker,
     render_balance_sheet_chart, render_date_range_controls, render_income_expense_chart,
@@ -29,7 +31,9 @@ use crate::navigation::{Page, ReportEvent};
 use crate::number::{GroupedText, shape_text_width};
 use crate::session::LedgerSession;
 use crate::style::{
-    interactive_button, table_card, table_row_bg, trie_cell_col_separator, trie_head_col_separator,
+    available_report_content_width, horizontal_scroll_area, interactive_button,
+    scale_widths_proportionally, table_card, table_row_bg, trie_cell_col_separator,
+    trie_head_col_separator,
 };
 
 /// A report made of account hierarchies with their balances, such as the
@@ -466,7 +470,44 @@ impl TrieReport {
         self.load(cx);
     }
 
-    fn render_chart(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn preferred_content_width(&self, window: &Window, cx: &App) -> Option<Pixels> {
+        if self.tables.is_empty()
+            || self
+                .tables
+                .iter()
+                .any(|table| matches!(table, TrieLoad::Pending))
+        {
+            return None;
+        }
+        let col_naturals = self.measure_column_card_widths(window, cx);
+        let gap = rems(1.5).to_pixels(window.rem_size());
+        let total_gaps = gap * col_naturals.len().saturating_sub(1) as f32;
+        let pair_width = col_naturals.into_iter().sum::<Pixels>() + total_gaps;
+        Some(pair_width.max(MIN_CHART_INNER_WIDTH + px(2.)))
+    }
+
+    fn measure_column_card_widths(&self, window: &Window, cx: &App) -> Vec<Pixels> {
+        let mut iter = self.tables.iter();
+        columns(&self.page)
+            .iter()
+            .map(|column| {
+                column
+                    .iter()
+                    .map(|_| match iter.next().unwrap_or(&TrieLoad::Pending) {
+                        TrieLoad::Ready(presentation) => {
+                            let (acct, ccys) = measure_table_columns(presentation, window, cx);
+                            acct + ccys.into_iter().sum::<Pixels>() + px(2.)
+                        }
+                        TrieLoad::Failed(_) => px(280.),
+                        TrieLoad::Pending | TrieLoad::Missing => px(180.),
+                    })
+                    .fold(px(180.), Pixels::max)
+            })
+            .collect()
+    }
+
+    fn render_chart(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let preset_entity = cx.entity().downgrade();
         let date_controls = render_date_range_controls(
             self.page.id(),
@@ -498,6 +539,7 @@ impl TrieReport {
                             this.set_currency_selected(currency, selected, cx);
                         });
                     },
+                    window,
                     cx,
                 )
             }
@@ -509,21 +551,24 @@ impl TrieReport {
                     series,
                     (self.income_chart_mode, self.income_interval),
                     (&self.chart_currencies, date_controls),
-                    move |mode, _, cx| {
-                        let _ = mode_entity.update(cx, |this, cx| {
-                            this.set_income_chart_mode(mode, cx);
-                        });
-                    },
-                    move |interval, _, cx| {
-                        let _ = interval_entity.update(cx, |this, cx| {
-                            this.set_income_interval(interval, cx);
-                        });
-                    },
+                    (
+                        move |mode, _, cx| {
+                            let _ = mode_entity.update(cx, |this, cx| {
+                                this.set_income_chart_mode(mode, cx);
+                            });
+                        },
+                        move |interval, _, cx| {
+                            let _ = interval_entity.update(cx, |this, cx| {
+                                this.set_income_interval(interval, cx);
+                            });
+                        },
+                    ),
                     move |currency, selected, _, cx| {
                         let _ = currency_entity.update(cx, |this, cx| {
                             this.set_currency_selected(currency, selected, cx);
                         });
                     },
+                    window,
                     cx,
                 )
             }
@@ -538,6 +583,7 @@ impl TrieReport {
         &self,
         root: &'static str,
         table: &TrieLoad,
+        target_card_width: Option<Pixels>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -573,11 +619,25 @@ impl TrieReport {
             TrieLoad::Ready(presentation) => {
                 let (account_min_width, currency_widths) =
                     measure_table_columns(presentation, window, cx);
+                let mut col_widths = Vec::with_capacity(1 + currency_widths.len());
+                col_widths.push(account_min_width);
+                col_widths.extend(currency_widths);
+                if let Some(target_card) = target_card_width {
+                    col_widths = scale_widths_proportionally(
+                        &col_widths,
+                        (target_card - px(2.)).max(px(0.)),
+                    );
+                }
+                let account_width = col_widths[0];
+                let currency_widths = &col_widths[1..];
+                let card_width = col_widths.iter().copied().sum::<Pixels>() + px(2.);
                 let theme = cx.theme();
                 let mono = theme.mono_font_family.clone();
                 let border = theme.border;
                 let guide_color = muted.opacity(0.55);
                 table_card(cx)
+                    .w(card_width)
+                    .flex_shrink_0()
                     .child(
                         Table::new()
                             .small()
@@ -587,7 +647,9 @@ impl TrieReport {
                                     TableRow::new()
                                         .child(
                                             TableHead::new()
-                                                .min_w(account_min_width)
+                                                .w(account_width)
+                                                .min_w(account_width)
+                                                .flex_shrink_0()
                                                 .whitespace_nowrap()
                                                 .child("Account"),
                                         )
@@ -619,7 +681,9 @@ impl TrieReport {
                                         .bg(row_bg)
                                         .child(
                                             TableCell::new()
-                                                .min_w(account_min_width)
+                                                .w(account_width)
+                                                .min_w(account_width)
+                                                .flex_shrink_0()
                                                 .py_0()
                                                 .items_stretch()
                                                 .children(
@@ -925,11 +989,57 @@ impl Render for TrieReport {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_date_picker(window, cx);
         let page = self.page.clone();
-        let chart = self.render_chart(cx);
+        let chart = self.render_chart(window, cx);
+        let col_naturals = self.measure_column_card_widths(window, cx);
+        let gap = rems(1.5).to_pixels(window.rem_size());
+        let total_gaps = gap * col_naturals.len().saturating_sub(1) as f32;
+        let natural_pair_width = col_naturals.iter().copied().sum::<Pixels>() + total_gaps;
+        let available = available_report_content_width(window);
+        let col_targets: Option<Vec<Pixels>> = (available > natural_pair_width)
+            .then(|| scale_widths_proportionally(&col_naturals, available - total_gaps));
+
         let mut tables = self.tables.iter();
+        let tables_row =
+            div()
+                .h_flex()
+                .items_start()
+                .gap_6()
+                .children(columns(&page).iter().enumerate().map(|(col_ix, column)| {
+                    let target_card_width = col_targets
+                        .as_ref()
+                        .and_then(|targets| targets.get(col_ix).copied());
+                    div()
+                        .v_flex()
+                        .flex_none()
+                        .gap_6()
+                        .children(column.iter().map(|root| {
+                            let table = tables.next().unwrap_or(&TrieLoad::Pending);
+                            // `Table` has no id of its own, so without this scope
+                            // sibling tables would share element paths and so
+                            // accessibility node ids.
+                            div()
+                                .id((ElementId::from("trie-table"), *root))
+                                .test_support()
+                                .child(self.render_table(
+                                    root,
+                                    table,
+                                    target_card_width,
+                                    window,
+                                    cx,
+                                ))
+                        }))
+                }));
+        let tables_scroll = horizontal_scroll_area(
+            (ElementId::from("trie-tables-scroll"), page.id()),
+            tables_row,
+            window,
+            cx,
+        );
+
         div()
             .v_flex()
             .size_full()
+            .min_w_0()
             .min_h_0()
             .child(
                 div().h_flex().justify_end().px_6().pt_4().child(
@@ -942,42 +1052,25 @@ impl Render for TrieReport {
                 ),
             )
             .child(
-                // Tables take the width their columns need and the report
-                // scrolls both ways, so an amount is never clipped.
+                // The report scrolls vertically at the page level while charts
+                // and hierarchy tables each scroll horizontally at their own
+                // level when narrowed, so neither clips nor stretches the other.
                 div()
                     .id((ElementId::from("trie-report"), page.id()))
                     .flex_1()
+                    .w_full()
+                    .min_w_0()
                     .min_h_0()
-                    // A two-way scroll area lays this out as an item of a flex
-                    // row, which would stretch it to the area's height and so
-                    // leave nothing to scroll to vertically.
-                    .self_start()
-                    .overflow_scrollbar()
+                    .overflow_y_scrollbar()
                     .child(
                         div()
                             .v_flex()
                             .w_full()
+                            .min_w_0()
                             .gap_6()
                             .p_6()
                             .when_some(chart, |this, chart| this.child(chart))
-                            .child(div().h_flex().items_start().gap_6().children(
-                                columns(&page).iter().map(|column| {
-                                    div()
-                                        .v_flex()
-                                        .flex_none()
-                                        .gap_6()
-                                        .children(column.iter().map(|root| {
-                                            let table = tables.next().unwrap_or(&TrieLoad::Pending);
-                                            // `Table` has no id of its own, so without
-                                            // this scope sibling tables would share
-                                            // element paths and so accessibility node
-                                            // ids.
-                                            div()
-                                                .id((ElementId::from("trie-table"), *root))
-                                                .child(self.render_table(root, table, window, cx))
-                                        }))
-                                }),
-                            )),
+                            .child(tables_scroll),
                     ),
             )
     }
