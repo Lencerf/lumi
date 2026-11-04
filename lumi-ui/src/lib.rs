@@ -34,6 +34,7 @@ pub use app::{
 pub use assets::ExtraIcons;
 #[cfg(not(target_family = "wasm"))]
 pub use assets::LumiAssets;
+pub use chart::{BalanceSheetMode, IncomeChartMode};
 pub use entry_editor::{CancelEntry, EntryEditor, SaveEntry};
 pub use errors_report::ErrorsReport;
 pub use holdings_report::HoldingsReport;

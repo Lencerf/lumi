@@ -23,7 +23,7 @@ use gpui_kit::{
 use lumi::web::{
     AccountBalanceSeries, BalanceSheetSeries, IncomeExpenseSeries, TimeInterval, format_day_index,
 };
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 
 use crate::number::GroupedBuilder;
 use crate::style::table_card;
@@ -33,6 +33,67 @@ const PLOT_RIGHT_PAD: f32 = 14.0;
 const HOVER_DOT_SIZE: Pixels = px(6.0);
 const HOVER_HALO_SIZE: Pixels = px(14.0);
 const BAR_HOVER_DIM: f32 = 0.35;
+
+/// Which root hierarchy (`Assets` or `Liabilities`) is displayed in the Balance
+/// Sheet line chart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BalanceSheetMode {
+    #[default]
+    Assets,
+    Liabilities,
+}
+
+impl BalanceSheetMode {
+    pub const ALL: [Self; 2] = [Self::Assets, Self::Liabilities];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Assets => "Assets",
+            Self::Liabilities => "Liabilities",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Assets => "Total Assets",
+            Self::Liabilities => "Total Liabilities",
+        }
+    }
+
+    pub fn short_id(self) -> &'static str {
+        match self {
+            Self::Assets => "assets",
+            Self::Liabilities => "liabilities",
+        }
+    }
+}
+
+/// Which root hierarchy (`Income` or `Expenses`) is displayed in the Income
+/// Statement bar chart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IncomeChartMode {
+    #[default]
+    Income,
+    Expenses,
+}
+
+impl IncomeChartMode {
+    pub const ALL: [Self; 2] = [Self::Income, Self::Expenses];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Income => "Income",
+            Self::Expenses => "Expenses",
+        }
+    }
+
+    pub fn short_id(self) -> &'static str {
+        match self {
+            Self::Income => "income",
+            Self::Expenses => "expenses",
+        }
+    }
+}
 
 /// Tracks which currencies are currently selected in a chart's checklist.
 ///
@@ -74,10 +135,11 @@ fn decimal_to_f64(value: Decimal) -> f64 {
 }
 
 fn format_amount(value: Decimal, currency: &str) -> SharedString {
-    let raw = if value.scale() < 2 {
-        format!("{value:.2}")
+    let rounded = value.round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero);
+    let raw = if rounded.is_zero() {
+        "0".to_string()
     } else {
-        value.to_string()
+        rounded.to_string()
     };
     let mut builder = GroupedBuilder::new();
     builder.push_number_str(&raw);
@@ -175,25 +237,116 @@ fn account_series_color(currency_ix: usize, theme: &Theme) -> Hsla {
     palette[currency_ix % palette.len()]
 }
 
-fn balance_sheet_colors(currency_ix: usize, theme: &Theme) -> (Hsla, Hsla) {
-    let pairs = [
-        (theme.blue, theme.red),
-        (theme.green, theme.yellow),
-        (theme.cyan, theme.magenta),
-        (theme.chart_2, theme.chart_1),
-        (theme.chart_3, theme.chart_4),
+fn balance_sheet_series_color(mode: BalanceSheetMode, currency_ix: usize, theme: &Theme) -> Hsla {
+    let assets_palette = [
+        theme.blue,
+        theme.cyan,
+        theme.green,
+        theme.chart_3,
+        theme.chart_4,
+        theme.magenta,
+        theme.yellow,
     ];
-    pairs[currency_ix % pairs.len()]
+    let liabilities_palette = [
+        theme.red,
+        theme.yellow,
+        theme.magenta,
+        theme.chart_4,
+        theme.chart_5,
+        theme.cyan,
+        theme.blue,
+    ];
+    match mode {
+        BalanceSheetMode::Assets => assets_palette[currency_ix % assets_palette.len()],
+        BalanceSheetMode::Liabilities => {
+            liabilities_palette[currency_ix % liabilities_palette.len()]
+        }
+    }
 }
 
-fn income_expense_colors(currency_ix: usize, theme: &Theme) -> (Hsla, Hsla) {
-    let pairs = [
-        (theme.chart_bullish, theme.chart_bearish),
-        (theme.blue, theme.yellow),
-        (theme.cyan, theme.magenta),
-        (theme.chart_2, theme.chart_4),
+fn income_series_color(mode: IncomeChartMode, currency_ix: usize, theme: &Theme) -> Hsla {
+    let income_palette = [
+        theme.chart_bullish,
+        theme.blue,
+        theme.cyan,
+        theme.chart_2,
+        theme.chart_3,
+        theme.yellow,
+        theme.magenta,
     ];
-    pairs[currency_ix % pairs.len()]
+    let expenses_palette = [
+        theme.chart_bearish,
+        theme.yellow,
+        theme.magenta,
+        theme.chart_4,
+        theme.chart_5,
+        theme.cyan,
+        theme.blue,
+    ];
+    match mode {
+        IncomeChartMode::Income => income_palette[currency_ix % income_palette.len()],
+        IncomeChartMode::Expenses => expenses_palette[currency_ix % expenses_palette.len()],
+    }
+}
+
+/// Currencies with at least one non-zero value in `mode` (falling back to all
+/// `series.currencies` when every currency is zero across all dates).
+pub(crate) fn balance_sheet_mode_currencies(
+    series: &BalanceSheetSeries,
+    mode: BalanceSheetMode,
+) -> Vec<(usize, &str)> {
+    let non_zero: Vec<(usize, &str)> = series
+        .currencies
+        .iter()
+        .enumerate()
+        .filter(|&(ix, _)| {
+            series.points.iter().any(|pt| match mode {
+                BalanceSheetMode::Assets => !pt.assets[ix].is_zero(),
+                BalanceSheetMode::Liabilities => !pt.liabilities[ix].is_zero(),
+            })
+        })
+        .map(|(ix, c)| (ix, c.as_str()))
+        .collect();
+    if non_zero.is_empty() {
+        series
+            .currencies
+            .iter()
+            .enumerate()
+            .map(|(ix, c)| (ix, c.as_str()))
+            .collect()
+    } else {
+        non_zero
+    }
+}
+
+/// Currencies with at least one non-zero bucket in `mode` (falling back to all
+/// `series.currencies` when every currency is zero across all buckets).
+pub(crate) fn income_mode_currencies(
+    series: &IncomeExpenseSeries,
+    mode: IncomeChartMode,
+) -> Vec<(usize, &str)> {
+    let non_zero: Vec<(usize, &str)> = series
+        .currencies
+        .iter()
+        .enumerate()
+        .filter(|&(ix, _)| {
+            series.buckets.iter().any(|b| match mode {
+                IncomeChartMode::Income => !b.income[ix].is_zero(),
+                IncomeChartMode::Expenses => !b.expenses[ix].is_zero(),
+            })
+        })
+        .map(|(ix, c)| (ix, c.as_str()))
+        .collect();
+    if non_zero.is_empty() {
+        series
+            .currencies
+            .iter()
+            .enumerate()
+            .map(|(ix, c)| (ix, c.as_str()))
+            .collect()
+    } else {
+        non_zero
+    }
 }
 
 /// Renders a legend item (small rounded swatch + series label).
@@ -255,85 +408,78 @@ fn render_empty_chart_state(message: &'static str, height: Pixels, cx: &App) -> 
         .into_any_element()
 }
 
-/// Renders the Balance Sheet line chart card (`Assets` and `Liabilities` vs time).
-pub(crate) fn render_balance_sheet_chart<F>(
+/// Renders the Balance Sheet line chart card (`Assets` or `Liabilities` vs time,
+/// switched via the bottom `Assets | Liabilities` button group).
+pub(crate) fn render_balance_sheet_chart<FM, FC>(
     series: &BalanceSheetSeries,
+    mode: BalanceSheetMode,
     selection: &CurrencySelection,
-    on_toggle_currency: F,
+    on_select_mode: FM,
+    on_toggle_currency: FC,
     cx: &App,
 ) -> Option<AnyElement>
 where
-    F: Fn(SharedString, bool, &mut Window, &mut App) + 'static,
+    FM: Fn(BalanceSheetMode, &mut Window, &mut App) + 'static,
+    FC: Fn(SharedString, bool, &mut Window, &mut App) + 'static,
 {
     if series.currencies.is_empty() || series.points.is_empty() {
         return None;
     }
 
     let theme = cx.theme();
-    let multi_ccy = series.currencies.len() > 1;
+    let active_currencies = balance_sheet_mode_currencies(series, mode);
+    let checklist_currencies: Vec<String> = active_currencies
+        .iter()
+        .map(|(_, c)| (*c).to_string())
+        .collect();
     let mut lines = Vec::new();
     let mut legend = Vec::new();
 
-    for (ccy_ix, currency) in series.currencies.iter().enumerate() {
+    for (palette_ix, &(ccy_ix, currency)) in active_currencies.iter().enumerate() {
         if !selection.is_selected(currency) {
             continue;
         }
-        let (assets_color, liabilities_color) = balance_sheet_colors(ccy_ix, theme);
-        let assets_label: SharedString = if multi_ccy {
-            format!("Assets ({currency})").into()
-        } else {
-            "Assets".into()
-        };
-        let liabilities_label: SharedString = if multi_ccy {
-            format!("Liabilities ({currency})").into()
-        } else {
-            "Liabilities".into()
-        };
-
-        let mut has_liabilities = false;
-        let mut assets_vals = Vec::with_capacity(series.points.len());
-        let mut assets_fmt = Vec::with_capacity(series.points.len());
-        let mut liab_vals = Vec::with_capacity(series.points.len());
-        let mut liab_fmt = Vec::with_capacity(series.points.len());
+        let color = balance_sheet_series_color(mode, palette_ix, theme);
+        let label: SharedString = currency.to_string().into();
+        let mut vals = Vec::with_capacity(series.points.len());
+        let mut fmt = Vec::with_capacity(series.points.len());
 
         for pt in &series.points {
-            let a = pt.assets[ccy_ix];
-            let l = pt.liabilities[ccy_ix];
-            if !l.is_zero() {
-                has_liabilities = true;
-            }
-            assets_vals.push(decimal_to_f64(a));
-            assets_fmt.push(format_amount(a, currency));
-            liab_vals.push(decimal_to_f64(l));
-            liab_fmt.push(format_amount(l, currency));
+            let v = match mode {
+                BalanceSheetMode::Assets => pt.assets[ccy_ix],
+                BalanceSheetMode::Liabilities => pt.liabilities[ccy_ix],
+            };
+            vals.push(decimal_to_f64(v));
+            fmt.push(format_amount(v, currency));
         }
 
-        legend.push(render_legend_item(assets_color, assets_label.clone(), cx));
+        legend.push(render_legend_item(color, label.clone(), cx));
         lines.push(LineSeriesData {
-            label: assets_label,
-            color: assets_color,
-            values: assets_vals,
-            formatted: assets_fmt,
+            label,
+            color,
+            values: vals,
+            formatted: fmt,
         });
-
-        // Always plot Liabilities alongside Assets so both Balance Sheet roots
-        // are represented; if Liabilities is identically 0 across all dates for
-        // a secondary currency that only touched Assets, omit the redundant flat
-        // 0 line when multiple currencies are shown.
-        if has_liabilities || !multi_ccy {
-            legend.push(render_legend_item(
-                liabilities_color,
-                liabilities_label.clone(),
-                cx,
-            ));
-            lines.push(LineSeriesData {
-                label: liabilities_label,
-                color: liabilities_color,
-                values: liab_vals,
-                formatted: liab_fmt,
-            });
-        }
     }
+
+    let on_select_mode = Rc::new(on_select_mode);
+    let mode_selector = ButtonGroup::new("balance-sheet-mode-group")
+        .outline()
+        .compact()
+        .children(BalanceSheetMode::ALL.map(|item| {
+            Button::new((ElementId::from("balance-sheet-mode"), item.short_id()))
+                .xsmall()
+                .label(item.label())
+                .selected(item == mode)
+        }))
+        .on_click(move |selected: &Vec<usize>, window, cx| {
+            if let Some(next) = selected
+                .first()
+                .and_then(|ix| BalanceSheetMode::ALL.get(*ix))
+            {
+                on_select_mode(*next, window, cx);
+            }
+        });
 
     let plot_height = px(180.);
     let body = if lines.is_empty() {
@@ -351,7 +497,7 @@ where
             .h(plot_height)
             .w_full()
             .child(TimeLinePlot::new(
-                (ElementId::from("chart-plot"), "balance-sheet"),
+                (ElementId::from("chart-plot"), mode.short_id()),
                 dates,
                 day_indices,
                 lines,
@@ -382,17 +528,25 @@ where
                             .flex_wrap()
                             .items_center()
                             .gap_3()
-                            .child(div().text_sm().font_medium().child("Assets & Liabilities"))
+                            .child(div().text_sm().font_medium().child(mode.title()))
                             .children(legend),
                     )
                     .child(render_currency_checklist(
-                        &series.currencies,
+                        &checklist_currencies,
                         selection,
                         on_toggle_currency,
                         cx,
                     )),
             )
             .child(body)
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .pt_0p5()
+                    .child(mode_selector),
+            )
             .into_any_element(),
     )
 }
@@ -499,17 +653,20 @@ where
     )
 }
 
-/// Renders the Income Statement bar chart card (`Income` & `Expenses` by
-/// `Daily` / `Monthly` / `Quarterly` / `Yearly`).
-pub(crate) fn render_income_expense_chart<FI, FC>(
+/// Renders the Income Statement bar chart card (`Income` or `Expenses` by
+/// `Daily` / `Monthly` / `Quarterly` / `Yearly`, switched via the bottom
+/// `Income | Expenses` button group).
+pub(crate) fn render_income_expense_chart<FM, FI, FC>(
     series: &IncomeExpenseSeries,
-    interval: TimeInterval,
+    (mode, interval): (IncomeChartMode, TimeInterval),
     selection: &CurrencySelection,
+    on_select_mode: FM,
     on_select_interval: FI,
     on_toggle_currency: FC,
     cx: &App,
 ) -> Option<AnyElement>
 where
+    FM: Fn(IncomeChartMode, &mut Window, &mut App) + 'static,
     FI: Fn(TimeInterval, &mut Window, &mut App) + 'static,
     FC: Fn(SharedString, bool, &mut Window, &mut App) + 'static,
 {
@@ -518,53 +675,38 @@ where
     }
 
     let theme = cx.theme();
-    let multi_ccy = series.currencies.len() > 1;
+    let active_currencies = income_mode_currencies(series, mode);
+    let checklist_currencies: Vec<String> = active_currencies
+        .iter()
+        .map(|(_, c)| (*c).to_string())
+        .collect();
     let mut bars = Vec::new();
     let mut legend = Vec::new();
 
-    for (ccy_ix, currency) in series.currencies.iter().enumerate() {
+    for (palette_ix, &(ccy_ix, currency)) in active_currencies.iter().enumerate() {
         if !selection.is_selected(currency) {
             continue;
         }
-        let (inc_color, exp_color) = income_expense_colors(ccy_ix, theme);
-        let inc_label: SharedString = if multi_ccy {
-            format!("Income ({currency})").into()
-        } else {
-            "Income".into()
-        };
-        let exp_label: SharedString = if multi_ccy {
-            format!("Expenses ({currency})").into()
-        } else {
-            "Expenses".into()
-        };
-
-        let mut inc_vals = Vec::with_capacity(series.buckets.len());
-        let mut inc_fmt = Vec::with_capacity(series.buckets.len());
-        let mut exp_vals = Vec::with_capacity(series.buckets.len());
-        let mut exp_fmt = Vec::with_capacity(series.buckets.len());
+        let color = income_series_color(mode, palette_ix, theme);
+        let label: SharedString = currency.to_string().into();
+        let mut vals = Vec::with_capacity(series.buckets.len());
+        let mut fmt = Vec::with_capacity(series.buckets.len());
 
         for bucket in &series.buckets {
-            let inc = bucket.income[ccy_ix];
-            let exp = bucket.expenses[ccy_ix];
-            inc_vals.push(decimal_to_f64(inc));
-            inc_fmt.push(format_amount(inc, currency));
-            exp_vals.push(decimal_to_f64(exp));
-            exp_fmt.push(format_amount(exp, currency));
+            let v = match mode {
+                IncomeChartMode::Income => bucket.income[ccy_ix],
+                IncomeChartMode::Expenses => bucket.expenses[ccy_ix],
+            };
+            vals.push(decimal_to_f64(v));
+            fmt.push(format_amount(v, currency));
         }
 
-        legend.push(render_legend_item(inc_color, inc_label.clone(), cx));
-        legend.push(render_legend_item(exp_color, exp_label.clone(), cx));
+        legend.push(render_legend_item(color, label.clone(), cx));
         bars.push(BarSeriesData {
-            label: inc_label,
-            color: inc_color,
-            values: inc_vals,
-            formatted: inc_fmt,
-        });
-        bars.push(BarSeriesData {
-            label: exp_label,
-            color: exp_color,
-            values: exp_vals,
-            formatted: exp_fmt,
+            label,
+            color,
+            values: vals,
+            formatted: fmt,
         });
     }
 
@@ -584,6 +726,25 @@ where
             }
         });
 
+    let on_select_mode = Rc::new(on_select_mode);
+    let mode_selector = ButtonGroup::new("income-chart-mode-group")
+        .outline()
+        .compact()
+        .children(IncomeChartMode::ALL.map(|item| {
+            Button::new((ElementId::from("income-chart-mode"), item.short_id()))
+                .xsmall()
+                .label(item.label())
+                .selected(item == mode)
+        }))
+        .on_click(move |selected: &Vec<usize>, window, cx| {
+            if let Some(next) = selected
+                .first()
+                .and_then(|ix| IncomeChartMode::ALL.get(*ix))
+            {
+                on_select_mode(*next, window, cx);
+            }
+        });
+
     let plot_height = px(180.);
     let body = if bars.is_empty() {
         render_empty_chart_state("Select at least one currency to display", plot_height, cx)
@@ -599,7 +760,10 @@ where
             .h(plot_height)
             .w_full()
             .child(IncomeExpenseBarPlot::new(
-                (ElementId::from("income-expense-plot"), interval.short_id()),
+                (
+                    ElementId::from("income-expense-plot"),
+                    format!("{}-{}", mode.short_id(), interval.short_id()),
+                ),
                 labels,
                 bars,
             ))
@@ -629,18 +793,26 @@ where
                             .flex_wrap()
                             .items_center()
                             .gap_3()
-                            .child(div().text_sm().font_medium().child("Income & Expenses"))
+                            .child(div().text_sm().font_medium().child(mode.label()))
                             .child(interval_selector)
                             .children(legend),
                     )
                     .child(render_currency_checklist(
-                        &series.currencies,
+                        &checklist_currencies,
                         selection,
                         on_toggle_currency,
                         cx,
                     )),
             )
             .child(body)
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .pt_0p5()
+                    .child(mode_selector),
+            )
             .into_any_element(),
     )
 }
@@ -862,7 +1034,7 @@ impl Plot for TimeLinePlot {
             .iter()
             .map(|&d| self.x_for_day(d, left, right))
             .collect();
-        let caches = PathCaches::for_paint("lumi-time-line", window, cx);
+        let caches = PathCaches::for_paint(self.id.clone(), window, cx);
         caches.update(cx, |caches, _| {
             for (s_ix, series) in self.series.iter().enumerate() {
                 let pts: Vec<(f32, Option<f32>)> = xs
@@ -1305,5 +1477,101 @@ impl Plot for IncomeExpenseBarPlot {
         }
 
         Some(tooltip.into_any_element())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use lumi::web::{
+        BalanceSheetPoint, BalanceSheetSeries, IncomeExpenseBucket, IncomeExpenseSeries, NaiveDate,
+        TimeInterval,
+    };
+    use rust_decimal::Decimal;
+
+    use super::{
+        BalanceSheetMode, IncomeChartMode, balance_sheet_mode_currencies, format_amount,
+        income_mode_currencies,
+    };
+
+    fn dec(s: &str) -> Decimal {
+        Decimal::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn test_format_amount_rounds_hover_numbers_to_at_most_two_decimal_places() {
+        assert_eq!(
+            format_amount(dec("4554.50"), "USD").as_ref(),
+            "4 554.50 USD"
+        );
+        assert_eq!(
+            format_amount(dec("1123456.7891"), "USD").as_ref(),
+            "1 123 456.79 USD"
+        );
+        assert_eq!(
+            format_amount(dec("2536.59406652"), "USD").as_ref(),
+            "2 536.59 USD"
+        );
+        assert_eq!(
+            format_amount(dec("-123.455"), "EUR").as_ref(),
+            "-123.46 EUR"
+        );
+        assert_eq!(format_amount(dec("12.3000"), "USD").as_ref(), "12.30 USD");
+        assert_eq!(format_amount(dec("10"), "VTI").as_ref(), "10 VTI");
+        assert_eq!(format_amount(dec("10.5"), "USD").as_ref(), "10.5 USD");
+        assert_eq!(format_amount(dec("-0.004"), "USD").as_ref(), "0 USD");
+        assert_eq!(format_amount(Decimal::ZERO, "USD").as_ref(), "0 USD");
+    }
+
+    #[test]
+    fn test_mode_currencies_select_nonzero_hierarchy_with_zero_fallback() {
+        let bs = BalanceSheetSeries {
+            currencies: vec!["EUR".into(), "USD".into()],
+            points: vec![BalanceSheetPoint {
+                date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+                assets: vec![dec("-300.00"), dec("1000.00")],
+                liabilities: vec![dec("0"), dec("-80.00")],
+            }],
+        };
+        assert_eq!(
+            balance_sheet_mode_currencies(&bs, BalanceSheetMode::Assets),
+            vec![(0, "EUR"), (1, "USD")]
+        );
+        assert_eq!(
+            balance_sheet_mode_currencies(&bs, BalanceSheetMode::Liabilities),
+            vec![(1, "USD")]
+        );
+
+        let all_zero_liab = BalanceSheetSeries {
+            currencies: vec!["USD".into()],
+            points: vec![BalanceSheetPoint {
+                date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+                assets: vec![dec("500.00")],
+                liabilities: vec![dec("0")],
+            }],
+        };
+        assert_eq!(
+            balance_sheet_mode_currencies(&all_zero_liab, BalanceSheetMode::Liabilities),
+            vec![(0, "USD")]
+        );
+
+        let inc = IncomeExpenseSeries {
+            interval: TimeInterval::Monthly,
+            currencies: vec!["EUR".into(), "USD".into()],
+            buckets: vec![IncomeExpenseBucket {
+                label: "2025-01".into(),
+                income: vec![dec("0"), dec("3000.00")],
+                expenses: vec![dec("300.00"), dec("125.50")],
+            }],
+        };
+        assert_eq!(
+            income_mode_currencies(&inc, IncomeChartMode::Income),
+            vec![(1, "USD")]
+        );
+        assert_eq!(
+            income_mode_currencies(&inc, IncomeChartMode::Expenses),
+            vec![(0, "EUR"), (1, "USD")]
+        );
     }
 }

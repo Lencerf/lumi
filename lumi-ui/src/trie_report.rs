@@ -13,7 +13,12 @@ use gpui_kit::{
 };
 use lumi::web::{BalanceSheetSeries, IncomeExpenseSeries, TimeInterval, TrieOptions, TrieTable};
 
-use crate::chart::{CurrencySelection, render_balance_sheet_chart, render_income_expense_chart};
+use crate::chart::{
+    BalanceSheetMode, CurrencySelection, IncomeChartMode, render_balance_sheet_chart,
+    render_income_expense_chart,
+};
+#[cfg(test)]
+use crate::chart::{balance_sheet_mode_currencies, income_mode_currencies};
 use crate::navigation::{Page, ReportEvent};
 use crate::number::{GroupedText, shape_text_width};
 use crate::session::LedgerSession;
@@ -41,6 +46,8 @@ pub struct TrieReport {
     _load_task: Option<Task<()>>,
     chart: ReportChart,
     chart_currencies: CurrencySelection,
+    balance_sheet_mode: BalanceSheetMode,
+    income_chart_mode: IncomeChartMode,
     income_interval: TimeInterval,
     chart_requested: Option<ChartLoadKey>,
     chart_generation: u64,
@@ -150,6 +157,8 @@ impl TrieReport {
             _load_task: None,
             chart: ReportChart::None,
             chart_currencies: CurrencySelection::default(),
+            balance_sheet_mode: BalanceSheetMode::default(),
+            income_chart_mode: IncomeChartMode::default(),
             income_interval: TimeInterval::default(),
             chart_requested: None,
             chart_generation: 0,
@@ -168,6 +177,14 @@ impl TrieReport {
         self.show_closed
     }
 
+    pub fn balance_sheet_mode(&self) -> BalanceSheetMode {
+        self.balance_sheet_mode
+    }
+
+    pub fn income_chart_mode(&self) -> IncomeChartMode {
+        self.income_chart_mode
+    }
+
     pub fn income_interval(&self) -> TimeInterval {
         self.income_interval
     }
@@ -176,12 +193,18 @@ impl TrieReport {
     pub(crate) fn selected_chart_currencies(&self) -> Vec<&str> {
         match &self.chart {
             ReportChart::None => Vec::new(),
-            ReportChart::BalanceSheet(series) => self
-                .chart_currencies
-                .selected_currencies(&series.currencies),
-            ReportChart::Income(series) => self
-                .chart_currencies
-                .selected_currencies(&series.currencies),
+            ReportChart::BalanceSheet(series) => {
+                balance_sheet_mode_currencies(series, self.balance_sheet_mode)
+                    .into_iter()
+                    .map(|(_, c)| c)
+                    .filter(|c| self.chart_currencies.is_selected(c))
+                    .collect()
+            }
+            ReportChart::Income(series) => income_mode_currencies(series, self.income_chart_mode)
+                .into_iter()
+                .map(|(_, c)| c)
+                .filter(|c| self.chart_currencies.is_selected(c))
+                .collect(),
         }
     }
 
@@ -201,6 +224,20 @@ impl TrieReport {
         if self.show_closed != show_closed {
             self.show_closed = show_closed;
             self.load(cx);
+            cx.notify();
+        }
+    }
+
+    fn set_balance_sheet_mode(&mut self, mode: BalanceSheetMode, cx: &mut Context<Self>) {
+        if self.balance_sheet_mode != mode {
+            self.balance_sheet_mode = mode;
+            cx.notify();
+        }
+    }
+
+    fn set_income_chart_mode(&mut self, mode: IncomeChartMode, cx: &mut Context<Self>) {
+        if self.income_chart_mode != mode {
+            self.income_chart_mode = mode;
             cx.notify();
         }
     }
@@ -342,12 +379,19 @@ impl TrieReport {
         match &self.chart {
             ReportChart::None => None,
             ReportChart::BalanceSheet(series) => {
-                let entity = cx.entity().downgrade();
+                let mode_entity = cx.entity().downgrade();
+                let currency_entity = cx.entity().downgrade();
                 render_balance_sheet_chart(
                     series,
+                    self.balance_sheet_mode,
                     &self.chart_currencies,
+                    move |mode, _, cx| {
+                        let _ = mode_entity.update(cx, |this, cx| {
+                            this.set_balance_sheet_mode(mode, cx);
+                        });
+                    },
                     move |currency, selected, _, cx| {
-                        let _ = entity.update(cx, |this, cx| {
+                        let _ = currency_entity.update(cx, |this, cx| {
                             this.set_currency_selected(currency, selected, cx);
                         });
                     },
@@ -355,12 +399,18 @@ impl TrieReport {
                 )
             }
             ReportChart::Income(series) => {
+                let mode_entity = cx.entity().downgrade();
                 let interval_entity = cx.entity().downgrade();
                 let currency_entity = cx.entity().downgrade();
                 render_income_expense_chart(
                     series,
-                    self.income_interval,
+                    (self.income_chart_mode, self.income_interval),
                     &self.chart_currencies,
+                    move |mode, _, cx| {
+                        let _ = mode_entity.update(cx, |this, cx| {
+                            this.set_income_chart_mode(mode, cx);
+                        });
+                    },
                     move |interval, _, cx| {
                         let _ = interval_entity.update(cx, |this, cx| {
                             this.set_income_interval(interval, cx);
