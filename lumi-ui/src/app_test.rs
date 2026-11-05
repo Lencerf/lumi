@@ -645,6 +645,27 @@ fn open_app_sized(
 #[gpui_kit::test]
 fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut TestAppContext) {
     let ledger = TempLedger::new("auto-width", AUTO_WIDTH_LEDGER);
+
+    // 0. Upon opening Balance Sheet directly (as on app launch), Liabilities (1
+    //    currency) and Equity (4 currencies) have the exact same card width.
+    let (bs_open_handle, _bs_open_app) =
+        open_app_sized(&ledger.0, Page::BalanceSheet, size(px(1280.), px(760.)), cx);
+    cx.update_window(bs_open_handle, |_, window, cx| {
+        window.render_frame(cx);
+        let liab_card = window
+            .find((ElementId::from("trie-table"), "Liabilities"))
+            .bounds();
+        let equity_card = window
+            .find((ElementId::from("trie-table"), "Equity"))
+            .bounds();
+        assert_eq!(
+            liab_card.size.width, equity_card.size.width,
+            "Upon open, Liabilities and Equity tables have identical widths: liab={liab_card:?}, equity={equity_card:?}"
+        );
+        assert_eq!(liab_card.origin.x, equity_card.origin.x);
+    })
+    .unwrap();
+
     // Start in a narrow 680px window on Holdings.
     let (handle, app) = open_app_sized(&ledger.0, Page::Holdings, size(px(680.), px(760.)), cx);
 
@@ -672,55 +693,9 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
         })
         .unwrap();
 
-    // 2. Opening Multi-Currency Balance Sheet from the left sidebar widens the
-    //    window so both side-by-side hierarchy tables fit without clipping.
-    cx.update_window(handle, |_, window, cx| {
-        window.within("lumi-sidebar").click("0-0-0", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let bs_win_width = cx
-        .update_window(handle, |_, window, cx| {
-            window.render_frame(cx);
-            assert_eq!(app.read(cx).page(), &Page::BalanceSheet);
-            let w = window.viewport_size().width;
-            assert!(
-                w > holdings_win_width + px(150.),
-                "Balance Sheet ({w:?}) widens past narrower Holdings ({holdings_win_width:?})"
-            );
-            let assets_card = window.find((ElementId::from("trie-table"), "Assets")).bounds();
-            let liab_card = window
-                .find((ElementId::from("trie-table"), "Liabilities"))
-                .bounds();
-            assert!(
-                liab_card.origin.x + liab_card.size.width <= w,
-                "Right-hand Balance Sheet column fits inside auto-adjusted window: liab={liab_card:?}, win={w:?}"
-            );
-            assert!(assets_card.origin.x < liab_card.origin.x);
-            w
-        })
-        .unwrap();
-
-    // 3. Navigating back to Holdings via the sidebar shrinks the window down to
-    //    Holdings' narrower table width.
-    cx.update_window(handle, |_, window, cx| {
-        window.within("lumi-sidebar").click("0-0-3", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        let w = window.viewport_size().width;
-        assert!(
-            (w - holdings_win_width).abs() <= px(2.) && w < bs_win_width,
-            "Returning to Holdings refits window down to {holdings_win_width:?}, got {w:?}"
-        );
-    })
-    .unwrap();
-
-    // 4. Clicking an account button enters the Account view and auto-adjusts
-    //    the window and all 6 account columns (`Date`, `Flag`, `Description`,
-    //    `Position`, `Change`, `Balance`) to hold their contents.
+    // 2. Clicking an account button enters the Account view and widens the
+    //    window so all 6 account columns (`Date`, `Flag`, `Description`,
+    //    `Position`, `Change`, `Balance`) fit their contents.
     cx.update_window(handle, |_, window, cx| {
         let row_ix = (0..10usize)
             .find(|&ix| {
@@ -735,42 +710,103 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
     })
     .unwrap();
     cx.run_until_parked();
+    let acct_win_width = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx).page(),
+                &Page::Account("Assets:Investments:GlobalBrokerageAccount".into())
+            );
+            let journal = app.read(cx).journal().expect("account journal open");
+            let cols = journal.read(cx).column_widths(cx);
+            let naturals = journal.read(cx).natural_column_widths(cx);
+            assert_eq!(cols.len(), 6);
+            assert_eq!(cols, naturals);
+            let expected_win = report_horizontal_overhead(window)
+                + naturals.iter().copied().sum::<Pixels>()
+                + px(2.);
+            assert!(
+                (window.viewport_size().width - expected_win).abs() <= px(2.)
+                    && window.viewport_size().width > holdings_win_width,
+                "Account view window width {:?} widens to fit all 6 columns ({expected_win:?})",
+                window.viewport_size().width
+            );
+            window.viewport_size().width
+        })
+        .unwrap();
+
+    // 3. Opening Multi-Currency Balance Sheet from the left sidebar widens the
+    //    window further so both side-by-side hierarchy columns fit, with
+    //    Liabilities and Equity sharing the exact same width.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("lumi-sidebar").click("0-0-0", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let bs_win_width = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(app.read(cx).page(), &Page::BalanceSheet);
+            let w = window.viewport_size().width;
+            assert!(
+                w > acct_win_width,
+                "Balance Sheet ({w:?}) widens past narrower Account view ({acct_win_width:?})"
+            );
+            let assets_card = window.find((ElementId::from("trie-table"), "Assets")).bounds();
+            let liab_card = window
+                .find((ElementId::from("trie-table"), "Liabilities"))
+                .bounds();
+            let equity_card = window
+                .find((ElementId::from("trie-table"), "Equity"))
+                .bounds();
+            assert_eq!(liab_card.size.width, equity_card.size.width);
+            assert!(
+                liab_card.origin.x + liab_card.size.width <= w,
+                "Right-hand Balance Sheet column fits inside auto-adjusted window: liab={liab_card:?}, win={w:?}"
+            );
+            assert!(assets_card.origin.x < liab_card.origin.x);
+            w
+        })
+        .unwrap();
+
+    // 4. Navigating back to narrower Holdings via the sidebar does NOT narrow
+    //    the window since it is already wide enough; Holdings columns widen
+    //    proportionally to fill the existing window.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("lumi-sidebar").click("0-0-3", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        let w = window.viewport_size().width;
         assert_eq!(
-            app.read(cx).page(),
-            &Page::Account("Assets:Investments:GlobalBrokerageAccount".into())
+            w, bs_win_width,
+            "Switching to narrower Holdings keeps existing window width {bs_win_width:?}, got {w:?}"
         );
-        let journal = app.read(cx).journal().expect("account journal open");
-        let cols = journal.read(cx).column_widths(cx);
-        let naturals = journal.read(cx).natural_column_widths(cx);
-        assert_eq!(cols.len(), 6);
-        assert_eq!(cols, naturals);
-        let expected_win =
-            report_horizontal_overhead(window) + naturals.iter().copied().sum::<Pixels>() + px(2.);
-        assert!(
-            (window.viewport_size().width - expected_win).abs() <= px(2.),
-            "Account view window width {:?} fits all 6 columns ({expected_win:?})",
-            window.viewport_size().width
-        );
+        let holdings = app.read(cx).holdings().expect("holdings open");
+        let cols = holdings.read(cx).column_widths(cx);
+        let naturals = holdings.read(cx).natural_column_widths(cx);
+        for (&col, &nat) in cols.iter().zip(&naturals) {
+            assert!(col > nat);
+        }
     })
     .unwrap();
 
     // 5. Opening Journal from the sidebar and toggling "Show postings" reveals
     //    wide lot/price strings in `Position` (`250.1234 VTI {250.00 USD, ...}`):
-    //    because the current table/window is not wide enough, both the column
-    //    and the window widen automatically!
+    //    when the expanded table exceeds the current window, both columns and
+    //    window widen automatically.
     cx.update_window(handle, |_, window, cx| {
         window.within("lumi-sidebar").click("0-0-2", cx);
     })
     .unwrap();
     cx.run_until_parked();
-    let (journal_win_collapsed, pos_col_collapsed) = cx
+    let pos_col_collapsed = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let journal = app.read(cx).journal().expect("journal open");
-            let naturals = journal.read(cx).natural_column_widths(cx);
-            (window.viewport_size().width, naturals[3])
+            journal.read(cx).natural_column_widths(cx)[3]
         })
         .unwrap();
 
@@ -779,27 +815,26 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
     })
     .unwrap();
     cx.run_until_parked();
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        let journal = app.read(cx).journal().expect("journal open");
-        let naturals = journal.read(cx).natural_column_widths(cx);
-        let cols = journal.read(cx).column_widths(cx);
-        assert!(
-            naturals[3] > pos_col_collapsed + px(80.),
-            "Position column widens for lot/price notation: before={pos_col_collapsed:?}, after={:?}",
-            naturals[3]
-        );
-        assert_eq!(cols, naturals);
-        assert!(
-            window.viewport_size().width > journal_win_collapsed + px(80.),
-            "Window widens when expanded postings make the table wider: before={journal_win_collapsed:?}, after={:?}",
+    let journal_expanded_win = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let journal = app.read(cx).journal().expect("journal open");
+            let naturals = journal.read(cx).natural_column_widths(cx);
+            let cols = journal.read(cx).column_widths(cx);
+            assert!(
+                naturals[3] > pos_col_collapsed + px(80.),
+                "Position column widens for lot/price notation: before={pos_col_collapsed:?}, after={:?}",
+                naturals[3]
+            );
+            for (&col, &nat) in cols.iter().zip(&naturals) {
+                assert!(col >= nat);
+            }
             window.viewport_size().width
-        );
-    })
-    .unwrap();
+        })
+        .unwrap();
 
-    // 6. Opening Errors from the sidebar fits all 3 error columns (`Level`,
-    //    `Message`, `Location`) and the window to hold the diagnostic row.
+    // 6. Switching from wide Journal to narrower Errors does NOT narrow the
+    //    window, and Errors' 3 columns scale proportionally to fill it.
     cx.update_window(handle, |_, window, cx| {
         window.within("lumi-sidebar").click("0-0-4", cx);
     })
@@ -807,11 +842,23 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        assert_eq!(
+            window.viewport_size().width, journal_expanded_win,
+            "Switching from Journal to Errors must not narrow the window"
+        );
         let errors = app.read(cx).errors().expect("errors open");
         let cols = errors.read(cx).column_widths(cx);
         let naturals = errors.read(cx).natural_column_widths(cx);
         assert_eq!(cols.len(), 3);
-        assert_eq!(cols, naturals);
+        let natural_win =
+            report_horizontal_overhead(window) + naturals.iter().copied().sum::<Pixels>() + px(2.);
+        assert!(
+            natural_win < journal_expanded_win,
+            "Errors natural width ({natural_win:?}) is narrower than Journal ({journal_expanded_win:?})"
+        );
+        for (&col, &nat) in cols.iter().zip(&naturals) {
+            assert!(col > nat);
+        }
     })
     .unwrap();
 }
@@ -882,11 +929,8 @@ fn test_manual_window_widen_scales_columns_proportionally_and_narrow_scrolls_tab
     .unwrap();
 
     // --- Rule 2 & Rule 3 on `BalanceSheet` (Chart + Hierarchy Tables) ---
-    cx.update_window(handle, |_, window, cx| {
-        window.within("lumi-sidebar").click("0-0-0", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
+    let (handle, app) =
+        open_app_sized(&ledger.0, Page::BalanceSheet, size(px(1280.), px(760.)), cx);
     let (bs_natural_win, assets_nat_w, liab_nat_w) = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -900,12 +944,19 @@ fn test_manual_window_widen_scales_columns_proportionally_and_narrow_scrolls_tab
                 .bounds()
                 .size
                 .width;
+            let equity_w = window
+                .find((ElementId::from("trie-table"), "Equity"))
+                .bounds()
+                .size
+                .width;
+            assert_eq!(liab_w, equity_w, "Liabilities and Equity match upon open");
             (window.viewport_size().width, assets_w, liab_w)
         })
         .unwrap();
 
     // Rule 2: User widens Balance Sheet window by +400px -> chart and both
-    // hierarchy table cards widen proportionally to span the exact same width.
+    // hierarchy table cards widen proportionally to span the exact same width,
+    // and Liabilities and Equity still have the exact same width.
     let bs_wide = bs_natural_win + px(400.);
     cx.update_window(handle, |_, window, cx| {
         window.resize(size(bs_wide, px(760.)));
@@ -921,6 +972,13 @@ fn test_manual_window_widen_scales_columns_proportionally_and_narrow_scrolls_tab
         let liab_bounds = window
             .find((ElementId::from("trie-table"), "Liabilities"))
             .bounds();
+        let equity_bounds = window
+            .find((ElementId::from("trie-table"), "Equity"))
+            .bounds();
+        assert_eq!(
+            liab_bounds.size.width, equity_bounds.size.width,
+            "Liabilities and Equity match when widened"
+        );
         assert!(assets_bounds.size.width > assets_nat_w + px(100.));
         assert!(liab_bounds.size.width > liab_nat_w + px(80.));
         let chart_right = chart_bounds.origin.x + chart_bounds.size.width;
@@ -934,8 +992,9 @@ fn test_manual_window_widen_scales_columns_proportionally_and_narrow_scrolls_tab
 
     // Rule 3 on Balance Sheet: User narrows window to 560px (`available = 320px`).
     // Chart card and table scroll container shrink with the window, hierarchy
-    // columns DO NOT shrink below their natural widths, and both chart-level
-    // and table-level horizontal scrolling work independently!
+    // columns DO NOT shrink below their natural widths, Liabilities and Equity
+    // keep the same width, and both chart-level and table-level horizontal
+    // scrolling work independently!
     cx.update_window(handle, |_, window, cx| {
         window.resize(size(px(560.), px(760.)));
         window.bounds_changed(cx);
@@ -956,6 +1015,13 @@ fn test_manual_window_widen_scales_columns_proportionally_and_narrow_scrolls_tab
         let liab_narrow = window
             .find((ElementId::from("trie-table"), "Liabilities"))
             .bounds();
+        let equity_narrow = window
+            .find((ElementId::from("trie-table"), "Equity"))
+            .bounds();
+        assert_eq!(
+            liab_narrow.size.width, equity_narrow.size.width,
+            "Liabilities and Equity match when narrowed"
+        );
         assert_eq!(
             assets_narrow.size.width, assets_nat_w,
             "Assets column card does NOT shrink below natural width when window narrows"

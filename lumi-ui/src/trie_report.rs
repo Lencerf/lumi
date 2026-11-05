@@ -583,7 +583,7 @@ impl TrieReport {
         &self,
         root: &'static str,
         table: &TrieLoad,
-        target_card_width: Option<Pixels>,
+        target_card_width: Pixels,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -604,6 +604,7 @@ impl TrieReport {
                 .into_any_element(),
             TrieLoad::Failed(message) => div()
                 .v_flex()
+                .w(target_card_width)
                 .gap_2()
                 .items_start()
                 .child(
@@ -622,12 +623,10 @@ impl TrieReport {
                 let mut col_widths = Vec::with_capacity(1 + currency_widths.len());
                 col_widths.push(account_min_width);
                 col_widths.extend(currency_widths);
-                if let Some(target_card) = target_card_width {
-                    col_widths = scale_widths_proportionally(
-                        &col_widths,
-                        (target_card - px(2.)).max(px(0.)),
-                    );
-                }
+                col_widths = scale_widths_proportionally(
+                    &col_widths,
+                    (target_card_width - px(2.)).max(px(0.)),
+                );
                 let account_width = col_widths[0];
                 let currency_widths = &col_widths[1..];
                 let card_width = col_widths.iter().copied().sum::<Pixels>() + px(2.);
@@ -995,8 +994,11 @@ impl Render for TrieReport {
         let total_gaps = gap * col_naturals.len().saturating_sub(1) as f32;
         let natural_pair_width = col_naturals.iter().copied().sum::<Pixels>() + total_gaps;
         let available = available_report_content_width(window);
-        let col_targets: Option<Vec<Pixels>> = (available > natural_pair_width)
-            .then(|| scale_widths_proportionally(&col_naturals, available - total_gaps));
+        let col_targets: Vec<Pixels> = if available > natural_pair_width {
+            scale_widths_proportionally(&col_naturals, available - total_gaps)
+        } else {
+            col_naturals
+        };
 
         let mut tables = self.tables.iter();
         let tables_row =
@@ -1005,9 +1007,7 @@ impl Render for TrieReport {
                 .items_start()
                 .gap_6()
                 .children(columns(&page).iter().enumerate().map(|(col_ix, column)| {
-                    let target_card_width = col_targets
-                        .as_ref()
-                        .and_then(|targets| targets.get(col_ix).copied());
+                    let target_card_width = col_targets.get(col_ix).copied().unwrap_or(px(180.));
                     div()
                         .v_flex()
                         .flex_none()

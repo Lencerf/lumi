@@ -119,7 +119,7 @@ pub struct LumiApp {
     editor_layer: Entity<EntryEditorLayer>,
     menu_bar: Option<Entity<AppMenuBar>>,
     focus_handle: FocusHandle,
-    pending_view_fit: bool,
+    pending_initial_fit: bool,
     user_resized_width: bool,
     pending_auto_widths: VecDeque<Pixels>,
     last_observed_width: Pixels,
@@ -214,7 +214,7 @@ impl LumiApp {
             editor_layer,
             menu_bar,
             focus_handle,
-            pending_view_fit: false,
+            pending_initial_fit: false,
             user_resized_width: false,
             pending_auto_widths: VecDeque::new(),
             last_observed_width,
@@ -360,7 +360,7 @@ impl LumiApp {
         if had_source && self.page.account().is_some() {
             self.page = Page::BalanceSheet;
         }
-        self.pending_view_fit = true;
+        self.pending_initial_fit = true;
         self.user_resized_width = false;
         self.session
             .update(cx, |session, cx| session.set_source(source, cx));
@@ -595,7 +595,7 @@ impl LumiApp {
     }
 
     fn activate_current_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pending_view_fit = true;
+        self.pending_initial_fit = false;
         self.user_resized_width = false;
         if self.session.read(cx).has_source() {
             let page = self.page.clone();
@@ -633,7 +633,7 @@ impl LumiApp {
         }
         self.pending_auto_widths.clear();
         self.user_resized_width = true;
-        self.pending_view_fit = false;
+        self.pending_initial_fit = false;
         cx.notify();
     }
 
@@ -699,8 +699,8 @@ impl LumiApp {
                 .back()
                 .copied()
                 .unwrap_or_else(|| window.viewport_size().width);
-            let should_resize = if self.pending_view_fit {
-                self.pending_view_fit = false;
+            let should_resize = if self.pending_initial_fit {
+                self.pending_initial_fit = false;
                 (desired_width - current_width).abs() > px(1.)
             } else {
                 desired_width > current_width + px(1.)
