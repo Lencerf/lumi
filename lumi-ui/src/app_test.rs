@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
@@ -616,7 +617,14 @@ const AUTO_WIDTH_LEDGER: &str = "\
   Assets:Bank:Checking                         -1100.00 USD
 ";
 
-fn open_app_sized(
+fn settle_auto_width(cx: &TestAppContext) {
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(LumiApp::AUTO_WIDTH_ANIMATION_DURATION);
+    cx.run_until_parked();
+}
+
+fn open_app_sized_unsettled(
     path: &Path,
     page: Page,
     initial_size: Size<Pixels>,
@@ -640,6 +648,17 @@ fn open_app_sized(
     });
     cx.run_until_parked();
     (handle, app)
+}
+
+fn open_app_sized(
+    path: &Path,
+    page: Page,
+    initial_size: Size<Pixels>,
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<LumiApp>) {
+    let out = open_app_sized_unsettled(path, page, initial_size, cx);
+    settle_auto_width(cx);
+    out
 }
 
 #[gpui_kit::test]
@@ -709,7 +728,7 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
         window.click(("holding-account", row_ix), cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    settle_auto_width(cx);
     let acct_win_width = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -742,7 +761,7 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
         window.within("lumi-sidebar").click("0-0-0", cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    settle_auto_width(cx);
     let bs_win_width = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -776,7 +795,7 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
         window.within("lumi-sidebar").click("0-0-3", cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    settle_auto_width(cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let w = window.viewport_size().width;
@@ -801,7 +820,7 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
         window.within("lumi-sidebar").click("0-0-2", cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    settle_auto_width(cx);
     let pos_col_collapsed = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -814,7 +833,7 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
         window.click((ElementId::from("show-postings"), "journal"), cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    settle_auto_width(cx);
     let journal_expanded_win = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -839,7 +858,7 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
         window.within("lumi-sidebar").click("0-0-4", cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    settle_auto_width(cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(
@@ -1088,7 +1107,7 @@ fn test_manual_window_widen_scales_columns_proportionally_and_narrow_scrolls_tab
         window.click((ElementId::from("account"), "Assets:Bank:Checking"), cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    settle_auto_width(cx);
     let acct_naturals = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -1121,4 +1140,161 @@ fn test_manual_window_widen_scales_columns_proportionally_and_narrow_scrolls_tab
         );
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_auto_window_width_animates_smoothly_over_half_second(cx: &mut TestAppContext) {
+    assert_eq!(
+        LumiApp::AUTO_WIDTH_ANIMATION_DURATION,
+        Duration::from_millis(500)
+    );
+    let ledger = TempLedger::new("smooth-auto-width", AUTO_WIDTH_LEDGER);
+
+    let read_width = |handle: AnyWindowHandle, cx: &mut TestAppContext| -> Pixels {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.viewport_size().width
+        })
+        .unwrap()
+    };
+
+    // 1. Initial ledger fit smoothly animates over 0.5s (1600px -> Holdings width).
+    let (handle, app) =
+        open_app_sized_unsettled(&ledger.0, Page::Holdings, size(px(1600.), px(760.)), cx);
+    let w_init_0 = read_width(handle, cx);
+    assert_eq!(
+        w_init_0,
+        px(1600.),
+        "At t = 0ms, initial auto-fit has not jumped yet"
+    );
+
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    let w_init_100 = read_width(handle, cx);
+
+    cx.executor().advance_clock(Duration::from_millis(140));
+    cx.run_until_parked();
+    let w_init_240 = read_width(handle, cx);
+
+    cx.executor().advance_clock(Duration::from_millis(16));
+    cx.run_until_parked();
+    let w_init_256 = read_width(handle, cx);
+
+    cx.executor().advance_clock(Duration::from_millis(144));
+    cx.run_until_parked();
+    let w_init_400 = read_width(handle, cx);
+
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    let w_holdings = read_width(handle, cx);
+
+    assert!(
+        w_init_0 > w_init_100
+            && w_init_100 > w_init_240
+            && w_init_240 > w_init_256
+            && w_init_256 > w_init_400
+            && w_init_400 > w_holdings,
+        "Initial auto-fit animates smoothly downward over 500ms: \
+         0ms={w_init_0:?}, 100ms={w_init_100:?}, 240ms={w_init_240:?}, \
+         256ms={w_init_256:?}, 400ms={w_init_400:?}, 500ms={w_holdings:?}"
+    );
+    let init_mid = (f32::from(w_init_0) + f32::from(w_holdings)) * 0.5;
+    assert!(
+        f32::from(w_init_240) >= init_mid && init_mid >= f32::from(w_init_256),
+        "16ms frames around 250ms bracket the ease_in_out midpoint {init_mid}: \
+         240ms={w_init_240:?}, 256ms={w_init_256:?}"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        let holdings = app.read(cx).holdings().expect("holdings open");
+        let naturals = holdings.read(cx).natural_column_widths(cx);
+        let expected_holdings =
+            report_horizontal_overhead(window) + naturals.iter().copied().sum::<Pixels>() + px(2.);
+        assert!((w_holdings - expected_holdings).abs() <= px(2.));
+    })
+    .unwrap();
+
+    // 2. Switching from Holdings to wider Balance Sheet smoothly widens over 0.5s.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("lumi-sidebar").click("0-0-0", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let w_bs_0 = read_width(handle, cx);
+    assert_eq!(
+        w_bs_0, w_holdings,
+        "At t = 0ms after switching views, window has not jumped yet"
+    );
+
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    let w_bs_100 = read_width(handle, cx);
+
+    cx.executor().advance_clock(Duration::from_millis(140));
+    cx.run_until_parked();
+    let w_bs_240 = read_width(handle, cx);
+
+    cx.executor().advance_clock(Duration::from_millis(16));
+    cx.run_until_parked();
+    let w_bs_256 = read_width(handle, cx);
+
+    cx.executor().advance_clock(Duration::from_millis(144));
+    cx.run_until_parked();
+    let w_bs_400 = read_width(handle, cx);
+
+    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.run_until_parked();
+    let w_bs_500 = read_width(handle, cx);
+
+    assert!(
+        w_bs_0 < w_bs_100
+            && w_bs_100 < w_bs_240
+            && w_bs_240 < w_bs_256
+            && w_bs_256 < w_bs_400
+            && w_bs_400 < w_bs_500,
+        "View-switch auto-widening animates smoothly over 500ms: \
+         0ms={w_bs_0:?}, 100ms={w_bs_100:?}, 240ms={w_bs_240:?}, \
+         256ms={w_bs_256:?}, 400ms={w_bs_400:?}, 500ms={w_bs_500:?}"
+    );
+    let bs_mid = (f32::from(w_bs_0) + f32::from(w_bs_500)) * 0.5;
+    assert!(
+        f32::from(w_bs_240) <= bs_mid && bs_mid <= f32::from(w_bs_256),
+        "16ms frames around 250ms bracket the ease_in_out midpoint {bs_mid}: \
+         240ms={w_bs_240:?}, 256ms={w_bs_256:?}"
+    );
+
+    // Advancing past 500ms produces no further changes once settled.
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(read_width(handle, cx), w_bs_500);
+
+    // 3. Manual user resize mid-animation cancels the in-flight animation immediately.
+    let (mid_handle, _mid_app) =
+        open_app_sized_unsettled(&ledger.0, Page::BalanceSheet, size(px(680.), px(760.)), cx);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    let w_mid = read_width(mid_handle, cx);
+    assert!(w_mid > px(680.) && w_mid < w_bs_500);
+
+    cx.update_window(mid_handle, |_, window, cx| {
+        window.resize(size(px(900.), px(760.)));
+        window.bounds_changed(cx);
+    })
+    .unwrap();
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(
+        read_width(mid_handle, cx),
+        px(900.),
+        "Manual user resize mid-animation cancels auto-width animation"
+    );
+
+    // 4. `reduce_motion` settles immediately without waiting 500ms.
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let (rm_handle, _rm_app) =
+        open_app_sized_unsettled(&ledger.0, Page::BalanceSheet, size(px(680.), px(760.)), cx);
+    assert_eq!(
+        read_width(rm_handle, cx),
+        w_bs_500,
+        "With reduce_motion enabled, auto-width settles immediately"
+    );
 }

@@ -307,6 +307,9 @@ fn test_sibling_tables_have_distinct_paths(cx: &mut TestAppContext) {
 fn test_report_scrolls_both_ways(cx: &mut TestAppContext) {
     let (handle, _app) = open_app(Page::BalanceSheet, size(px(600.), px(500.)), cx);
     cx.run_until_parked();
+    cx.executor()
+        .advance_clock(LumiApp::AUTO_WIDTH_ANIMATION_DURATION);
+    cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(

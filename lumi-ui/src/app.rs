@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(not(target_family = "wasm"))]
+use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::alert::Alert;
@@ -24,7 +26,7 @@ use gpui_kit::{
 #[cfg(not(target_family = "wasm"))]
 use gpui_kit::{
     Decorations, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
-    WindowOptions, size,
+    WindowOptions, ease_in_out, size,
 };
 
 use crate::entry_editor::{EntryEditorLayer, OpenSource};
@@ -123,8 +125,20 @@ pub struct LumiApp {
     user_resized_width: bool,
     pending_auto_widths: VecDeque<Pixels>,
     last_observed_width: Pixels,
+    #[cfg(not(target_family = "wasm"))]
+    width_animation: Option<WidthAnimation>,
+    #[cfg(not(target_family = "wasm"))]
+    next_width_animation_id: u64,
     _open_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Active smooth window-width transition toward `target_width`.
+#[cfg(not(target_family = "wasm"))]
+struct WidthAnimation {
+    id: u64,
+    target_width: Pixels,
+    _task: Task<()>,
 }
 
 /// The view behind a page, and the subscriptions that route its requests and
@@ -135,6 +149,10 @@ struct Report {
 }
 
 impl LumiApp {
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) const AUTO_WIDTH_ANIMATION_DURATION: Duration = Duration::from_millis(500);
+    #[cfg(not(target_family = "wasm"))]
+    const AUTO_WIDTH_FRAME_INTERVAL: Duration = Duration::from_millis(16);
     #[cfg(not(target_family = "wasm"))]
     const MIN_AUTO_WINDOW_WIDTH: Pixels = px(680.);
 
@@ -218,6 +236,10 @@ impl LumiApp {
             user_resized_width: false,
             pending_auto_widths: VecDeque::new(),
             last_observed_width,
+            #[cfg(not(target_family = "wasm"))]
+            width_animation: None,
+            #[cfg(not(target_family = "wasm"))]
+            next_width_animation_id: 0,
             _open_task: None,
             _subscriptions,
         }
@@ -359,6 +381,10 @@ impl LumiApp {
         // ledger's chart of accounts.
         if had_source && self.page.account().is_some() {
             self.page = Page::BalanceSheet;
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.width_animation = None;
         }
         self.pending_initial_fit = true;
         self.user_resized_width = false;
@@ -595,6 +621,10 @@ impl LumiApp {
     }
 
     fn activate_current_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.width_animation = None;
+        }
         self.pending_initial_fit = false;
         self.user_resized_width = false;
         if self.session.read(cx).has_source() {
@@ -618,20 +648,25 @@ impl LumiApp {
 
     fn on_window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let width = window.viewport_size().width;
+        if let Some(pos) = self
+            .pending_auto_widths
+            .iter()
+            .rposition(|&expected| (width - expected).abs() <= px(2.))
+        {
+            self.pending_auto_widths.drain(..=pos);
+            self.last_observed_width = width;
+            cx.notify();
+            return;
+        }
         if (width - self.last_observed_width).abs() <= px(1.) {
             return;
         }
         self.last_observed_width = width;
-        if let Some(pos) = self
-            .pending_auto_widths
-            .iter()
-            .position(|&expected| (width - expected).abs() <= px(2.))
-        {
-            self.pending_auto_widths.drain(..=pos);
-            cx.notify();
-            return;
-        }
         self.pending_auto_widths.clear();
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.width_animation = None;
+        }
         self.user_resized_width = true;
         self.pending_initial_fit = false;
         cx.notify();
@@ -656,6 +691,119 @@ impl LumiApp {
         } else {
             None
         }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn apply_auto_window_width(
+        &mut self,
+        new_width: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rounded_width = px(f32::from(new_width).round());
+        if self
+            .pending_auto_widths
+            .back()
+            .is_some_and(|&last| (last - rounded_width).abs() < px(0.5))
+        {
+            return;
+        }
+        if (window.viewport_size().width - rounded_width).abs() < px(0.5)
+            && self.pending_auto_widths.is_empty()
+        {
+            return;
+        }
+        if self.pending_auto_widths.len() >= 128 {
+            self.pending_auto_widths.pop_front();
+        }
+        self.pending_auto_widths.push_back(rounded_width);
+        let new_size = size(rounded_width, window.viewport_size().height);
+        window.resize(new_size);
+        #[cfg(test)]
+        if window.bounds().size == new_size && window.viewport_size() != new_size {
+            window.defer(cx, |window, cx| {
+                window.bounds_changed(cx);
+            });
+        }
+        #[cfg(not(test))]
+        let _ = cx;
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_width_animation(
+        &mut self,
+        start_width: Pixels,
+        target_width: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target_width = px(f32::from(target_width).round());
+        if cx.reduce_motion() || (target_width - start_width).abs() <= px(1.) {
+            self.width_animation = None;
+            self.apply_auto_window_width(target_width, window, cx);
+            return;
+        }
+        self.next_width_animation_id = self.next_width_animation_id.wrapping_add(1);
+        let id = self.next_width_animation_id;
+        let start_px = f32::from(start_width);
+        let delta_px = f32::from(target_width) - start_px;
+        let start_time = cx.background_executor().now();
+        let duration = Self::AUTO_WIDTH_ANIMATION_DURATION;
+        let frame_interval = Self::AUTO_WIDTH_FRAME_INTERVAL;
+
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let mut elapsed = Duration::ZERO;
+            loop {
+                let remaining = duration.saturating_sub(elapsed);
+                let sleep = remaining.min(frame_interval).max(Duration::from_millis(1));
+                cx.background_executor().timer(sleep).await;
+                elapsed = cx
+                    .background_executor()
+                    .now()
+                    .saturating_duration_since(start_time);
+                let done = elapsed >= duration;
+                let next_width = if done {
+                    target_width
+                } else {
+                    let raw_t = (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
+                    let eased_t = ease_in_out(raw_t);
+                    px((start_px + delta_px * eased_t).round())
+                };
+                let keep_going = this
+                    .update_in(cx, |this, window, cx| {
+                        if !this
+                            .width_animation
+                            .as_ref()
+                            .is_some_and(|anim| anim.id == id)
+                        {
+                            return false;
+                        }
+                        if this.user_resized_width
+                            || window.is_fullscreen()
+                            || window.is_maximized()
+                        {
+                            this.width_animation = None;
+                            return false;
+                        }
+                        this.apply_auto_window_width(next_width, window, cx);
+                        if done {
+                            this.width_animation = None;
+                            return false;
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
+                }
+            }
+        });
+
+        self.width_animation = Some(WidthAnimation {
+            id,
+            target_width,
+            _task: task,
+        });
     }
 
     fn sync_window_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -693,31 +841,26 @@ impl LumiApp {
                     }
                 })
                 .unwrap_or(px(3840.));
-            let desired_width = raw_desired.clamp(Self::MIN_AUTO_WINDOW_WIDTH, max_width);
-            let current_width = self
+            let desired_width =
+                px(f32::from(raw_desired.clamp(Self::MIN_AUTO_WINDOW_WIDTH, max_width)).round());
+            let actual_width = self
                 .pending_auto_widths
                 .back()
                 .copied()
                 .unwrap_or_else(|| window.viewport_size().width);
+            let effective_width = self
+                .width_animation
+                .as_ref()
+                .map(|anim| anim.target_width)
+                .unwrap_or(actual_width);
             let should_resize = if self.pending_initial_fit {
                 self.pending_initial_fit = false;
-                (desired_width - current_width).abs() > px(1.)
+                (desired_width - effective_width).abs() > px(1.)
             } else {
-                desired_width > current_width + px(1.)
+                desired_width > effective_width + px(1.)
             };
             if should_resize {
-                if self.pending_auto_widths.len() >= 4 {
-                    self.pending_auto_widths.pop_front();
-                }
-                self.pending_auto_widths.push_back(desired_width);
-                let new_size = size(desired_width, window.viewport_size().height);
-                window.resize(new_size);
-                #[cfg(test)]
-                if window.bounds().size == new_size && window.viewport_size() != new_size {
-                    window.defer(cx, |window, cx| {
-                        window.bounds_changed(cx);
-                    });
-                }
+                self.start_width_animation(actual_width, desired_width, window, cx);
             }
         }
     }
