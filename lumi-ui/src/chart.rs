@@ -17,10 +17,12 @@ use gpui_kit::component::plot::{
     TooltipState, axis_gutter,
 };
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, Theme};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Bounds, Context, Corners, ElementId, Entity, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Point, SharedString, Size, Styled as _,
-    TestSupportExt as _, TextAlign, Window, div, point, px,
+    AnyElement, App, Bounds, Context, Corners, CursorStyle, Div, ElementId, Entity, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, Pixels, Point, SharedString, Size, Styled as _,
+    TestSupportExt as _, TextAlign, Window, canvas, div, point, px,
 };
 use lumi::web::{
     AccountBalanceSeries, BalanceSheetSeries, ChartDatePreset, ChartDateRange, IncomeExpenseSeries,
@@ -37,6 +39,171 @@ const HOVER_DOT_SIZE: Pixels = px(6.0);
 const HOVER_HALO_SIZE: Pixels = px(14.0);
 const BAR_HOVER_DIM: f32 = 0.35;
 pub(crate) const MIN_CHART_INNER_WIDTH: Pixels = px(560.);
+pub(crate) const DEFAULT_BALANCE_SHEET_PLOT_HEIGHT: Pixels = px(180.);
+pub(crate) const DEFAULT_INCOME_PLOT_HEIGHT: Pixels = px(180.);
+pub(crate) const DEFAULT_ACCOUNT_PLOT_HEIGHT: Pixels = px(156.);
+pub(crate) const MIN_CHART_PLOT_HEIGHT: Pixels = px(96.);
+pub(crate) const MAX_CHART_PLOT_HEIGHT: Pixels = px(560.);
+const CHART_RESIZE_HANDLE_HEIGHT: Pixels = px(8.);
+
+struct ChartHeightState {
+    plot_height: Pixels,
+    default_plot_height: Pixels,
+    drag_anchor: Option<(Pixels, Pixels)>,
+}
+
+impl ChartHeightState {
+    fn new(default_plot_height: Pixels) -> Self {
+        Self {
+            plot_height: default_plot_height,
+            default_plot_height,
+            drag_anchor: None,
+        }
+    }
+
+    fn clamp_plot_height(height: Pixels) -> Pixels {
+        height.clamp(MIN_CHART_PLOT_HEIGHT, MAX_CHART_PLOT_HEIGHT)
+    }
+}
+
+fn chart_height_state(
+    scope: impl Into<SharedString>,
+    default_plot_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ChartHeightState> {
+    let scope: SharedString = scope.into();
+    window.use_keyed_state(
+        (ElementId::from("chart-height-state"), scope),
+        cx,
+        move |_, _| ChartHeightState::new(default_plot_height),
+    )
+}
+
+fn render_chart_card(
+    scope: impl Into<SharedString>,
+    inner: Div,
+    height_state: Entity<ChartHeightState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let scope: SharedString = scope.into();
+    let view = window.current_view();
+    let is_dragging = height_state.read(cx).drag_anchor.is_some();
+    let drag_line_color = cx.theme().drag_border;
+
+    let resize_handle = div()
+        .id((ElementId::from("chart-resize-handle"), scope.clone()))
+        .test_support()
+        .occlude()
+        .cursor_row_resize()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom(px(-4.))
+        .h(CHART_RESIZE_HANDLE_HEIGHT)
+        .flex()
+        .items_center()
+        .when(is_dragging, |this| {
+            this.child(div().w_full().h(px(2.)).bg(drag_line_color))
+        })
+        .when(!is_dragging, |this| {
+            this.hover(move |style| style.bg(drag_line_color.opacity(0.35)))
+        })
+        .on_mouse_down(MouseButton::Left, {
+            let height_state = height_state.clone();
+            move |event: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                height_state.update(cx, |state, cx| {
+                    if event.click_count == 2 {
+                        state.plot_height = state.default_plot_height;
+                        state.drag_anchor = None;
+                    } else {
+                        state.drag_anchor = Some((event.position.y, state.plot_height));
+                    }
+                    cx.notify();
+                });
+                cx.notify(view);
+            }
+        });
+
+    let drag_listener = canvas(
+        |_, _, _| (),
+        move |_, _, window: &mut Window, cx: &mut App| {
+            if height_state.read(cx).drag_anchor.is_some() {
+                window.set_window_cursor_style(CursorStyle::ResizeUpDown);
+            }
+
+            let state_on_move = height_state.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                if !phase.capture() {
+                    return;
+                }
+                let Some((start_y, start_height)) = state_on_move.read(cx).drag_anchor else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    state_on_move.update(cx, |state, cx| {
+                        state.drag_anchor = None;
+                        cx.notify();
+                    });
+                    cx.notify(view);
+                    return;
+                }
+                cx.stop_propagation();
+                let next_height = ChartHeightState::clamp_plot_height(
+                    start_height + (event.position.y - start_y),
+                );
+                let changed = state_on_move.update(cx, |state, cx| {
+                    if (state.plot_height - next_height).abs() > px(0.1) {
+                        state.plot_height = next_height;
+                        cx.notify();
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if changed {
+                    cx.notify(view);
+                }
+            });
+
+            let state_on_up = height_state.clone();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                if phase.capture() && event.button == MouseButton::Left {
+                    let cleared = state_on_up.update(cx, |state, cx| {
+                        let was_dragging = state.drag_anchor.take().is_some();
+                        if was_dragging {
+                            cx.notify();
+                        }
+                        was_dragging
+                    });
+                    if cleared {
+                        cx.notify(view);
+                    }
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_0();
+
+    table_card(cx)
+        .id((ElementId::from("chart-card"), scope.clone()))
+        .test_support()
+        .relative()
+        .w_full()
+        .min_w_0()
+        .child(horizontal_scroll_area(
+            (ElementId::from("chart-scroll"), scope),
+            inner,
+            window,
+            cx,
+        ))
+        .child(resize_handle)
+        .child(drag_listener)
+        .into_any_element()
+}
 
 /// Which root hierarchy (`Assets` or `Liabilities`) is displayed in the Balance
 /// Sheet line chart.
@@ -822,7 +989,13 @@ where
             }
         });
 
-    let plot_height = px(180.);
+    let height_state = chart_height_state(
+        "balance-sheet",
+        DEFAULT_BALANCE_SHEET_PLOT_HEIGHT,
+        window,
+        cx,
+    );
+    let plot_height = height_state.read(cx).plot_height;
     let body = if sliced.points.is_empty() {
         render_empty_chart_state("No data in selected date range", plot_height, cx)
     } else if lines.is_empty() {
@@ -896,20 +1069,13 @@ where
                 .child(mode_selector),
         );
 
-    Some(
-        table_card(cx)
-            .id((ElementId::from("chart-card"), "balance-sheet"))
-            .test_support()
-            .w_full()
-            .min_w_0()
-            .child(horizontal_scroll_area(
-                (ElementId::from("chart-scroll"), "balance-sheet"),
-                inner,
-                window,
-                cx,
-            ))
-            .into_any_element(),
-    )
+    Some(render_chart_card(
+        "balance-sheet",
+        inner,
+        height_state,
+        window,
+        cx,
+    ))
 }
 
 /// Renders the Account View balance line chart card (account balance vs time).
@@ -956,7 +1122,8 @@ where
         });
     }
 
-    let plot_height = px(156.);
+    let height_state = chart_height_state(account.clone(), DEFAULT_ACCOUNT_PLOT_HEIGHT, window, cx);
+    let plot_height = height_state.read(cx).plot_height;
     let body = if sliced.points.is_empty() {
         render_empty_chart_state("No data in selected date range", plot_height, cx)
     } else if lines.is_empty() {
@@ -1022,20 +1189,13 @@ where
         )
         .child(body);
 
-    Some(
-        table_card(cx)
-            .id((ElementId::from("chart-card"), account.clone()))
-            .test_support()
-            .w_full()
-            .min_w_0()
-            .child(horizontal_scroll_area(
-                (ElementId::from("chart-scroll"), account.clone()),
-                inner,
-                window,
-                cx,
-            ))
-            .into_any_element(),
-    )
+    Some(render_chart_card(
+        account.clone(),
+        inner,
+        height_state,
+        window,
+        cx,
+    ))
 }
 
 /// Renders the Income Statement bar chart card (`Income` or `Expenses` by
@@ -1130,7 +1290,8 @@ where
             }
         });
 
-    let plot_height = px(180.);
+    let height_state = chart_height_state("income", DEFAULT_INCOME_PLOT_HEIGHT, window, cx);
+    let plot_height = height_state.read(cx).plot_height;
     let body = if series.buckets.is_empty() {
         render_empty_chart_state("No data in selected date range", plot_height, cx)
     } else if bars.is_empty() {
@@ -1206,20 +1367,7 @@ where
                 .child(mode_selector),
         );
 
-    Some(
-        table_card(cx)
-            .id((ElementId::from("chart-card"), "income"))
-            .test_support()
-            .w_full()
-            .min_w_0()
-            .child(horizontal_scroll_area(
-                (ElementId::from("chart-scroll"), "income"),
-                inner,
-                window,
-                cx,
-            ))
-            .into_any_element(),
-    )
+    Some(render_chart_card("income", inner, height_state, window, cx))
 }
 
 struct LineSeriesData {

@@ -1943,6 +1943,36 @@ fn test_account_balance_chart_supports_date_range_presets_and_custom_picker(
         );
         assert!(window.try_find("chart-custom-date-picker").is_none());
         assert!(window.try_find("account-balance-plot-area").is_some());
+
+        // Dragging the account chart's bottom border line resizes the plot and card height.
+        let initial_card = window
+            .find((ElementId::from("chart-card"), "Assets:Cash"))
+            .bounds();
+        let initial_plot = window.find("account-balance-plot-area").bounds();
+        assert_eq!(
+            initial_plot.size.height,
+            crate::chart::DEFAULT_ACCOUNT_PLOT_HEIGHT
+        );
+
+        let handle_center = window
+            .find((ElementId::from("chart-resize-handle"), "Assets:Cash"))
+            .bounds()
+            .center();
+        let drag_down = point(handle_center.x, handle_center.y + px(64.));
+        window.pointer_down(handle_center, MouseButton::Left, cx);
+        window.pointer_move(drag_down, Some(MouseButton::Left), cx);
+        window.pointer_up(drag_down, MouseButton::Left, cx);
+        window.render_frame(cx);
+
+        let resized_card = window
+            .find((ElementId::from("chart-card"), "Assets:Cash"))
+            .bounds();
+        let resized_plot = window.find("account-balance-plot-area").bounds();
+        assert_eq!(
+            resized_plot.size.height,
+            crate::chart::DEFAULT_ACCOUNT_PLOT_HEIGHT + px(64.)
+        );
+        assert_eq!(resized_card.size.height, initial_card.size.height + px(64.));
     })
     .unwrap();
 }

@@ -4,17 +4,20 @@ use std::time::Duration;
 
 use gpui_kit::component::calendar::Date;
 use gpui_kit::component::date_picker::DatePickerEvent;
-use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
+use gpui_kit::test::{TestAppContextExt as _, TestEventExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, Pixels, ScrollDelta, Size,
-    TestAppContext, WindowBounds, WindowOptions, point, px, size,
+    AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, MouseButton, Pixels, ScrollDelta,
+    Size, TestAppContext, WindowBounds, WindowOptions, point, px, size,
 };
 use lumi::web::{
     ChartDatePreset, ChartDateRange, NaiveDate, TimeInterval, TrieTable, TrieTableRow,
 };
 
 use crate::LumiApp;
-use crate::chart::{BalanceSheetMode, IncomeChartMode};
+use crate::chart::{
+    BalanceSheetMode, DEFAULT_BALANCE_SHEET_PLOT_HEIGHT, DEFAULT_INCOME_PLOT_HEIGHT,
+    IncomeChartMode, MAX_CHART_PLOT_HEIGHT, MIN_CHART_PLOT_HEIGHT,
+};
 use crate::navigation::Page;
 use crate::session::LedgerSession;
 use crate::source::LocalLedger;
@@ -1016,6 +1019,132 @@ fn test_balance_sheet_and_income_charts_support_date_range_presets_and_custom_pi
     cx.update_window(inc_handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("income-expense-plot-area").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn test_dragging_chart_bottom_border_adjusts_balance_sheet_and_income_chart_heights(
+    cx: &mut TestAppContext,
+) {
+    // 1. Balance Sheet chart: drag bottom border down, up, and past min/max bounds.
+    let (bs_handle, _bs_app) = open_app(Page::BalanceSheet, size(px(1200.), px(900.)), cx);
+    cx.run_until_parked();
+
+    cx.update_window(bs_handle, |_, window, cx| {
+        window.render_frame(cx);
+        let initial_card = window
+            .find((ElementId::from("chart-card"), "balance-sheet"))
+            .bounds();
+        let initial_plot = window.find("balance-sheet-plot-area").bounds();
+        let handle_bounds = window
+            .find((ElementId::from("chart-resize-handle"), "balance-sheet"))
+            .bounds();
+        assert_eq!(initial_plot.size.height, DEFAULT_BALANCE_SHEET_PLOT_HEIGHT);
+
+        // The resize handle straddles the chart card's bottom border line.
+        let border_point = point(
+            initial_card.origin.x + initial_card.size.width * 0.5,
+            initial_card.origin.y + initial_card.size.height - px(1.),
+        );
+        assert!(handle_bounds.contains(&border_point));
+
+        // Drag the bottom border down by 90px.
+        let drag_down = point(border_point.x, border_point.y + px(90.));
+        window.pointer_down(border_point, MouseButton::Left, cx);
+        window.pointer_move(drag_down, Some(MouseButton::Left), cx);
+        window.pointer_up(drag_down, MouseButton::Left, cx);
+        window.render_frame(cx);
+
+        let taller_card = window
+            .find((ElementId::from("chart-card"), "balance-sheet"))
+            .bounds();
+        let taller_plot = window.find("balance-sheet-plot-area").bounds();
+        assert_eq!(
+            taller_plot.size.height,
+            DEFAULT_BALANCE_SHEET_PLOT_HEIGHT + px(90.)
+        );
+        assert_eq!(taller_card.size.height, initial_card.size.height + px(90.));
+
+        // Drag the bottom border up by 130px (`180 + 90 - 130 = 140px`).
+        let handle_center = window
+            .find((ElementId::from("chart-resize-handle"), "balance-sheet"))
+            .bounds()
+            .center();
+        let drag_up = point(handle_center.x, handle_center.y - px(130.));
+        window.pointer_down(handle_center, MouseButton::Left, cx);
+        window.pointer_move(drag_up, Some(MouseButton::Left), cx);
+        window.pointer_up(drag_up, MouseButton::Left, cx);
+        window.render_frame(cx);
+
+        let shorter_plot = window.find("balance-sheet-plot-area").bounds();
+        assert_eq!(
+            shorter_plot.size.height,
+            DEFAULT_BALANCE_SHEET_PLOT_HEIGHT - px(40.)
+        );
+
+        // Drag far upward and far downward to verify clamping to `[MIN_CHART_PLOT_HEIGHT, MAX_CHART_PLOT_HEIGHT]`.
+        let handle_center = window
+            .find((ElementId::from("chart-resize-handle"), "balance-sheet"))
+            .bounds()
+            .center();
+        let far_up = point(handle_center.x, handle_center.y - px(500.));
+        window.pointer_down(handle_center, MouseButton::Left, cx);
+        window.pointer_move(far_up, Some(MouseButton::Left), cx);
+        window.pointer_up(far_up, MouseButton::Left, cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("balance-sheet-plot-area").bounds().size.height,
+            MIN_CHART_PLOT_HEIGHT
+        );
+
+        let handle_center = window
+            .find((ElementId::from("chart-resize-handle"), "balance-sheet"))
+            .bounds()
+            .center();
+        let far_down = point(handle_center.x, handle_center.y + px(900.));
+        window.pointer_down(handle_center, MouseButton::Left, cx);
+        window.pointer_move(far_down, Some(MouseButton::Left), cx);
+        window.pointer_up(far_down, MouseButton::Left, cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("balance-sheet-plot-area").bounds().size.height,
+            MAX_CHART_PLOT_HEIGHT
+        );
+    })
+    .unwrap();
+
+    // 2. Income Statement bar chart: drag bottom border down to expand height.
+    let (inc_handle, _inc_app) = open_app(Page::Income, size(px(1200.), px(900.)), cx);
+    cx.run_until_parked();
+
+    cx.update_window(inc_handle, |_, window, cx| {
+        window.render_frame(cx);
+        let initial_card = window
+            .find((ElementId::from("chart-card"), "income"))
+            .bounds();
+        let initial_plot = window.find("income-expense-plot-area").bounds();
+        assert_eq!(initial_plot.size.height, DEFAULT_INCOME_PLOT_HEIGHT);
+
+        let handle_center = window
+            .find((ElementId::from("chart-resize-handle"), "income"))
+            .bounds()
+            .center();
+        let drag_down = point(handle_center.x, handle_center.y + px(75.));
+        window.pointer_down(handle_center, MouseButton::Left, cx);
+        window.pointer_move(drag_down, Some(MouseButton::Left), cx);
+        window.pointer_up(drag_down, MouseButton::Left, cx);
+        window.render_frame(cx);
+
+        let resized_card = window
+            .find((ElementId::from("chart-card"), "income"))
+            .bounds();
+        let resized_plot = window.find("income-expense-plot-area").bounds();
+        assert_eq!(
+            resized_plot.size.height,
+            DEFAULT_INCOME_PLOT_HEIGHT + px(75.)
+        );
+        assert_eq!(resized_card.size.height, initial_card.size.height + px(75.));
     })
     .unwrap();
 }
