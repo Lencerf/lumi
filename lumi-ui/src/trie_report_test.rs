@@ -521,15 +521,36 @@ fn test_trie_report_formats_and_renders_three_digit_groups_with_narrow_gap(
     cx.update_window(inc_handle, |_, window, cx| {
         window.render_frame(cx);
         // `Income` root row has `-3000.00` -> `-3` + DIGIT_GROUP_GAP + `000.00`.
-        let mut inc_table = window.within((ElementId::from("trie-table"), "Income"));
-        let mut body = inc_table.within(("table-body", 1usize));
-        let row0 = body.within(("table-row", 0usize));
-        let g0 = row0.find(("digit-group", 0usize)).bounds();
-        let g1 = row0.find(("digit-group", 1usize)).bounds();
+        assert!(window.try_find("number-hover-menu").is_none());
+        {
+            let mut inc_table = window.within((ElementId::from("trie-table"), "Income"));
+            let mut body = inc_table.within(("table-body", 1usize));
+            let mut row0 = body.within(("table-row", 0usize));
+            let g0 = row0.find(("digit-group", 0usize)).bounds();
+            let g1 = row0.find(("digit-group", 1usize)).bounds();
+            assert_eq!(
+                g1.origin.x - (g0.origin.x + g0.size.width),
+                crate::number::DIGIT_GROUP_GAP
+            );
+
+            // Hovering over the financial number (`-3 000.00`) shows the hover menu
+            // with a Copy number button that copies the ungrouped value (`-3000.00`).
+            row0.hover(("financial-number", 0usize), cx);
+        }
+        window.render_frame(cx);
+        assert!(window.try_find("number-hover-menu").is_some());
+        assert!(window.try_find("copy-number-button").is_some());
+        window.click("copy-number-button", cx);
+        window.render_frame(cx);
         assert_eq!(
-            g1.origin.x - (g0.origin.x + g0.size.width),
-            crate::number::DIGIT_GROUP_GAP
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("-3000.00".to_string())
         );
+
+        // Moving the cursor away from the number and hover menu dismisses it.
+        window.pointer_move(point(px(2.), px(2.)), None, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("number-hover-menu").is_none());
     })
     .unwrap();
 }

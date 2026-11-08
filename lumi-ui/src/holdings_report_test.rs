@@ -485,13 +485,28 @@ fn test_holdings_renders_narrow_digit_group_gaps_and_matches_ungrouped_search(
         assert_eq!(delegate.cell_label(3, 3, cx).unwrap(), "2024-03-01");
         assert_eq!(delegate.cell_label(3, 4, cx).unwrap(), "2 500.00 USD");
 
-        let cell = window.within("table-cell-3:4");
+        let mut cell = window.within("table-cell-3:4");
         let g0 = cell.find(("digit-group", 0usize)).bounds();
         let g1 = cell.find(("digit-group", 1usize)).bounds();
         assert_eq!(
             g1.origin.x - (g0.origin.x + g0.size.width),
             crate::number::DIGIT_GROUP_GAP
         );
+
+        // Hovering over the book value financial number (`2 500.00 USD`) opens
+        // the hover menu and copies `"2500.00"` when clicked.
+        cell.hover(("financial-number", 0usize), cx);
+        window.render_frame(cx);
+        assert!(window.try_find("number-hover-menu").is_some());
+        window.click("copy-number-button", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("2500.00".to_string())
+        );
+        window.pointer_move(point(px(2.), px(2.)), None, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("number-hover-menu").is_none());
 
         // Searching without spaces ("2500") still matches `2 500.00 USD`.
         report.update(cx, |report, cx| report.set_search_query("2500", window, cx));

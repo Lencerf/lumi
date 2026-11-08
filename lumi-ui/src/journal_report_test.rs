@@ -1686,7 +1686,7 @@ fn test_journal_and_account_views_group_numbers_with_narrow_gap_leaving_dates_in
             "10 000 VTI {2 500.00 USD, 2024-03-01} @ 1 200.50 EUR"
         );
 
-        let bal_cell = window.within("table-cell-0:3");
+        let mut bal_cell = window.within("table-cell-0:3");
         let g0 = bal_cell.find(("digit-group", 0usize)).bounds();
         let g1 = bal_cell.find(("digit-group", 1usize)).bounds();
         let g2 = bal_cell.find(("digit-group", 2usize)).bounds();
@@ -1698,6 +1698,38 @@ fn test_journal_and_account_views_group_numbers_with_narrow_gap_leaving_dates_in
             g2.origin.x - (g1.origin.x + g1.size.width),
             crate::number::DIGIT_GROUP_GAP
         );
+
+        // Hovering over the balance assertion number (`1 123 456.7891`) shows
+        // the hover menu and copies the ungrouped number string (`1123456.7891`).
+        bal_cell.hover(("financial-number", 0usize), cx);
+        window.render_frame(cx);
+        assert!(window.try_find("number-hover-menu").is_some());
+        window.click("copy-number-button", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("1123456.7891".to_string())
+        );
+
+        // In a compound posting cell (`10 000 VTI {2 500.00 USD, 2024-03-01} @ 1 200.50 EUR`),
+        // each financial number (`10000`, `2500.00`, `1200.50`) has its own hover copy menu.
+        for (num_ix, expected_raw) in [(0usize, "10000"), (1usize, "2500.00"), (2usize, "1200.50")]
+        {
+            window
+                .within("table-cell-2:3")
+                .hover(("financial-number", num_ix), cx);
+            window.render_frame(cx);
+            assert!(window.try_find("number-hover-menu").is_some());
+            window.click("copy-number-button", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some(expected_raw.to_string())
+            );
+        }
+        window.pointer_move(point(px(2.), px(2.)), None, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("number-hover-menu").is_none());
 
         let focus = report.read(cx).table.read(cx).focus_handle(cx);
         focus.focus(window, cx);
