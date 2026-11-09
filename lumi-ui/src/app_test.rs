@@ -825,7 +825,22 @@ fn test_auto_window_and_column_widths_across_sidebar_and_account_views(cx: &mut 
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let journal = app.read(cx).journal().expect("journal open");
-            journal.read(cx).natural_column_widths(cx)[3]
+            let naturals = journal.read(cx).natural_column_widths(cx);
+            let cols = journal.read(cx).column_widths(cx);
+            // In the wider window inherited from Balance Sheet, Date and Flag
+            // stay pinned to their exact content widths while Description and
+            // Position widen proportionally to fill the table.
+            assert_eq!(
+                cols[0], naturals[0],
+                "Date column never widens past content"
+            );
+            assert_eq!(
+                cols[1], naturals[1],
+                "Flag column never widens past content"
+            );
+            assert!(cols[2] > naturals[2]);
+            assert!(cols[3] > naturals[3]);
+            naturals[3]
         })
         .unwrap();
 
@@ -1137,6 +1152,41 @@ fn test_manual_window_widen_scales_columns_proportionally_and_narrow_scrolls_tab
         assert!(
             plot_after_x < plot_before_x - px(40.),
             "Account chart scrolls horizontally when narrowed: before={plot_before_x:?}, after={plot_after_x:?}"
+        );
+
+        // Manually widening the Account view window keeps Date and Flag pinned
+        // to their exact content widths while Description, Position, Change,
+        // and Balance widen proportionally to fill the table.
+        let acct_wide = report_horizontal_overhead(window)
+            + acct_naturals.iter().copied().sum::<Pixels>()
+            + px(2.)
+            + px(360.);
+        window.resize(size(acct_wide, px(760.)));
+        window.bounds_changed(cx);
+        window.render_frame(cx);
+        let journal = app.read(cx).journal().expect("account view open");
+        let wide_cols = journal.read(cx).column_widths(cx);
+        assert_eq!(
+            wide_cols[0], acct_naturals[0],
+            "Account Date column must not widen when window widens"
+        );
+        assert_eq!(
+            wide_cols[1], acct_naturals[1],
+            "Account Flag column must not widen when window widens"
+        );
+        for ix in 2..wide_cols.len() {
+            assert!(
+                wide_cols[ix] > acct_naturals[ix],
+                "Account column {ix} widens proportionally when window widens: scaled={:?}, nat={:?}",
+                wide_cols[ix],
+                acct_naturals[ix]
+            );
+        }
+        let expected_table_inner = acct_wide - report_horizontal_overhead(window) - px(2.);
+        let sum_wide: Pixels = wide_cols.iter().copied().sum();
+        assert!(
+            (sum_wide - expected_table_inner).abs() <= px(1.),
+            "Scaled Account columns fill table card with no trailing gap: sum={sum_wide:?}, inner={expected_table_inner:?}"
         );
     })
     .unwrap();

@@ -410,6 +410,10 @@ impl<'a> TableTextMetrics<'a> {
     }
 }
 
+fn is_fixed_content_column(col: &Column) -> bool {
+    matches!(col.key.as_ref(), "date" | "flag") || matches!(col.name.as_ref(), "Date" | "Flag")
+}
+
 /// Scales `base` column widths to `target_width`:
 /// - When `target_width <= sum(base)`, returns `base` unchanged so columns never
 ///   shrink below their content-fitted widths.
@@ -417,6 +421,18 @@ impl<'a> TableTextMetrics<'a> {
 ///   across all columns with monotonic cumulative rounding so `sum == target_width`
 ///   and every column is `>= base[i]`.
 pub(crate) fn scale_widths_proportionally(base: &[Pixels], target_width: Pixels) -> Vec<Pixels> {
+    let fixed = vec![false; base.len()];
+    scale_widths_with_fixed(base, &fixed, target_width)
+}
+
+/// Scales `base` column widths to `target_width`, keeping any column where
+/// `fixed[i]` is `true` (such as `"Date"` and `"Flag"`) pinned to `base[i]` and
+/// distributing extra width proportionally across the remaining columns.
+pub(crate) fn scale_widths_with_fixed(
+    base: &[Pixels],
+    fixed: &[bool],
+    target_width: Pixels,
+) -> Vec<Pixels> {
     if base.is_empty() {
         return Vec::new();
     }
@@ -425,20 +441,27 @@ pub(crate) fn scale_widths_proportionally(base: &[Pixels], target_width: Pixels)
     if base_sum <= 0.0 || target <= base_sum {
         return base.to_vec();
     }
+    let scalable_indices: Vec<usize> = (0..base.len())
+        .filter(|&ix| !fixed.get(ix).copied().unwrap_or(false))
+        .collect();
+    let scalable_base_sum: f32 = scalable_indices.iter().map(|&ix| f32::from(base[ix])).sum();
+    if scalable_base_sum <= 0.0 {
+        return base.to_vec();
+    }
     let extra = target - base_sum;
-    let n = base.len();
-    let mut out = Vec::with_capacity(n);
-    let mut cum_base = 0.0_f32;
+    let k = scalable_indices.len();
+    let mut out = base.to_vec();
+    let mut cum_scalable = 0.0_f32;
     let mut prev_extra = 0.0_f32;
-    for (ix, &w) in base.iter().enumerate() {
-        cum_base += f32::from(w);
-        let next_extra = if ix + 1 == n {
+    for (pos, &col_ix) in scalable_indices.iter().enumerate() {
+        cum_scalable += f32::from(base[col_ix]);
+        let next_extra = if pos + 1 == k {
             extra
         } else {
-            (extra * cum_base / base_sum).round()
+            (extra * cum_scalable / scalable_base_sum).round()
         };
         let delta = (next_extra - prev_extra).max(0.0);
-        out.push(w + px(delta));
+        out[col_ix] = base[col_ix] + px(delta);
         prev_extra = next_extra;
     }
     out
@@ -447,12 +470,15 @@ pub(crate) fn scale_widths_proportionally(base: &[Pixels], target_width: Pixels)
 /// Column definitions for a full-width `DataTable` with no trailing empty column.
 ///
 /// Each column tracks its content-fitted natural width (`natural_widths`). When
-/// the table viewport is wider than the sum of column widths, all columns widen
-/// proportionally; when the viewport is narrower, columns keep their natural
-/// widths so the table scrolls horizontally instead of truncating cells.
+/// the table viewport is wider than the sum of column widths, fixed-content
+/// columns (`"Date"` and `"Flag"`) keep their exact natural widths while all
+/// other columns widen proportionally; when the viewport is narrower, columns
+/// keep their natural widths so the table scrolls horizontally instead of
+/// truncating cells.
 pub(crate) struct TableColumns {
     columns: Vec<Column>,
     natural_widths: Vec<Pixels>,
+    fixed: Vec<bool>,
     user_widths: Option<Vec<Pixels>>,
     table_width: Option<Pixels>,
 }
@@ -461,17 +487,23 @@ impl TableColumns {
     const MAX_COL_WIDTH: Pixels = px(10_000.);
 
     pub(crate) fn new(columns: Vec<Column>) -> Self {
+        let fixed: Vec<bool> = columns.iter().map(is_fixed_content_column).collect();
         let natural_widths = columns
             .iter()
             .map(|col| px(f32::from(col.width).ceil().max(24.)))
             .collect();
         let columns = columns
             .into_iter()
-            .map(|col| col.min_width(px(20.)).max_width(Self::MAX_COL_WIDTH))
+            .zip(&fixed)
+            .map(|(col, &is_fixed)| {
+                let col = col.min_width(px(20.)).max_width(Self::MAX_COL_WIDTH);
+                if is_fixed { col.resizable(false) } else { col }
+            })
             .collect();
         Self {
             columns,
             natural_widths,
+            fixed,
             user_widths: None,
             table_width: None,
         }
@@ -505,6 +537,8 @@ impl TableColumns {
             self.columns.insert(to_ix, col);
             let nat = self.natural_widths.remove(col_ix);
             self.natural_widths.insert(to_ix, nat);
+            let is_fixed = self.fixed.remove(col_ix);
+            self.fixed.insert(to_ix, is_fixed);
             if let Some(user) = &mut self.user_widths {
                 let uw = user.remove(col_ix);
                 user.insert(to_ix, uw);
@@ -539,8 +573,9 @@ impl TableColumns {
         }
         self.natural_widths = normalized;
         if let Some(user) = &mut self.user_widths {
-            for (uw, &nw) in user.iter_mut().zip(&self.natural_widths) {
-                if *uw < nw {
+            for ((uw, &nw), &is_fixed) in user.iter_mut().zip(&self.natural_widths).zip(&self.fixed)
+            {
+                if is_fixed || *uw < nw {
                     *uw = nw;
                 }
             }
@@ -564,16 +599,17 @@ impl TableColumns {
         }
     }
 
-    /// Scales all columns proportionally to fill `width` when `width` exceeds
-    /// the sum of base widths, or keeps base widths unchanged when `width` is
-    /// narrower; returns `true` when any column width changed.
+    /// Scales non-fixed columns proportionally to fill `width` when `width`
+    /// exceeds the sum of base widths, keeping fixed columns (`"Date"` and
+    /// `"Flag"`) at their content-fitted widths, or keeps base widths unchanged
+    /// when `width` is narrower; returns `true` when any column width changed.
     pub(crate) fn fit_to_width(&mut self, width: Pixels) -> bool {
         if width <= px(0.) || self.table_width == Some(width) {
             return false;
         }
         self.table_width = Some(width);
         let base = self.user_widths.as_deref().unwrap_or(&self.natural_widths);
-        let targets = scale_widths_proportionally(base, width);
+        let targets = scale_widths_with_fixed(base, &self.fixed, width);
         let mut changed = false;
         for (col, target) in self.columns.iter_mut().zip(targets) {
             if col.width != target {
@@ -585,7 +621,7 @@ impl TableColumns {
     }
 
     /// Records user-resized column widths and absorbs any sub-viewport slack
-    /// into the neighboring column so no empty trailing column gap opens.
+    /// into the neighboring scalable column so no empty trailing column gap opens.
     pub(crate) fn apply_resized_widths(&mut self, widths: &[Pixels]) -> bool {
         if widths.len() != self.columns.len() || self.columns.is_empty() {
             return false;
@@ -596,17 +632,27 @@ impl TableColumns {
             .zip(widths)
             .position(|(col, &w)| col.width != w);
         let mut adjusted = widths.to_vec();
+        for ((w, &nw), &is_fixed) in adjusted
+            .iter_mut()
+            .zip(&self.natural_widths)
+            .zip(&self.fixed)
+        {
+            if is_fixed {
+                *w = nw;
+            }
+        }
         let mut adjusted_slack = false;
         if let Some(table_width) = self.table_width {
             let total: Pixels = adjusted.iter().copied().sum();
             if total < table_width {
                 let slack = table_width - total;
-                let recipient = match resized_ix {
-                    Some(ix) if ix + 1 < adjusted.len() => ix + 1,
-                    _ => adjusted.len() - 1,
-                };
-                adjusted[recipient] += slack;
-                adjusted_slack = true;
+                let recipient = resized_ix
+                    .and_then(|ix| (ix + 1..adjusted.len()).find(|&i| !self.fixed[i]))
+                    .or_else(|| (0..adjusted.len()).rev().find(|&i| !self.fixed[i]));
+                if let Some(recipient) = recipient {
+                    adjusted[recipient] += slack;
+                    adjusted_slack = true;
+                }
             }
         }
         for (col, &w) in self.columns.iter_mut().zip(&adjusted) {

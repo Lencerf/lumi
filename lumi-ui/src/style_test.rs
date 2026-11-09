@@ -119,3 +119,36 @@ fn test_table_columns_scales_proportionally_when_wider_and_never_shrinks_when_na
     assert_eq!(sum, px(701.));
     assert!(scaled[0] >= px(73.) && scaled[1] >= px(211.) && scaled[2] >= px(149.));
 }
+
+#[test]
+fn test_date_and_flag_columns_remain_at_content_width_when_table_widens() {
+    let widths_of =
+        |cols: &TableColumns| -> Vec<Pixels> { cols.as_slice().iter().map(|c| c.width).collect() };
+
+    let mut cols = TableColumns::new(vec![
+        Column::new("date", "Date").width(px(90.)),
+        Column::new("flag", "Flag").width(px(50.)),
+        Column::new("description", "Description").width(px(300.)),
+        Column::new("position", "Position").width(px(200.)),
+    ]);
+    assert!(!cols[0].resizable);
+    assert!(!cols[1].resizable);
+    assert!(cols[2].resizable);
+    assert!(cols[3].resizable);
+    assert_eq!(cols.natural_total_width(), px(640.));
+
+    // When viewport widens to 1140px (+500px extra over 640px natural sum),
+    // Date (90px) and Flag (50px) stay fixed at their content widths while
+    // Description (300 -> 600) and Position (200 -> 400) scale proportionally.
+    assert!(cols.fit_to_width(px(1140.)));
+    assert_eq!(widths_of(&cols), [px(90.), px(50.), px(600.), px(400.)]);
+
+    // Updating natural content widths keeps Date and Flag pinned to their new
+    // content widths and redistributes remaining viewport width across scalable columns.
+    assert!(cols.set_natural_widths(vec![px(96.), px(44.), px(400.), px(100.)]));
+    assert_eq!(widths_of(&cols), [px(96.), px(44.), px(800.), px(200.)]);
+
+    // Narrowing below natural sum keeps all columns at their content widths.
+    assert!(cols.fit_to_width(px(500.)));
+    assert_eq!(widths_of(&cols), [px(96.), px(44.), px(400.), px(100.)]);
+}
